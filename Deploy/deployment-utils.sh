@@ -12,7 +12,7 @@
 #   * Blue/green on ONE host. ONE SHARED Postgres (km-db) that BOTH colors point
 #     to. A "switch" is therefore a pure nginx flip — no data is copied.
 #   * Compose projects are SEPARATE and share volumes + networks:
-#       km-shared : km-lb, km-db, km-backup        (docker-compose.shared.yml)
+#       km-shared : km-lb, km-db, km-backup, km-worker  (docker-compose.shared.yml)
 #       km-blue   : km-server-blue,  km-client-blue,  km-kiwi-blue
 #       km-green  : km-server-green, km-client-green, km-kiwi-green
 #   * Ports: prod 1840 / test 1841 / blue-direct 1842 / green-direct 1843.
@@ -557,6 +557,189 @@ run_loader() {
 }
 
 # =============================================================================
+# build_worker — build the km-worker GPU Whisper image ON THIS HOST.
+# -----------------------------------------------------------------------------
+# UNLIKE km-migrate/km-loader (CI-built, docker-save/load'd as tar artifacts),
+# km-worker is built directly on the server: the CUDA + cuDNN + baked-large-v3
+# image is multi-GB (a tar artifact would be impractical) and it targets THIS
+# host's GPU. The BUILD needs internet egress (apt, pip, the ~3 GB Hugging Face
+# model download on first build); the RUNTIME (km-internal) needs none — that
+# is exactly why everything is baked. Repo root is the build context so
+# `COPY tools` works (same contract as loader.Dockerfile).
+#
+# Tags km-worker:${WORKER_IMAGE_TAG:-latest} — the same tag the km-worker
+# service in docker-compose.shared.yml runs. After a rebuild, restart it:
+#   compose_shared up   (recreates km-worker on the new image)
+# =============================================================================
+build_worker() {
+    require_cmd docker
+    local worker_image="km-worker:${WORKER_IMAGE_TAG:-latest}"
+    log_info "build_worker: building ${worker_image} (context=${REPO_ROOT})"
+    docker build \
+        -t "$worker_image" \
+        -f "${DEPLOY_DIR}/worker.Dockerfile" \
+        "${REPO_ROOT}"
+}
+
+# =============================================================================
+# run_worker_once — one-off foreground km-worker run for smoke/manual drains.
+# -----------------------------------------------------------------------------
+# Mirrors run_loader: a --rm container on km-internal reaching the shared km-db
+# by hostname — but authenticating as the least-privilege km_app role (the
+# worker is app-plane, not operator-plane; it must never carry POSTGRES_USER).
+# `--gpus all` uses the host nvidia runtime directly (the long-lived service in
+# docker-compose.shared.yml instead declares a device reservation). The shared
+# km_audio_uploads volume is mounted READ-ONLY — the worker only reads blobs.
+#
+# Foreground on purpose: watch the JSON logs, Ctrl-C to stop. The worker's
+# claim/settle/reap protocol (076) makes an interrupted run safe — a killed
+# 'running' job is reaped after AUDIO_STALE_RUN_MINUTES.
+#
+#   run_worker_once                      # drain with .env/default knobs
+#   WHISPER_DEVICE=cpu run_worker_once   # forced-CPU smoke test
+#
+# NB: the forced-CPU smoke still passes `--gpus all`, so the host needs the
+# nvidia container toolkit either way — it smokes the CPU COMPUTE path, it is
+# NOT a no-GPU-host fallback (this helper is M-only, like the image).
+# =============================================================================
+run_worker_once() {
+    require_cmd docker
+    : "${KM_APP_PASSWORD:?run_worker_once: KM_APP_PASSWORD not set (call load_environment; see set-km-app-password.sh)}"
+    : "${POSTGRES_DB:?run_worker_once: POSTGRES_DB not set (call load_environment)}"
+
+    # Takes NO arguments: the image ENTRYPOINT is the worker loop and every
+    # knob is an env var (see header). Reject strays so a mistyped invocation
+    # fails loud instead of silently ignoring what was passed.
+    if [[ $# -ne 0 ]]; then
+        log_err "run_worker_once: takes no arguments (got: $*). Configure via env vars, e.g. WHISPER_DEVICE=cpu run_worker_once."
+        return 2
+    fi
+
+    local worker_image="km-worker:${WORKER_IMAGE_TAG:-latest}"
+    # Host-built (see build_worker) — there is no CI tar to docker-load.
+    if ! docker image inspect "$worker_image" >/dev/null 2>&1; then
+        log_err "run_worker_once: image ${worker_image} not found locally."
+        log_err "km-worker is built ON this host, not shipped by CI. Build it:"
+        log_err "  build_worker    (docker build -f Deploy/worker.Dockerfile ${REPO_ROOT})"
+        return 1
+    fi
+
+    # GPU-collision guard: the long-lived km-worker service (compose) and this
+    # one-off would BOTH load large-v3 onto the single 8 GB RTX 3070 — a
+    # coin-flip CUDA OOM, and per worker.py an OOM settles the in-flight job
+    # 'failed' (poisons real jobs). Refuse while the service is live. Same
+    # fail-fast style as the image guard above.
+    if [[ -n "$(docker ps --filter name='^/km-worker$' --filter status=running -q)" ]]; then
+        log_err "run_worker_once: the km-worker service is live; it and this one-off would contend for the single GPU (CUDA OOM poisons jobs)."
+        log_err "Stop km-worker first (docker stop km-worker), run the one-off, then restore the service:  compose_shared up"
+        return 1
+    fi
+
+    # Volume-existence guard: the -v mount below would AUTO-CREATE an
+    # unlabeled km_audio_uploads if it doesn't exist (ensure_volume is
+    # inspect-then-skip, so the app=korean-master label would never be
+    # retrofitted). Mirror run_loader's data-dir guard: require the canonical
+    # creator to have run; never auto-create here.
+    if ! docker volume inspect km_audio_uploads >/dev/null 2>&1; then
+        log_err "run_worker_once: volume km_audio_uploads not found. Run ensure-shared-volume.sh first (the single labeled creator)."
+        return 1
+    fi
+
+    # In-container DSN: reach km-db over the shared network by hostname, as
+    # km_app (same principal + grants as the compose service and km-server).
+    local container_dsn="postgres://${KM_APP_USER:-km_app}:${KM_APP_PASSWORD}@km-db:5432/${POSTGRES_DB}"
+
+    log_info "run_worker_once: ${worker_image} (one-off, GPU, km-internal)"
+    docker run --rm \
+        --gpus all \
+        --network km-internal \
+        -v km_audio_uploads:/var/audio-uploads:ro \
+        -e DATABASE_URL="$container_dsn" \
+        -e AUDIO_UPLOAD_STORAGE_DIR=/var/audio-uploads \
+        -e AUDIO_STALE_RUN_MINUTES="${AUDIO_STALE_RUN_MINUTES:-60}" \
+        -e WHISPER_MODEL="${WHISPER_MODEL:-large-v3}" \
+        -e WHISPER_DEVICE="${WHISPER_DEVICE:-auto}" \
+        -e WHISPER_COMPUTE_TYPE="${WHISPER_COMPUTE_TYPE:-auto}" \
+        -e POLL_INTERVAL_SEC="${POLL_INTERVAL_SEC:-5}" \
+        "$worker_image"
+}
+
+# =============================================================================
+# verify_worker — post-standup assertion that km-worker is actually serving.
+# -----------------------------------------------------------------------------
+# WHY: docker-compose.shared.yml deliberately runs km-worker with
+# ${KM_APP_PASSWORD:-} (NOT the color files' `:?` hard-fail) so a cold box can
+# bootstrap km-db/km-lb BEFORE migration 047 + set-km-app-password.sh exist.
+# That choice converts "compose refuses to start" into "km-worker crash-loops
+# quietly while km-db/km-lb look green" — a dropped/typo'd password or a stale
+# image silently benches the transcription queue. This helper is the
+# compensating control that `:-` owes: it asserts the worker is (1) running
+# and NOT restart-looping and (2) the km_app queue grants it depends on are
+# live on km-db.
+#
+# NOT wired as a hard gate into azure-deploy-inactive.sh: that script's
+# compose_shared up happens BEFORE migrations by design (cold-box ordering),
+# where a crash-looping worker is the documented, tolerated state — a hard
+# gate there would break the bootstrap the `:-` exists to permit. Operators
+# run this AFTER a standup/rebuild (password set, migrations applied):
+#     source Deploy/deployment-utils.sh && load_environment && verify_worker
+# =============================================================================
+verify_worker() {
+    require_cmd docker
+    : "${KM_APP_PASSWORD:?verify_worker: KM_APP_PASSWORD not set (call load_environment; see set-km-app-password.sh)}"
+    : "${POSTGRES_DB:?verify_worker: POSTGRES_DB not set (call load_environment)}"
+
+    # (1) Container state: must be running, and RestartCount must be STABLE.
+    # Two samples a beat apart: a live crash-loop increments between them; a
+    # nonzero-but-stable count is historical (e.g. pre-password bootstrap) and
+    # only worth a warn.
+    local state restarts restarts2
+    if ! state="$(docker inspect -f '{{.State.Status}}' km-worker 2>/dev/null)"; then
+        log_err "verify_worker: container km-worker not found (compose_shared up not run, or the image was never built — see build_worker)."
+        return 1
+    fi
+    if [[ "$state" != "running" ]]; then
+        log_err "verify_worker: km-worker state='${state}' (expected 'running'). Inspect: docker logs km-worker"
+        return 1
+    fi
+    restarts="$(docker inspect -f '{{.RestartCount}}' km-worker)"
+    sleep 5
+    state="$(docker inspect -f '{{.State.Status}}' km-worker 2>/dev/null || true)"
+    restarts2="$(docker inspect -f '{{.RestartCount}}' km-worker 2>/dev/null || echo -1)"
+    if [[ "$state" != "running" || "$restarts2" -gt "$restarts" || "$restarts2" -lt 0 ]]; then
+        log_err "verify_worker: km-worker is restart-looping (state='${state}', RestartCount ${restarts} -> ${restarts2})."
+        log_err "Most likely the km_app password: compose runs it with \${KM_APP_PASSWORD:-} (empty until set-km-app-password.sh). Inspect: docker logs km-worker"
+        return 1
+    fi
+    if [[ "$restarts2" != "0" ]]; then
+        log_warn "verify_worker: RestartCount=${restarts2} (historical restarts; stable across the sample window)"
+    fi
+
+    # (2) km_app grant smoke: the worker's queue UPDATE privilege must be live
+    # (047's blanket + default-privilege grants covering the 073-077 tables).
+    # Same posture as run_worker_once: km_app principal, km-internal, no ports.
+    # postgres:16-alpine is guaranteed local (km-db runs it); --pull never so
+    # this can never turn into a network fetch; PGCONNECT_TIMEOUT bounds a
+    # hung connect. NEVER echoes the password (env-injected, not argv).
+    local grant
+    grant="$(docker run --rm --pull never \
+        --network km-internal \
+        -e PGPASSWORD="${KM_APP_PASSWORD}" \
+        -e PGCONNECT_TIMEOUT=10 \
+        postgres:16-alpine \
+        psql -h km-db -U "${KM_APP_USER:-km_app}" -d "${POSTGRES_DB}" -tA \
+        -c "select has_table_privilege('km_app','audio_transcription_jobs','UPDATE')" \
+        2>/dev/null || true)"
+    if [[ "$grant" != "t" ]]; then
+        log_err "verify_worker: km_app grant smoke FAILED (has_table_privilege('km_app','audio_transcription_jobs','UPDATE') -> '${grant:-no-response}', expected 't')."
+        log_err "Check that migrations (047 + 073-077) are applied and set-km-app-password.sh has run."
+        return 1
+    fi
+
+    log_info "verify_worker: km-worker running (RestartCount=${restarts2}) and km_app queue grants live — OK"
+}
+
+# =============================================================================
 # compose_color COLOR up|down — bring a color trio up or down.
 # -----------------------------------------------------------------------------
 # Each color is its own compose project (km-blue / km-green) sharing the named
@@ -595,7 +778,8 @@ compose_color() {
 }
 
 # =============================================================================
-# compose_shared up|down — bring the shared trio (km-lb/km-db/km-backup) up/down.
+# compose_shared up|down — bring the shared services up/down
+# (km-lb / km-db / km-backup / km-worker).
 # =============================================================================
 compose_shared() {
     local action="${1:-up}"
@@ -606,7 +790,7 @@ compose_shared() {
     require_cmd docker
     case "$action" in
         up)
-            log_info "compose up: project=${SHARED_PROJECT} (km-lb/km-db/km-backup)"
+            log_info "compose up: project=${SHARED_PROJECT} (km-lb/km-db/km-backup/km-worker)"
             docker compose -p "$SHARED_PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_SHARED_FILE" up -d
             ;;
         down)

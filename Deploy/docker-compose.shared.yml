@@ -264,6 +264,96 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # ---------------------------------------------------------------------------
+  # km-worker — Track A GPU Whisper transcription worker (tools/audio_stt).
+  # Drains the audio_transcription_jobs queue on km-db and transcribes with
+  # faster-whisper on the host NVIDIA GPU (RTX 3070).
+  #
+  # WHY it lives in the SHARED project, not per-color: the DB queue
+  # (claim/settle/reap, 076) makes the worker color-agnostic — it serves
+  # whichever color enqueued the job — and the ONE GPU cannot be time-shared by
+  # two concurrent Whisper processes, so a per-color pair would fight over it.
+  # Single long-lived instance, same placement rationale as km-backup.
+  #
+  # IMAGE: built ON THIS HOST (Deploy/worker.Dockerfile via `build_worker` in
+  # deployment-utils.sh), NOT CI-built/tar-shipped like the color images — the
+  # CUDA + baked-large-v3 image is multi-GB and targets this host's GPU. Hence
+  # its own WORKER_IMAGE_TAG (normally `latest`), decoupled from the per-color
+  # release tags.
+  # ---------------------------------------------------------------------------
+  km-worker:
+    image: km-worker:${WORKER_IMAGE_TAG:-latest}
+    container_name: km-worker
+    restart: unless-stopped
+
+    environment:
+      # Least-privilege km_app role — the SAME principal as km-server-<color>
+      # (B-030, migration 047; DML only). The worker's whole DB surface
+      # (SELECT/UPDATE audio_transcription_jobs + audio_tracks, INSERT/DELETE
+      # audio_transcript_segments) is covered by 047's blanket + default-
+      # privilege grants.
+      # NB `:-` here, NOT the color files' `${KM_APP_PASSWORD:?…}` hard-fail:
+      # the SHARED stack must come up on a cold box BEFORE 047 has applied and
+      # set-km-app-password.sh has run (km-db must start so run_migrate can
+      # create km_app in the first place). While the password is missing the
+      # worker merely crash-loops on auth — noisy, but it never blocks the
+      # km-db/km-lb bootstrap that the `:?` form would.
+      DATABASE_URL: postgres://${KM_APP_USER:-km_app}:${KM_APP_PASSWORD:-}@km-db:5432/${POSTGRES_DB}
+      # Fixed in-container blob root — must match the km_audio_uploads mount
+      # below (074's contract: audio_tracks.blob_ref paths resolve under it).
+      AUDIO_UPLOAD_STORAGE_DIR: /var/audio-uploads
+      AUDIO_STALE_RUN_MINUTES: ${AUDIO_STALE_RUN_MINUTES:-60}
+      WHISPER_MODEL: ${WHISPER_MODEL:-large-v3}
+      # auto → cuda when the GPU reservation below is honored, cpu fallback.
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-auto}
+      # auto → float16 on cuda, int8 on cpu.
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-auto}
+      POLL_INTERVAL_SEC: ${POLL_INTERVAL_SEC:-5}
+
+    volumes:
+      # SHARED audio-blob volume, READ-ONLY: the worker only ever READS blobs
+      # (transcription input); the server-side upload path (A-3) is the sole
+      # writer. ro so a compromised worker cannot alter or delete audio.
+      - km_audio_uploads:/var/audio-uploads:ro
+      # NOTE: no model-cache volume — the large-v3 weights are BAKED into the
+      # image (worker.Dockerfile HF_HOME layer) because km-internal has no
+      # egress to download them at runtime.
+
+    depends_on:
+      km-db:
+        condition: service_healthy
+
+    networks:
+      # Internal ONLY — the worker needs exactly km-db + the blob volume; no
+      # ports, no egress (matches the km-db/km-backup posture).
+      - km-internal
+
+    deploy:
+      resources:
+        # GPU passthrough via the host nvidia container runtime
+        # (nvidia-container-toolkit; wired on M). Modern device-reservation
+        # form — compose maps it to `--gpus`-equivalent device requests.
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          # large-v3 float16 needs several GB of host RAM around the CUDA
+          # allocations; 12g default leaves headroom without letting a leak
+          # take the box down.
+          memory: ${WORKER_MEM_LIMIT:-12g}
+          cpus: "${WORKER_CPU_LIMIT:-4.0}"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    security_opt:
+      - no-new-privileges:true
+
 # -----------------------------------------------------------------------------
 # Networks — ALL THREE compose projects (km-shared / km-blue / km-green) treat
 # these as EXTERNAL. ensure-shared-volume.sh is the SINGLE creator (it runs first
@@ -308,3 +398,6 @@ volumes:
   km_book_uploads:
     external: true
     name: km_book_uploads
+  km_audio_uploads:
+    external: true
+    name: km_audio_uploads

@@ -16,7 +16,7 @@
 # applying it (the dry-run is the gate) rather than break production.
 #
 # Flow (each step logged, fail-fast; the active env is untouched on any failure):
-#   1. load_environment; ensure shared volumes; bring the shared trio up.
+#   1. load_environment; ensure shared volumes; bring the shared services up.
 #   2. confirm the recorded active color matches the live LB; pick INACTIVE.
 #   3. back up the shared DB (pre-migration safety net).
 #   4. migrate the shared DB: dry-run THEN apply (abort on either failure).
@@ -93,10 +93,17 @@ main() {
         cp -- "${DEPLOY_DIR}/nginx-${ACTIVE_ENVIRONMENT}-active.conf" "$LIVE_NGINX_CONF"
     fi
 
-    log_info "bringing the shared trio up (km-lb / km-db / km-backup)"
+    log_info "bringing the shared services up (km-lb / km-db / km-backup / km-worker)"
     compose_shared up
 
     # The LB and DB must be reachable before we touch migrations. Wait for db.
+    # NB km-worker is deliberately NOT gated here: compose runs it with
+    # ${KM_APP_PASSWORD:-} (cold-box bootstrap — the shared stack must start
+    # BEFORE migration 047 + set-km-app-password.sh exist), so at this point in
+    # the flow a crash-looping worker is a documented, tolerated state and a
+    # hard gate would break that bootstrap ordering. After standup (password
+    # set, migrations applied) the operator asserts the worker with:
+    #     source Deploy/deployment-utils.sh && load_environment && verify_worker
     wait_healthy km-db
 
     # --- Step 2: confirm active, select inactive ----------------------------

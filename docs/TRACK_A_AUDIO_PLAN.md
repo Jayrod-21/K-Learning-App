@@ -257,9 +257,20 @@ Each PR is independently shippable and goes through the full build → tests →
 - **A-0 (this doc):** plan + decisions. ← you are here.
 - **A-1 migrations:** 073–077 (076 = the jobs table, 077 = the source_kind
   widen — see §2) + `db/tests/` for each. No behavior yet.
-- **A-2 Whisper tooling:** `tools/ingest/audio_stt/` + a pilot transcription of
-  **one** set (Easy Korean Reading, 30 files, already a proven pair) → cached
-  transcript JSON, spot-checked for accuracy.
+- **A-2 Whisper tooling:** as built, this became the **A1 in-app worker**
+  (decision reversed from the A2-first recommendation above), split in two:
+  - **A-2a (merged):** `tools/audio_stt/` — a pure-Python worker
+    (`python -m tools.audio_stt.worker`) that drains `audio_transcription_jobs`
+    (076 claim/settle/reap) and transcribes with faster-whisper.
+  - **A-2b (packaging):** `Deploy/worker.Dockerfile` (CUDA 12.4 + cuDNN 9 base,
+    ffmpeg, large-v3 weights BAKED into the image — km-internal has no egress)
+    + a single long-lived `km-worker` service in `docker-compose.shared.yml`
+    (shared project like km-backup: the queue makes it color-agnostic and the
+    one GPU can't be shared; nvidia device reservation; km_app DSN; reads the
+    name-pinned `km_audio_uploads` volume read-only at `/var/audio-uploads`)
+    + `ensure-shared-volume.sh` creates `km_audio_uploads`
+    + `build_worker` / `run_worker_once` in `deployment-utils.sh` (the image is
+    built ON M — multi-GB, never CI-shipped).
 - **A-3 loader + storage:** `load_audio.py` + `audioStore.ts` + config; load the
   pilot set; verify rows.
 - **A-4 serving:** `routes/audio.ts` (stream + list) + client allow-list +
