@@ -166,6 +166,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ChangeEvent,
   type JSX,
   type RefObject,
 } from 'react';
@@ -180,6 +181,7 @@ import { Eyebrow } from '../components/Eyebrow';
 import { FilterSelect } from '../components/FilterSelect';
 import { Icon, type IconName } from '../components/Icon';
 import { PageHubHeader } from '../components/PageHubHeader';
+import { Pill, type PillTone } from '../components/Pill';
 import { ShowMore } from '../components/ShowMore';
 import { Tabs } from '../components/Tabs';
 import { Tapword } from '../components/Tapword';
@@ -196,8 +198,14 @@ import { ApiError } from '../services/api';
 import { useChatContext } from '../hooks/useChatContext';
 import { usePagination } from '../hooks/usePagination';
 import { useTapWord } from '../hooks/useTapWord';
-import { errorMessageFor } from '../lib/errorCopy';
+import { audioUploadErrorMessage, errorMessageFor } from '../lib/errorCopy';
 import { navItem } from '../lib/nav';
+import {
+  checkAudioFile,
+  getAudioTrack,
+  listMyAudio,
+  uploadAudio,
+} from '../services/audio';
 import {
   buildAudioSrc,
   getIyagiEpisode,
@@ -209,6 +217,9 @@ import {
 } from '../services/ttmik';
 import { mineWord } from '../services/vocab';
 import type {
+  AudioSource,
+  AudioTrackDetail,
+  AudioTranscriptStatus,
   IyagiEpisode,
   ListenSentence,
   TtmikLesson,
@@ -216,8 +227,11 @@ import type {
 } from '../types/domain';
 import './Ttmik.css';
 
-/** The two audio corpora this screen serves (closed set — parse target). */
-type Corpus = 'ttmik' | 'iyagi';
+/** The audio collections this screen serves (closed set — parse target).
+ *  `mine` is the Track A A-4b "My Audio" surface (user uploads + Whisper
+ *  transcripts) — a LISTING/DETAIL pair of its own, deliberately outside the
+ *  TTMIK/Iyagi-closed `Selection`/`DetailData` machinery below. */
+type Corpus = 'ttmik' | 'iyagi' | 'mine';
 
 /** Page eyebrow + canonical route — nav.ts owns both (P3b Batch A). */
 const TTMIK_NAV = navItem('ttmik');
@@ -259,12 +273,24 @@ const COLLECTIONS: ReadonlyArray<{
     icon: 'mic',
     tone: 'mint',
   },
+  {
+    corpus: 'mine',
+    en: 'My Audio',
+    kr: '내 오디오',
+    subEn: 'Your uploads, transcribed',
+    subKr: '업로드한 오디오와 자동 대본',
+    icon: 'upload',
+    // Violet — blue/mint are taken by TTMIK/Iyagi (and ochre by Hanja);
+    // same fixed "always this hue" contract as the other two tiles.
+    tone: 'violet',
+  },
 ];
 
 /** Listing labels the detail BackButton reuses ("Back to TTMIK Lessons"). */
 const COLLECTION_LABEL: Record<Corpus, string> = {
   ttmik: 'TTMIK Lessons',
   iyagi: 'Iyagi Episodes',
+  mine: 'My Audio',
 };
 
 /**
@@ -289,6 +315,7 @@ const SHELL_SCROLL_SELECTOR = '.km-shell__scroll';
 const LISTEN_SCROLL_KEY: Record<Corpus, string> = {
   ttmik: 'km:listen:scroll:ttmik',
   iyagi: 'km:listen:scroll:iyagi',
+  mine: 'km:listen:scroll:mine',
 };
 
 /**
@@ -381,11 +408,14 @@ function selectionKey(selection: Selection): string {
     : `iyagi:${String(selection.number)}`;
 }
 
-/** Which of the three views the URL addresses. */
+/** Which view the URL addresses. `detail` stays TTMIK/Iyagi-closed (its
+ *  `Selection`/`DetailData` machinery is corpus-specific); the My Audio
+ *  track detail is its own kind, keyed by a validated DB track id. */
 type ListenView =
   | { kind: 'landing' }
   | { kind: 'list'; corpus: Corpus }
-  | { kind: 'detail'; selection: Selection };
+  | { kind: 'detail'; selection: Selection }
+  | { kind: 'mineTrack'; trackId: number };
 
 /**
  * Bounded positive-int parser for untrusted search params. Digits only
@@ -399,6 +429,19 @@ type ListenView =
  */
 function parsePositiveInt(raw: string | null): number | null {
   if (raw === null || !/^\d{1,4}$/.test(raw)) return null;
+  const n = Number(raw);
+  return n >= 1 ? n : null;
+}
+
+/**
+ * DB-identity variant of `parsePositiveInt` for the My Audio `track` param:
+ * `audio_tracks` ids are BIGINT IDENTITY values, not small corpus ordinals,
+ * so the 4-digit ordinal cap would strand any track past id 9999. 15 digits
+ * keeps every accepted value comfortably inside `Number.MAX_SAFE_INTEGER`
+ * (16 digits can exceed it) while still bounding a hostile param.
+ */
+function parsePositiveId(raw: string | null): number | null {
+  if (raw === null || !/^\d{1,15}$/.test(raw)) return null;
   const n = Number(raw);
   return n >= 1 ? n : null;
 }
@@ -431,6 +474,15 @@ function parseListenView(params: URLSearchParams): ListenView {
     }
     return { kind: 'list', corpus: 'iyagi' };
   }
+  if (corpus === 'mine') {
+    // Same fall-back-UP-the-hierarchy contract: a malformed `track` lands on
+    // the My Audio listing, never in a fetch with an attacker-shaped id.
+    const track = parsePositiveId(params.get('track'));
+    if (track !== null) {
+      return { kind: 'mineTrack', trackId: track };
+    }
+    return { kind: 'list', corpus: 'mine' };
+  }
   return { kind: 'landing' };
 }
 
@@ -443,6 +495,9 @@ function lessonPath(lesson: Pick<TtmikLesson, 'level' | 'number'>): string {
 }
 function episodePath(number: number): string {
   return `${listPath('iyagi')}&episode=${String(number)}`;
+}
+function myAudioTrackPath(trackId: number): string {
+  return `${listPath('mine')}&track=${String(trackId)}`;
 }
 
 export default function Ttmik(): JSX.Element {
@@ -459,6 +514,10 @@ export default function Ttmik(): JSX.Element {
     const corpus = view.selection.corpus;
     back = (
       <BackButton to={listPath(corpus)} label={COLLECTION_LABEL[corpus]} />
+    );
+  } else if (view.kind === 'mineTrack') {
+    back = (
+      <BackButton to={listPath('mine')} label={COLLECTION_LABEL.mine} />
     );
   }
 
@@ -481,6 +540,17 @@ export default function Ttmik(): JSX.Element {
       ) : null}
       {view.kind === 'list' && view.corpus === 'iyagi' ? (
         <IyagiListing />
+      ) : null}
+      {view.kind === 'list' && view.corpus === 'mine' ? (
+        <MyAudioListing />
+      ) : null}
+      {view.kind === 'mineTrack' ? (
+        // Keyed on the track id — a different track remounts fresh (fresh
+        // player, fresh poll), mirroring DetailView's selectionKey contract.
+        <MyAudioDetail
+          key={`mine:${String(view.trackId)}`}
+          trackId={view.trackId}
+        />
       ) : null}
       {view.kind === 'detail' ? (
         // Keyed on the selection: opening a DIFFERENT unit remounts the
@@ -1761,6 +1831,698 @@ function TranscriptLineItem({
       return <li style={{ display: 'none' }}>{exhausted}</li>;
     }
   }
+}
+
+// ─────────────────────────────────────────────────────────────
+// My Audio (Track A A-4b) — user uploads + transcript polling
+// ─────────────────────────────────────────────────────────────
+//
+// A SEPARATE listing/detail pair from the TTMIK/Iyagi machinery above: the
+// `Selection`/`DetailData` union, the F-172 MarkListenedButton plumbing and
+// the tap-word chain all stay corpus-closed (per their own docs); My Audio
+// reuses only the page's genuinely shared devices (CityCard player card,
+// reader card, giwa empty state, `useListScrollRestore`, the fixed-copy
+// error contract). Threat model additions over the page header's:
+//   - The `track` search param is untrusted — `parsePositiveId` bounds it
+//     (digits only, ≤15) before it can shape a request path.
+//   - The player src goes through `buildAudioSrc`'s strict allow-list, so a
+//     tampered `streamUrl` can never point the media element off-origin.
+//   - Upload failures render fixed copy (`audioUploadErrorMessage` /
+//     `checkAudioFile`) — server prose is never echoed; a 404 on the track
+//     detail renders one uniform "not found" state (the server never
+//     distinguishes deleted vs not-yours, and neither do we).
+//   - POLLING (the app's first): a bounded `setInterval` re-fetch that runs
+//     ONLY while a transcription is actually unsettled (pending/running),
+//     stops itself the moment everything settles, and is cleared — with its
+//     in-flight request aborted — on unmount/navigation. A transient poll
+//     failure keeps the last good data and lets the next tick retry; it
+//     never tears down the visible list. Each tick aborts the previous
+//     tick's request before fetching (the abort-before-fetch house pattern,
+//     SF-1/SF-2), a per-lifecycle attempt ceiling bounds a never-settling
+//     job's churn against the rate-limited GET, and a mid-poll 404 on the
+//     detail stops that poll outright (SF-3) — see the per-effect comments.
+
+/** How often the listing/detail re-check an unsettled transcription (ms).
+ *  Whisper runs take tens of seconds to minutes — 4 s keeps the UI honest
+ *  without hammering the cheap-limited GET. */
+const MY_AUDIO_POLL_MS = 4000;
+
+/**
+ * Hard ceiling on poll attempts per poller lifecycle (SF-3): 225 ticks ×
+ * 4 s = 15 minutes — generous against real Whisper runtimes (tens of
+ * seconds to minutes), but a bound so a job stuck 'pending' forever (a dead
+ * worker) can never churn the rate-limited GET unbounded. The budget resets
+ * whenever the poll effect restarts: a fresh upload (the listing's
+ * `pollEpoch` bump), a remount (corpus switch / navigation), or the
+ * unsettled boolean flipping false→true again.
+ */
+const MY_AUDIO_POLL_MAX_TICKS = 225;
+
+/** Status pill meta — pending/running read as "in progress" (default tone),
+ *  done/failed get the green/red pill tones (Uploads' STATUS_META idiom). */
+const TRANSCRIPT_STATUS_META: Record<
+  AudioTranscriptStatus,
+  { en: string; kr: string; tone: PillTone }
+> = {
+  pending: { en: 'Queued', kr: '대기 중', tone: 'default' },
+  running: { en: 'Transcribing', kr: '전사 중', tone: 'default' },
+  done: { en: 'Ready', kr: '완료', tone: 'green' },
+  failed: { en: 'Failed', kr: '실패', tone: 'red' },
+};
+
+/** True while a track's transcription is still in progress — the polling
+ *  predicate for both the listing and the detail view. */
+function isUnsettled(status: AudioTranscriptStatus): boolean {
+  return status === 'pending' || status === 'running';
+}
+
+/**
+ * Source-level status rollup for the listing pill. Upload sources always
+ * have exactly one track, so this is normally just `tracks[0]`'s status;
+ * for a (corpus-loaded) multi-track source: any unsettled track keeps the
+ * whole source "in progress", else any failure marks it failed, else done.
+ * A trackless source (corpus edge case) rolls up as done — its row renders
+ * non-navigable below, so the pill is cosmetic there.
+ */
+function sourceStatus(source: AudioSource): AudioTranscriptStatus {
+  if (source.tracks.some((t) => isUnsettled(t.transcriptStatus))) {
+    return source.tracks.some((t) => t.transcriptStatus === 'running')
+      ? 'running'
+      : 'pending';
+  }
+  if (source.tracks.some((t) => t.transcriptStatus === 'failed')) {
+    return 'failed';
+  }
+  return 'done';
+}
+
+/** Filename minus its audio extension — the default upload title (mirrors
+ *  UploadTypeModal's `titleFromFilename`), bounded to the server's 500-char
+ *  title cap. May be '' (e.g. a bare `.mp3`) — the caller then omits the
+ *  title field and the server derives its own date-based fallback. */
+function titleFromAudioFilename(name: string): string {
+  return name.replace(/\.(mp3|m4a)$/i, '').trim().slice(0, 500);
+}
+
+/** Short display date for a source row (Uploads' formatDate posture —
+ *  page-local duplication rather than a cross-page import). */
+function formatAudioDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
+/**
+ * The My Audio listing: an upload control + this user's audio sources with
+ * live transcript-status pills. Polls `GET /audio` every `MY_AUDIO_POLL_MS`
+ * while any track is pending/running (see the section header's polling
+ * note); a successful upload splices the fresh source in optimistically
+ * (Uploads' `onUploaded` posture) and the next poll tick reconciles it with
+ * server truth.
+ */
+function MyAudioListing(): JSX.Element {
+  const navigate = useNavigate();
+  const { toast } = useToast();
+  const [sources, setSources] = useState<AudioSource[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
+  const ctrlRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    ctrlRef.current?.abort();
+    ctrlRef.current = ctrl;
+    // Sync-to-external-system (network fetch) — same documented exception
+    // the listings above use for their kickoff setState.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setLoading(true);
+    setError(null);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    listMyAudio(ctrl.signal)
+      .then((rows) => {
+        if (ctrl.signal.aborted) return;
+        setSources(rows);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setError(errorMessageFor(err, 'Could not load your audio.'));
+        setLoading(false);
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [reloadTick]);
+
+  const refetch = useCallback(() => {
+    setReloadTick((t) => t + 1);
+  }, []);
+
+  // ── Polling (the app's first — see the section header) ──
+  // Runs ONLY while some track is genuinely unsettled. The effect deps on
+  // the derived BOOLEAN (not `sources` itself), so a poll response that
+  // replaces the array without settling anything does NOT tear down and
+  // recreate the interval; the moment everything settles the boolean flips
+  // and the cleanup clears it.
+  //
+  // STOP CONDITIONS (SF-3 — every way this poll ends):
+  //   1. Everything settles → `hasUnsettled` flips false → cleanup clears
+  //      the interval and aborts the in-flight tick.
+  //   2. Unmount / corpus switch → same cleanup — no leak, no late setState.
+  //   3. The attempt ceiling (`MY_AUDIO_POLL_MAX_TICKS`) trips — a job stuck
+  //      'pending' forever must not churn the rate-limited GET unbounded.
+  //      Rows keep their last known status; a fresh upload (`pollEpoch`
+  //      bump) or a revisit restarts the budget.
+  // Genuinely TRANSIENT failures (network blip, 5xx) do NOT stop it — the
+  // next tick retries with the last good list still on screen.
+  //
+  // RACE SAFETY (SF-1/SF-2 — the file's abort-before-fetch house pattern,
+  // applied PER TICK): each tick aborts the previous tick's request before
+  // fetching, so a slow stale snapshot can never land over a newer one; the
+  // upload-success handler aborts the in-flight tick before splicing, so a
+  // snapshot taken before the POST landed can never erase the fresh row.
+  const hasUnsettled = sources.some((s) =>
+    s.tracks.some((t) => isUnsettled(t.transcriptStatus)),
+  );
+  // Bumped on upload success: restarts the poll effect so the fresh job gets
+  // a full first interval AND a full attempt budget of its own.
+  const [pollEpoch, setPollEpoch] = useState(0);
+  const pollTickCtrlRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    if (loading || error !== null || !hasUnsettled) return;
+    let ticks = 0; // effect-local — every (re)start gets a fresh budget
+    const id = window.setInterval(() => {
+      ticks += 1;
+      if (ticks > MY_AUDIO_POLL_MAX_TICKS) {
+        // Ceiling: a never-settling job — stop churning (stop condition 3).
+        window.clearInterval(id);
+        return;
+      }
+      // Abort-before-fetch, per tick: the previous tick either settled
+      // (abort is a no-op) or is stale-in-flight (must never land later).
+      pollTickCtrlRef.current?.abort();
+      const ctrl = new AbortController();
+      pollTickCtrlRef.current = ctrl;
+      listMyAudio(ctrl.signal)
+        .then((rows) => {
+          if (ctrl.signal.aborted) return;
+          setSources(rows);
+        })
+        .catch((err: unknown) => {
+          if (ctrl.signal.aborted) return;
+          if (err instanceof ApiError && err.code === 'canceled') return;
+          // Transient poll failure — keep the last good list on screen and
+          // let the next tick retry; a background refresh must never replace
+          // visible data with an error card.
+        });
+    }, MY_AUDIO_POLL_MS);
+    return () => {
+      window.clearInterval(id);
+      pollTickCtrlRef.current?.abort();
+      pollTickCtrlRef.current = null;
+    };
+  }, [loading, error, hasUnsettled, pollEpoch]);
+
+  // ── Upload control ──
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const uploadCtrlRef = useRef<AbortController | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(
+    () => () => {
+      uploadCtrlRef.current?.abort();
+    },
+    [],
+  );
+
+  const onFilePicked = useCallback(
+    (e: ChangeEvent<HTMLInputElement>): void => {
+      const picked = e.target.files?.[0] ?? null;
+      // Reset the input so picking the SAME file again still fires `change`.
+      e.target.value = '';
+      if (!picked) return;
+      const precheck = checkAudioFile(picked);
+      if (precheck !== null) {
+        setUploadError(precheck);
+        return;
+      }
+
+      uploadCtrlRef.current?.abort();
+      const ctrl = new AbortController();
+      uploadCtrlRef.current = ctrl;
+      setUploading(true);
+      // Stays null (bare "Uploading…") until the first REAL progress tick —
+      // UploadTypeModal's exact stance.
+      setUploadProgress(null);
+      setUploadError(null);
+      const title = titleFromAudioFilename(picked.name);
+      uploadAudio(picked, {
+        ...(title !== '' ? { title } : {}),
+        signal: ctrl.signal,
+        onProgress: (percent) => {
+          if (ctrl.signal.aborted) return;
+          setUploadProgress(percent);
+        },
+      })
+        .then((res) => {
+          if (ctrl.signal.aborted) return;
+          setUploading(false);
+          setUploadProgress(null);
+          // SF-2: a poll tick whose snapshot predates this POST may be in
+          // flight RIGHT NOW — abort it BEFORE splicing so its stale rows
+          // can never land afterwards and erase the fresh source below.
+          pollTickCtrlRef.current?.abort();
+          pollTickCtrlRef.current = null;
+          // Splice the fresh source in (Uploads' onUploaded posture). Built
+          // from what we KNOW locally — the poll effect wakes on the pending
+          // track and reconciles with server truth on its first tick.
+          setSources((prev) => [
+            {
+              id: res.sourceId,
+              title: title !== '' ? title : 'Audio upload',
+              kind: 'standalone_listening',
+              createdAt: new Date().toISOString(),
+              tracks: [
+                {
+                  id: res.trackId,
+                  trackNumber: 1,
+                  title: title !== '' ? title : null,
+                  byteSize: picked.size,
+                  durationMs: null,
+                  transcriptStatus: res.transcriptStatus,
+                },
+              ],
+            },
+            ...prev.filter((s) => s.id !== res.sourceId),
+          ]);
+          // Re-wake the poller with a fresh interval and a fresh attempt
+          // budget for the new job (also recovers a ceiling-exhausted poll).
+          setPollEpoch((e) => e + 1);
+          toast({
+            message: 'Uploaded — transcription started.',
+            tone: 'success',
+          });
+        })
+        .catch((err: unknown) => {
+          if (ctrl.signal.aborted) return;
+          if (err instanceof ApiError && err.code === 'canceled') return;
+          setUploading(false);
+          setUploadProgress(null);
+          // Fixed copy only — never the server's prose (errorCopy contract).
+          setUploadError(audioUploadErrorMessage(err));
+        });
+    },
+    [toast],
+  );
+
+  // F-162: same per-corpus scroll restore as the listings above.
+  const scrollRootRef = useListScrollRestore(LISTEN_SCROLL_KEY.mine, !loading);
+
+  if (loading) {
+    return (
+      <div className="km-grammar__state" role="status">
+        <Bilingual en="Loading your audio…" kr="오디오를 불러오는 중…" />
+      </div>
+    );
+  }
+  if (error !== null) {
+    return <ErrorCard message={error} onRetry={refetch} />;
+  }
+
+  return (
+    <div ref={scrollRootRef}>
+      <div style={{ margin: '0 0 14px' }}>
+        <Button
+          variant="gold"
+          size="md"
+          fullWidth
+          leadingIcon={<Icon name="upload" size={14} />}
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploading}
+          aria-busy={uploading}
+        >
+          {/* role=status/aria-live announces upload progress to AT — the
+              UploadTypeModal progress-label recipe, real bytes not a ramp. */}
+          <span role="status" aria-live="polite">
+            {uploading ? (
+              <Bilingual
+                en={
+                  uploadProgress !== null
+                    ? `Uploading… ${String(uploadProgress)}%`
+                    : 'Uploading…'
+                }
+                kr={
+                  uploadProgress !== null
+                    ? `업로드 중… ${String(uploadProgress)}%`
+                    : '업로드 중…'
+                }
+                compact
+              />
+            ) : (
+              <Bilingual en="Upload audio" kr="오디오 업로드" compact />
+            )}
+          </span>
+        </Button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="audio/mpeg,audio/mp4,audio/x-m4a,.mp3,.m4a"
+          hidden
+          aria-label="Audio file"
+          onChange={onFilePicked}
+        />
+        {uploadError !== null ? <ErrorCard message={uploadError} /> : null}
+      </div>
+
+      {sources.length === 0 ? (
+        <p
+          className="km-reference__empty km-giwa km-hangul-watermark"
+          data-glyph="오디오"
+        >
+          <Bilingual
+            en="No audio yet. Upload an MP3 or M4A to get a Korean transcript."
+            kr="아직 오디오가 없어요. MP3나 M4A를 업로드하면 대본을 만들어 드려요."
+          />
+        </p>
+      ) : (
+        <Card className="km-reference__list" variant="flat">
+          <ul aria-label="Your audio">
+            {sources.map((source) => {
+              const track = source.tracks[0];
+              const status = TRANSCRIPT_STATUS_META[sourceStatus(source)];
+              return (
+                <li
+                  key={`mine:${String(source.id)}`}
+                  className="km-reference__row"
+                >
+                  <button
+                    type="button"
+                    className="km-resources__list-open focusring"
+                    onClick={() => {
+                      if (track === undefined) return;
+                      void navigate(myAudioTrackPath(track.id));
+                    }}
+                    disabled={track === undefined}
+                    // aria-label replaces the subtree name, so the status
+                    // pill's state must travel inside it (the SF-2 fold-in
+                    // the corpus rows above use).
+                    aria-label={`Open audio: ${source.title} (${status.en})`}
+                  >
+                    <span className="kr km-reference__row-kr">
+                      {source.title}
+                    </span>
+                    <Pill tone={status.tone}>
+                      <Bilingual en={status.en} kr={status.kr} compact />
+                    </Pill>
+                    <span className="km-resources__pager-count">
+                      {formatAudioDate(source.createdAt)}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One uploaded track: the real `<audio controls>` player (mirrors the
+ * corpus DetailView's persistent-player recipe, `buildAudioSrc`-resolved
+ * src, `onError` → visible alert) above the transcript. A track is PLAYABLE
+ * in every transcript state — `streamUrl` serves bytes whether or not
+ * Whisper has settled — so the player renders unconditionally while the
+ * transcript panel below branches on `transcriptStatus` (transcribing /
+ * failed / done). Polls `GET /audio/tracks/:id` while unsettled, with the
+ * same stop/cleanup contract as the listing's poll.
+ */
+function MyAudioDetail({ trackId }: { trackId: number }): JSX.Element {
+  const [data, setData] = useState<AudioTrackDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
+  const ctrlRef = useRef<AbortController | null>(null);
+
+  // Runtime playback failure (the F-160 device) — distinct from a fetch
+  // error: the element stays mounted, an alert renders alongside it.
+  const [audioError, setAudioError] = useState(false);
+  const onAudioError = useCallback((): void => {
+    setAudioError(true);
+  }, []);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    ctrlRef.current?.abort();
+    ctrlRef.current = ctrl;
+    // Sync-to-external-system (network fetch) — same documented exception
+    // as every other kickoff setState on this page.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setLoading(true);
+    setError(null);
+    setNotFound(false);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    getAudioTrack(trackId, ctrl.signal)
+      .then((detail) => {
+        if (ctrl.signal.aborted) return;
+        setData(detail);
+        setLoading(false);
+        // A fresh load (or Retry) gives the player a fresh chance.
+        setAudioError(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        if (err instanceof ApiError && err.status === 404) {
+          // UNIFORM not-found: the server never distinguishes "deleted"
+          // from "not yours", and neither does this copy.
+          setNotFound(true);
+          setLoading(false);
+          return;
+        }
+        setError(errorMessageFor(err, 'Could not load this audio.'));
+        setLoading(false);
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [trackId, reloadTick]);
+
+  const refetch = useCallback(() => {
+    setReloadTick((t) => t + 1);
+  }, []);
+
+  // Poll while this track's transcription is unsettled — same posture,
+  // per-tick abort-before-fetch, and STOP CONDITIONS as the listing's poll
+  // (see its SF-3 header comment): settle / unmount / attempt ceiling, PLUS
+  // one of its own — a mid-poll 404 (the track vanished server-side:
+  // deleted, or no longer this user's) is TERMINAL, not transient, so it
+  // stops the poll immediately and surfaces the uniform not-found state
+  // rather than hammering a route that can only 404 again. The `error` and
+  // `notFound` gates mirror the listing's `error` gate (never poll behind
+  // an error or not-found surface).
+  const unsettled = data !== null && isUnsettled(data.track.transcriptStatus);
+  const pollTickCtrlRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    if (!unsettled || error !== null || notFound) return;
+    let ticks = 0; // effect-local — every (re)start gets a fresh budget
+    const id = window.setInterval(() => {
+      ticks += 1;
+      if (ticks > MY_AUDIO_POLL_MAX_TICKS) {
+        // Ceiling: a never-settling job — stop churning; the last known
+        // status stays on screen and a revisit restarts the budget.
+        window.clearInterval(id);
+        return;
+      }
+      pollTickCtrlRef.current?.abort();
+      const ctrl = new AbortController();
+      pollTickCtrlRef.current = ctrl;
+      getAudioTrack(trackId, ctrl.signal)
+        .then((detail) => {
+          if (ctrl.signal.aborted) return;
+          setData(detail);
+        })
+        .catch((err: unknown) => {
+          if (ctrl.signal.aborted) return;
+          if (err instanceof ApiError && err.code === 'canceled') return;
+          if (err instanceof ApiError && err.status === 404) {
+            // Track gone mid-poll — terminal: stop NOW (don't wait for the
+            // effect teardown) and show the uniform not-found state.
+            window.clearInterval(id);
+            setNotFound(true);
+            return;
+          }
+          // Transient poll failure — next tick retries; never tear down the
+          // visible detail over a background refresh.
+        });
+    }, MY_AUDIO_POLL_MS);
+    return () => {
+      window.clearInterval(id);
+      pollTickCtrlRef.current?.abort();
+      pollTickCtrlRef.current = null;
+    };
+  }, [unsettled, trackId, error, notFound]);
+
+  // Defensive ordinal sort (the page's transcript-panel stance — the server
+  // already orders by segment_number).
+  const orderedSegments = useMemo(
+    () =>
+      data !== null
+        ? [...data.segments].sort((a, b) => a.segmentNumber - b.segmentNumber)
+        : [],
+    [data],
+  );
+
+  if (loading) return <SkeletonCard />;
+  if (notFound) {
+    return (
+      <p
+        className="km-reference__empty km-giwa km-hangul-watermark"
+        data-glyph="오디오"
+      >
+        <Bilingual
+          en="That audio couldn't be found."
+          kr="해당 오디오를 찾을 수 없어요."
+        />
+      </p>
+    );
+  }
+  if (error !== null || data === null) {
+    return (
+      <ErrorCard
+        message={error ?? 'Could not load this audio.'}
+        onRetry={refetch}
+      />
+    );
+  }
+
+  const status = TRANSCRIPT_STATUS_META[data.track.transcriptStatus];
+  // The strict allow-list resolver — the ONLY path to the <audio> src. A
+  // tampered streamUrl resolves to null and the player simply doesn't render.
+  const audioSrc = buildAudioSrc(data.track.streamUrl);
+  const title = data.track.title ?? 'My audio';
+
+  return (
+    <div>
+      <Eyebrow>
+        <Bilingual en="My Audio" kr="내 오디오" />
+      </Eyebrow>
+      <h2 className="kr kr-display" style={{ margin: '4px 0 6px' }}>
+        {title}
+      </h2>
+      <p style={{ margin: '0 0 12px' }}>
+        <Pill tone={status.tone}>
+          <Bilingual en={status.en} kr={status.kr} compact />
+        </Pill>
+      </p>
+
+      {/* Same blue-signboard player card as the corpus DetailView. */}
+      <CityCard tone="blue" className="km-ttmik__player">
+        {audioSrc !== null ? (
+          <>
+            {/* Real streaming player (HTTP Range server-side, so seeking
+                works). No timed caption track exists for user uploads; the
+                transcript renders directly below — same a11y exemption as
+                the corpus player. */}
+            {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+            <audio
+              controls
+              preload="metadata"
+              src={audioSrc}
+              aria-label={`Audio for ${title}`}
+              onError={onAudioError}
+              style={{ width: '100%' }}
+            />
+            {audioError ? (
+              <p className="km-ttmik__audio-error" role="alert">
+                <Bilingual
+                  en="Audio couldn't load — try again later."
+                  kr="오디오를 불러올 수 없어요 — 나중에 다시 시도해 주세요."
+                />
+              </p>
+            ) : null}
+          </>
+        ) : (
+          // Defensive only: streamUrl is always present and allow-listed —
+          // reachable solely if a tampered value was rejected upstream.
+          <p className="km-reference__empty" role="note">
+            <Bilingual
+              en="No audio yet — check back soon."
+              kr="아직 오디오가 없어요 — 잠시 후 다시 확인해 주세요."
+            />
+          </p>
+        )}
+      </CityCard>
+
+      {data.track.transcriptStatus === 'done' ? (
+        <CityCard
+          tone="accent"
+          rail
+          className={cn(
+            'km-ttmik__reader-card',
+            orderedSegments.length === 0 && 'km-giwa km-hangul-watermark',
+          )}
+          {...(orderedSegments.length === 0 ? { 'data-glyph': '대본' } : {})}
+        >
+          <ol
+            aria-label="Transcript"
+            style={{ listStyle: 'none', margin: 0, padding: 0 }}
+          >
+            {orderedSegments.map((seg) => (
+              <li
+                key={seg.segmentNumber}
+                className="km-reference__row"
+                style={{ padding: '8px 0' }}
+              >
+                {/* Whisper output rendered through React text children
+                    (escaped) — same contract as every transcript above. */}
+                <p className="kr km-reference__row-kr" style={{ margin: 0 }}>
+                  {seg.body}
+                </p>
+              </li>
+            ))}
+          </ol>
+          {orderedSegments.length === 0 ? (
+            <p className="km-reference__empty">
+              <Bilingual en="No transcript yet." kr="아직 대본이 없어요." />
+            </p>
+          ) : null}
+        </CityCard>
+      ) : data.track.transcriptStatus === 'failed' ? (
+        <CityCard tone="accent" rail className="km-ttmik__reader-card">
+          {/* A settled failure — fixed copy, never the job's server-side
+              error prose (which this client deliberately never receives). */}
+          <p className="km-reference__empty" role="note">
+            <Bilingual
+              en="Transcription failed for this audio. You can still listen above."
+              kr="이 오디오의 대본 만들기에 실패했어요. 위에서 듣기는 가능해요."
+            />
+          </p>
+        </CityCard>
+      ) : (
+        <CityCard tone="accent" rail className="km-ttmik__reader-card">
+          {/* pending/running — the poll above will land the transcript the
+              moment the worker settles it. role=status so AT hears the
+              eventual flip via the re-render, not an unlabeled swap. */}
+          <p className="km-reference__empty" role="status">
+            <Bilingual
+              en="Transcribing… the transcript will appear here when it's ready."
+              kr="대본을 만드는 중이에요… 준비되면 여기에 나타나요."
+            />
+          </p>
+        </CityCard>
+      )}
+    </div>
+  );
 }
 
 /** TTMIK full transcript — ordered lines rendered by kind. */

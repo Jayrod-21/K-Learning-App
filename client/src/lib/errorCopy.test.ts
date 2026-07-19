@@ -6,7 +6,12 @@
  * structured numeric retry_after) do.
  */
 import { describe, it, expect } from 'vitest';
-import { bookUploadErrorMessage, errorMessageFor, imageUploadErrorMessage } from './errorCopy';
+import {
+  audioUploadErrorMessage,
+  bookUploadErrorMessage,
+  errorMessageFor,
+  imageUploadErrorMessage,
+} from './errorCopy';
 import { ApiError } from '../services/api';
 
 const SERVER_PROSE =
@@ -251,5 +256,87 @@ describe('bookUploadErrorMessage', () => {
     ).toBe('Upload failed. Try again.');
     expect(bookUploadErrorMessage(new Error('raw internals'))).toBe('Upload failed. Try again.');
     expect(bookUploadErrorMessage(undefined)).toBe('Upload failed. Try again.');
+  });
+});
+
+describe('audioUploadErrorMessage (Track A A-4b)', () => {
+  it('never echoes server prose from an ApiError message', () => {
+    const cases = [
+      new ApiError(SERVER_PROSE, { status: 429, code: 'daily_cap_exceeded' }),
+      new ApiError(SERVER_PROSE, { status: 429, code: 'rate_limited', retryAfter: 9 }),
+      new ApiError(SERVER_PROSE, { status: 413, code: 'payload_too_large' }),
+      new ApiError(SERVER_PROSE, { status: 400, code: 'validation_error' }),
+      new ApiError(SERVER_PROSE, { status: 0, code: 'network' }),
+      new ApiError(SERVER_PROSE, { status: 500, code: 'server_error' }),
+    ];
+    for (const err of cases) {
+      expect(audioUploadErrorMessage(err)).not.toContain('unique constraint');
+      expect(audioUploadErrorMessage(err)).not.toBe(SERVER_PROSE);
+    }
+  });
+
+  it('splits the two 429s — short-window retry_after vs the daily audio caps', () => {
+    // The short-window limiter's 429 carries the structured retry_after —
+    // a seconds-scale wait; the copy must not say "tomorrow".
+    const limited = new ApiError('rate_limited: bucket exhausted', {
+      status: 429,
+      code: 'rate_limited',
+      retryAfter: 12,
+    });
+    expect(audioUploadErrorMessage(limited)).toBe(
+      'Rate-limited. Try again in about 12 seconds.',
+    );
+    // The per-user DAILY caps (transcription bytes + upload count, both
+    // Whisper-CPU cost controls) carry NO retry_after — that one IS
+    // "tomorrow". retryAfter presence is the only discriminator.
+    const cap = new ApiError('audio_daily_cap_exceeded: user 3', {
+      status: 429,
+      code: 'daily_cap_exceeded',
+    });
+    expect(audioUploadErrorMessage(cap)).toBe(
+      "You've hit today's audio limit. Try again tomorrow.",
+    );
+    // Same-code daily-cap shape (some paths reuse `rate_limited` without a
+    // retry_after) must still read as the daily cap.
+    const capSameCode = new ApiError('daily limit reached', {
+      status: 429,
+      code: 'rate_limited',
+    });
+    expect(audioUploadErrorMessage(capSameCode)).toBe(
+      "You've hit today's audio limit. Try again tomorrow.",
+    );
+  });
+
+  it('maps 413 / 400 / network to their fixed copy', () => {
+    expect(
+      audioUploadErrorMessage(
+        new ApiError('x', { status: 413, code: 'payload_too_large' }),
+      ),
+    ).toBe('That file is too large. Pick one under 100 MB.');
+    // 400 covers EVERY ValidationError the route throws (failed sniff, a
+    // disallowed mime, a bad title) — the copy must not single out the file.
+    expect(
+      audioUploadErrorMessage(
+        new ApiError('x', { status: 400, code: 'validation_error' }),
+      ),
+    ).toBe(
+      'That upload could not be processed. Check the file (MP3 or M4A) and the title, then try again.',
+    );
+    expect(
+      audioUploadErrorMessage(new ApiError('x', { status: 0, code: 'network' })),
+    ).toBe('Network unreachable. Check your connection and try again.');
+  });
+
+  it('falls back to the generic fixed copy for everything else', () => {
+    expect(
+      audioUploadErrorMessage(
+        new ApiError(SERVER_PROSE, { status: 500, code: 'server_error' }),
+      ),
+    ).toBe('Upload failed. Try again.');
+    expect(audioUploadErrorMessage(new Error('raw internals'))).toBe(
+      'Upload failed. Try again.',
+    );
+    expect(audioUploadErrorMessage('string')).toBe('Upload failed. Try again.');
+    expect(audioUploadErrorMessage(undefined)).toBe('Upload failed. Try again.');
   });
 });

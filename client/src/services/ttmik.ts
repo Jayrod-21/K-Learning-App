@@ -90,14 +90,18 @@ export async function getIyagiEpisode(
 }
 
 /**
- * The ONLY two app-relative shapes the server emits for `audioUrl`. A prefix
- * heuristic ("starts with `/` but not `//`") is bypassable — the browser and the
- * URL parser normalize a leading backslash or an embedded tab/newline into `//`,
- * so e.g. `"/\\evil.example/a.mp3"` would slip through and resolve to an attacker
- * origin. Anchoring to the exact route shapes (digits + literal segments only)
- * makes any off-origin / tampered `audioUrl` impossible to smuggle through.
+ * The ONLY three app-relative shapes the server emits for a playable audio
+ * path: the TTMIK/Iyagi corpus `audioUrl`s plus the My Audio track
+ * `streamUrl` (`/audio/tracks/:id/stream`, Track A A-4b — routes/audio.ts).
+ * A prefix heuristic ("starts with `/` but not `//`") is bypassable — the
+ * browser and the URL parser normalize a leading backslash or an embedded
+ * tab/newline into `//`, so e.g. `"/\\evil.example/a.mp3"` would slip
+ * through and resolve to an attacker origin. Anchoring to the exact route
+ * shapes (digits + literal segments only) makes any off-origin / tampered
+ * value impossible to smuggle through.
  */
-const AUDIO_URL_ALLOW = /^\/(?:ttmik\/lessons\/\d+\/\d+|iyagi\/episodes\/\d+)\/audio$/;
+const AUDIO_URL_ALLOW =
+  /^\/(?:ttmik\/lessons\/\d+\/\d+\/audio|iyagi\/episodes\/\d+\/audio|audio\/tracks\/\d+\/stream)$/;
 
 /**
  * Resolve a detail response's `audioUrl` into a playable `<audio src>`.

@@ -2338,6 +2338,101 @@ export interface IyagiEpisodeDetail {
   sentences: ListenSentence[];
 }
 
+// ── My Audio (Track A — user uploads + Whisper transcripts) ──────────────
+//
+// Domain shapes for the `/audio` routes (server/src/routes/audio.ts):
+// `POST /audio` (upload one mp3/m4a + enqueue transcription), `GET /audio`
+// (this user's sources + per-track transcript status — the polling surface),
+// `GET /audio/tracks/:id` (one owned track + its ordered transcript
+// segments), and `GET /audio/tracks/:id/stream` (Range-capable bytes the
+// `<audio>` element points at via `streamUrl`). The `GET /audio` wire is
+// snake_case (mapped in services/audio.ts); the track-detail and upload
+// responses are camelCase on the wire already.
+
+/**
+ * One track's transcription lifecycle (`audio_tracks.transcript_status`):
+ * `pending` → enqueued for the km-worker, `running` → Whisper in progress,
+ * then settles `done` (segments exist) or `failed`. The A-4b Listen UI polls
+ * `GET /audio` / `GET /audio/tracks/:id` while a track is `pending`/`running`.
+ * A track is PLAYABLE in every state — `streamUrl` serves the bytes whether
+ * or not transcription has settled.
+ */
+export type AudioTranscriptStatus = 'pending' | 'running' | 'done' | 'failed';
+
+/**
+ * Which pipeline created an audio source. User uploads are always
+ * `standalone_listening` (one source per upload, one track per source);
+ * `paired_reader`/`topik` are the offline corpus loader's shapes.
+ */
+export type AudioSourceKind = 'paired_reader' | 'standalone_listening' | 'topik';
+
+/** One track row inside a `GET /audio` source (play order = trackNumber).
+ *  The wire's internal `slug` is deliberately dropped by the service mapper
+ *  (no client use — the ExtractionRun field-dropping precedent). */
+export interface AudioTrackSummary {
+  id: number;
+  trackNumber: number;
+  /** Display title, or null (the detail/list UIs render fixed fallback copy). */
+  title: string | null;
+  byteSize: number;
+  /** Milliseconds, or null until the worker measures it. */
+  durationMs: number | null;
+  transcriptStatus: AudioTranscriptStatus;
+}
+
+/**
+ * One audio source (a set of tracks) from `GET /audio`, newest first. There
+ * is deliberately NO source-level status field — the server never settles
+ * `audio_sources.status` after enqueue, so per-track `transcriptStatus` is
+ * the only truthful progress signal (see routes/audio.ts's AudioSourceDTO
+ * note); clients derive any set-level rollup from `tracks[]`.
+ */
+export interface AudioSource {
+  id: number;
+  title: string;
+  kind: AudioSourceKind;
+  createdAt: string;
+  /** In play order. Empty only for a (corpus edge case) trackless source. */
+  tracks: AudioTrackSummary[];
+}
+
+/** One ordered transcript line; the [startMs, endMs] window is what a future
+ *  play-position highlight would key on. */
+export interface AudioSegment {
+  segmentNumber: number;
+  startMs: number;
+  endMs: number;
+  body: string;
+}
+
+/** `track` block of `GET /audio/tracks/:id`. `streamUrl` is the app-relative
+ *  sibling stream path (`/audio/tracks/:id/stream`) — resolved through
+ *  `buildAudioSrc`'s strict allow-list before it ever reaches an `<audio>`
+ *  element, exactly like the TTMIK/Iyagi `audioUrl`s. */
+export interface AudioTrackMeta {
+  id: number;
+  title: string | null;
+  transcriptStatus: AudioTranscriptStatus;
+  durationMs: number | null;
+  streamUrl: string;
+}
+
+/** Envelope of `GET /audio/tracks/:id`. A not-yet-transcribed track has
+ *  `segments: []` — a normal state the UI polls through, never an error. */
+export interface AudioTrackDetail {
+  track: AudioTrackMeta;
+  segments: AudioSegment[];
+}
+
+/** 201 body of `POST /audio` — the freshly created source/track/job triple.
+ *  `transcriptStatus` is always `pending` at upload time. */
+export interface AudioUploadResponse {
+  sourceId: number;
+  trackId: number;
+  jobId: number;
+  transcriptStatus: AudioTranscriptStatus;
+}
+
 // ─────────────────────────────────────────────────────────────
 // Per-skill trend series (F-017 — Today's "Progress by skill")
 // ─────────────────────────────────────────────────────────────

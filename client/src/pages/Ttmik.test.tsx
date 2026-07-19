@@ -41,6 +41,7 @@ import {
   logIyagiAttempt,
   logTtmikAttempt,
 } from '../services/ttmik';
+import { listMyAudio } from '../services/audio';
 import { mineWord } from '../services/vocab';
 import type {
   IyagiEpisode,
@@ -65,6 +66,18 @@ vi.mock('../services/lemmatize', () => ({ lemmatize: vi.fn() }));
 vi.mock('../services/define', () => ({ defineEntry: vi.fn() }));
 vi.mock('../services/enrich', () => ({ enrich: vi.fn() }));
 vi.mock('../services/vocab', () => ({ mineWord: vi.fn() }));
+// A-4b: the My Audio tile click-through below lands on MyAudioListing, whose
+// fetcher must be mocked (the deep My Audio behaviour lives in
+// MyAudio.test.tsx — here we only pin the tile → ?corpus=mine navigation).
+vi.mock('../services/audio', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/audio')>();
+  return {
+    ...actual,
+    uploadAudio: vi.fn(),
+    listMyAudio: vi.fn(),
+    getAudioTrack: vi.fn(),
+  };
+});
 
 // Import after the mocks so the page binds the mocked fetchers.
 import Ttmik from './Ttmik';
@@ -218,6 +231,7 @@ beforeEach(() => {
   vi.mocked(mineWord).mockReset();
   vi.mocked(logTtmikAttempt).mockReset();
   vi.mocked(logIyagiAttempt).mockReset();
+  vi.mocked(listMyAudio).mockReset().mockResolvedValue([]);
   // F-162: each test gets a clean scroll-restore slate — a saved position
   // from one test must never leak into the next.
   window.sessionStorage.clear();
@@ -230,7 +244,7 @@ describe('Ttmik page — landing (F-071)', () => {
     // The labelled grid list + its CSS hook (the 2-across layout keys on it).
     const grid = screen.getByRole('list', { name: 'Audio collections' });
     expect(grid).toHaveClass('km-ttmik__tiles');
-    expect(within(grid).getAllByRole('listitem')).toHaveLength(2);
+    expect(within(grid).getAllByRole('listitem')).toHaveLength(3);
 
     // One keyboard-operable button per collection, named by its content.
     expect(
@@ -239,10 +253,14 @@ describe('Ttmik page — landing (F-071)', () => {
     expect(
       within(grid).getByRole('button', { name: /Iyagi Episodes/ }),
     ).toBeInTheDocument();
+    expect(
+      within(grid).getByRole('button', { name: /My Audio/ }),
+    ).toBeInTheDocument();
 
-    // The landing is pure navigation — neither listing fetch fires.
+    // The landing is pure navigation — no listing fetch fires.
     expect(vi.mocked(getTtmikLessons)).not.toHaveBeenCalled();
     expect(vi.mocked(getIyagiEpisodes)).not.toHaveBeenCalled();
+    expect(vi.mocked(listMyAudio)).not.toHaveBeenCalled();
   });
 
   it('a tile is keyboard-operable: Enter opens the TTMIK listing', async () => {
@@ -273,6 +291,25 @@ describe('Ttmik page — landing (F-071)', () => {
     expect(within(ep143).getByText('No audio')).toBeInTheDocument();
   });
 
+  it('the My Audio tile opens the My Audio listing (?corpus=mine) — S3, the only user entry point', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole('button', { name: /My Audio/ }));
+
+    // The mine listing rendered: its fetch fired and the upload control +
+    // (empty-list) giwa state are on screen — both exist only under the
+    // `?corpus=mine` view, so this pins the tile's navigation target.
+    expect(
+      await screen.findByRole('button', { name: /Upload audio/ }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/No audio yet\./)).toBeInTheDocument();
+    expect(vi.mocked(listMyAudio)).toHaveBeenCalledTimes(1);
+    // The corpus listings did NOT fetch — the tile went to mine, not them.
+    expect(vi.mocked(getTtmikLessons)).not.toHaveBeenCalled();
+    expect(vi.mocked(getIyagiEpisodes)).not.toHaveBeenCalled();
+  });
+
   it('P3b: title, nav eyebrow, and listing level headings render Korean in both-mode', async () => {
     const user = userEvent.setup();
     renderPage();
@@ -291,7 +328,7 @@ describe('Ttmik page — landing (F-071)', () => {
     expect(screen.getAllByText('오디오').length).toBeGreaterThan(0);
   });
 
-  it('F-128: the landing tiles render as toned CityCard signboards — TTMIK blue, Iyagi mint', () => {
+  it('F-128: the landing tiles render as toned CityCard signboards — TTMIK blue, Iyagi mint, My Audio violet', () => {
     renderPage();
 
     const grid = screen.getByRole('list', { name: 'Audio collections' });
@@ -301,14 +338,19 @@ describe('Ttmik page — landing (F-071)', () => {
     const iyagiTile = screen
       .getByRole('button', { name: /Iyagi Episodes/ })
       .closest('.km-citycard');
+    const mineTile = screen
+      .getByRole('button', { name: /My Audio/ })
+      .closest('.km-citycard');
 
     expect(ttmikTile).not.toBeNull();
     expect(iyagiTile).not.toBeNull();
+    expect(mineTile).not.toBeNull();
     expect(ttmikTile).toHaveClass('km-tone--blue');
     expect(iyagiTile).toHaveClass('km-tone--mint');
-    // Both tiles still live inside the labelled grid — the CityCard wrapper
+    expect(mineTile).toHaveClass('km-tone--violet');
+    // All tiles still live inside the labelled grid — the CityCard wrapper
     // didn't replace the accessible list/listitem structure.
-    expect(within(grid).getAllByRole('listitem')).toHaveLength(2);
+    expect(within(grid).getAllByRole('listitem')).toHaveLength(3);
   });
 });
 

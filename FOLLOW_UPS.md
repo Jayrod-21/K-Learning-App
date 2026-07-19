@@ -394,3 +394,9 @@ one-liners "for the next touch of this file":
   clobber B's valid `'done'` → `'failed'`. Close it by adding `AND transcript_status = 'running'` to
   `_mark_track_failed`'s UPDATE. (The separate `JobSettledElsewhereError` except — the common case —
   is already handled and does not clobber.)
+
+## Track A A-4b My Audio — two optional poll-test follow-ups (from A-4b re-review, 2026-07-19)
+
+`client/src/pages/Ttmik.tsx` My Audio passed its 4-phase /fixpass (PASS, full suite 2322/0). Two low-risk test-coverage gaps the re-review noted — the CODE is verified correct by trace + the listing tests; only the detail-poll's own coverage is thin:
+- **A4B-1:** the `MY_AUDIO_POLL_MAX_TICKS=225` ceiling has a plateau test on the listing poll but not the DETAIL poll (same constant + structure, verified by reading). Add a detail-poll ceiling plateau test.
+- **A4B-2:** the transient-poll-failure retry branch ("a 5xx during a tick keeps the last-good data and the next tick retries") is asserted only by code comment, for both the listing and detail polls. Add a transient-error-then-recover test.
