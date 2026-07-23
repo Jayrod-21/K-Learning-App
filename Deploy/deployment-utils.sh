@@ -665,6 +665,97 @@ run_worker_once() {
 }
 
 # =============================================================================
+# run_audio_corpus_loader SET_DIR -- ARGS... — bulk-ingest one corpus audio set.
+# -----------------------------------------------------------------------------
+# Runs tools/audio_stt/load_audio_corpus.py (the operator analog of POST
+# /audio: audio_sources + audio_tracks + audio_transcription_jobs + blobs) in a
+# --rm container on km-internal. The already-running km-worker service then
+# drains the enqueued jobs — no worker restart, no GPU here, and no contention:
+# the loader upserts sources, INSERTs tracks/jobs, and makes guarded-safe
+# UPDATEs (a failed->pending track flip guarded on transcript_status='failed',
+# plus short per-track FOR UPDATE row locks), so it never touches a row the
+# worker owns; the worker claims with FOR UPDATE SKIP LOCKED.
+#
+# IMAGE: km-worker:${WORKER_IMAGE_TAG:-latest} — chosen because it is already
+# built on this host (the service is running from it) and has the loader's
+# entire dep set baked (python + psycopg + structlog). The CURRENT repo is
+# bind-mounted RO at /repo and used as the workdir (run_migrate's exact
+# maneuver), so the loader code that runs is the checkout's, NOT the image's
+# stale COPY — zero rebuild needed. Overriding the ENTRYPOINT is what turns
+# the worker image into a plain python runner for this one-off.
+#
+# MOUNTS: km_audio_uploads RW at /var/audio-uploads (this is the ONE writer
+# besides km-server — the worker mounts it RO); SET_DIR RO at /data (data
+# only ever crosses the mount read-only, run_loader's stance); repo RO.
+# AUTH: operator-plane POSTGRES_USER (run_loader's posture — this is a manual
+# corpus ingest, not an app-plane service).
+#
+#   run_audio_corpus_loader ~/data/korean-master/corpus/Folktales -- \
+#       --slug korean-folktales --title "Korean Folktales" --user 1 [--dry-run]
+#
+# `--set-dir /data` is supplied by the helper; pass everything else after
+# `--` (see the loader's --help: --slug/--title/--user required, --kind /
+# --dry-run / --limit optional). For a multi-set --manifest run, invoke
+# docker directly with the same mounts and a manifest whose set_dir values
+# are /data-relative container paths.
+# =============================================================================
+run_audio_corpus_loader() {
+    require_cmd docker
+    : "${POSTGRES_USER:?run_audio_corpus_loader: POSTGRES_USER not set (call load_environment)}"
+    : "${POSTGRES_PASSWORD:?run_audio_corpus_loader: POSTGRES_PASSWORD not set}"
+    : "${POSTGRES_DB:?run_audio_corpus_loader: POSTGRES_DB not set}"
+
+    local set_dir="${1:-}"
+    if [[ -z "$set_dir" ]]; then
+        log_err "run_audio_corpus_loader: usage: run_audio_corpus_loader SET_DIR -- --slug S --title T --user N [...]"
+        return 2
+    fi
+    shift
+    if [[ "${1:-}" == "--" ]]; then
+        shift
+    fi
+    if [[ $# -eq 0 ]]; then
+        log_err "run_audio_corpus_loader: no loader args after '--' (need at least --slug/--title/--user)."
+        return 2
+    fi
+    if [[ ! -d "$set_dir" ]]; then
+        log_err "run_audio_corpus_loader: set dir not found: ${set_dir}"
+        return 1
+    fi
+    local set_abs
+    set_abs="$(cd "$set_dir" && pwd -P)"
+
+    local worker_image="km-worker:${WORKER_IMAGE_TAG:-latest}"
+    # Host-built (see build_worker) — and guaranteed present wherever the
+    # km-worker service is running, which is exactly where this helper is for.
+    if ! docker image inspect "$worker_image" >/dev/null 2>&1; then
+        log_err "run_audio_corpus_loader: image ${worker_image} not found locally."
+        log_err "It is the km-worker image (built on this host — see build_worker)."
+        return 1
+    fi
+    # Never auto-create the shared volume unlabeled (run_worker_once's guard).
+    if ! docker volume inspect km_audio_uploads >/dev/null 2>&1; then
+        log_err "run_audio_corpus_loader: volume km_audio_uploads not found. Run ensure-shared-volume.sh first (the single labeled creator)."
+        return 1
+    fi
+
+    local container_dsn="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@km-db:5432/${POSTGRES_DB}"
+
+    log_info "run_audio_corpus_loader: ${worker_image} (set=${set_abs}) -> ${*}"
+    docker run --rm \
+        --network km-internal \
+        -v "${REPO_ROOT}:/repo:ro" \
+        -w /repo \
+        -v km_audio_uploads:/var/audio-uploads:rw \
+        -v "${set_abs}:/data:ro" \
+        -e DATABASE_URL="$container_dsn" \
+        -e AUDIO_UPLOAD_STORAGE_DIR=/var/audio-uploads \
+        --entrypoint /opt/venv/bin/python \
+        "$worker_image" \
+        -m tools.audio_stt.load_audio_corpus --set-dir /data "$@"
+}
+
+# =============================================================================
 # verify_worker — post-standup assertion that km-worker is actually serving.
 # -----------------------------------------------------------------------------
 # WHY: docker-compose.shared.yml deliberately runs km-worker with
