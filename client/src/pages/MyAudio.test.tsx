@@ -88,6 +88,48 @@ const SETTLED_SOURCES: AudioSource[] = [
 
 const PENDING_SOURCES: AudioSource[] = [source(3, '새 녹음', 'pending', 77)];
 
+/** One track row for a multi-track (corpus-loaded) source. */
+function trk(
+  id: number,
+  trackNumber: number,
+  title: string | null,
+  status: AudioSource['tracks'][number]['transcriptStatus'],
+): AudioSource['tracks'][number] {
+  return {
+    id,
+    trackNumber,
+    title,
+    byteSize: 1_000_000,
+    durationMs: null,
+    transcriptStatus: status,
+  };
+}
+
+/** A multi-track set — the corpus-loaded shape the listing must route to the
+ *  track-list view rather than straight to `tracks[0]`. Track 3 has a null
+ *  title to exercise the `Track N` fallback label. All settled → no poll. */
+const MULTI_SOURCE: AudioSource = {
+  id: 5,
+  title: 'TTMIK Level 1',
+  kind: 'standalone_listening',
+  createdAt: '2026-07-27T00:00:00Z',
+  tracks: [
+    trk(51, 1, 'Intro', 'done'),
+    trk(52, 2, 'Track 02', 'done'),
+    trk(53, 3, null, 'done'),
+  ],
+};
+
+/** Same set with an unsettled track — for the source-view poll test. */
+const MULTI_SOURCE_PENDING: AudioSource = {
+  ...MULTI_SOURCE,
+  tracks: [
+    trk(51, 1, 'Intro', 'done'),
+    trk(52, 2, 'Track 02', 'running'),
+    trk(53, 3, null, 'pending'),
+  ],
+};
+
 /** Segments deliberately OUT of order — the page must sort by segmentNumber. */
 const DETAIL_DONE: AudioTrackDetail = {
   track: {
@@ -704,5 +746,294 @@ describe('My Audio — track detail', () => {
       }),
     ).toBeInTheDocument();
     expect(document.querySelector('audio')).toBeNull();
+  });
+});
+
+describe('My Audio — source (track list, multi-track corpus sets)', () => {
+  it('a single-track upload still opens its player directly (no middle list)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    // The single-track row keeps its "Open audio:" label and its date meta —
+    // clicking it lands on the track player, never a one-row track list.
+    await user.click(
+      await screen.findByRole('button', {
+        name: 'Open audio: 팟캐스트 1화 (Ready)',
+      }),
+    );
+    expect(
+      await screen.findByRole('heading', { name: '팟캐스트 1화' }),
+    ).toBeInTheDocument();
+    expect(vi.mocked(getAudioTrack)).toHaveBeenCalledWith(
+      34,
+      expect.any(AbortSignal),
+    );
+  });
+
+  it('a multi-track source renders a "set" row (track count, not a date) that opens the track list', async () => {
+    const user = userEvent.setup();
+    vi.mocked(listMyAudio).mockResolvedValue([MULTI_SOURCE]);
+    renderPage();
+
+    const setRow = await screen.findByRole('button', {
+      // Rollup pill = Ready (all tracks done); the label announces "set" +
+      // count so AT knows it opens a list, not a player.
+      name: 'Open audio set: TTMIK Level 1, 3 tracks (Ready)',
+    });
+    expect(within(setRow).getByText('3 tracks')).toBeInTheDocument();
+    // A set row must NOT fire a track fetch — it navigates to the list.
+    await user.click(setRow);
+
+    expect(
+      await screen.findByRole('heading', { name: 'TTMIK Level 1' }),
+    ).toBeInTheDocument();
+    // One row per track, in play order, with per-track pills; track 3's null
+    // title falls back to "Track 3".
+    expect(
+      screen.getByRole('button', { name: 'Open track 1: Intro (Ready)' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Open track 2: Track 02 (Ready)' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Open track 3: Track 3 (Ready)' }),
+    ).toBeInTheDocument();
+    expect(vi.mocked(getAudioTrack)).not.toHaveBeenCalled();
+  });
+
+  it('opening a track from the list navigates to that track detail, and Back returns to the SOURCE list', async () => {
+    const user = userEvent.setup();
+    vi.mocked(listMyAudio).mockResolvedValue([MULTI_SOURCE]);
+    renderPage('/learn/listen?corpus=mine&source=5');
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Open track 2: Track 02 (Ready)' }),
+    );
+
+    // getAudioTrack fired for THAT track (id 52) — the detail loaded.
+    expect(vi.mocked(getAudioTrack)).toHaveBeenCalledWith(
+      52,
+      expect.any(AbortSignal),
+    );
+    await screen.findByRole('heading', { name: '팟캐스트 1화' });
+
+    // The click-through carried source.id in the track path — Back must
+    // land on the SOURCE's track list (heading + track rows), NOT the flat
+    // listing. A regression dropping source.id from
+    // `myAudioTrackPath(track.id, source.id)` fails here.
+    await user.click(screen.getByRole('button', { name: 'Back to My Audio' }));
+    expect(
+      await screen.findByRole('heading', { name: 'TTMIK Level 1' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Open track 1: Intro (Ready)' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /Open audio set:/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('an initial list failure in the source view renders fixed-copy ErrorCard with a working Retry (no server prose)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(listMyAudio)
+      .mockRejectedValueOnce(
+        new ApiError('boom internal', { status: 500, code: 'server_error' }),
+      )
+      .mockResolvedValueOnce([MULTI_SOURCE]);
+    renderPage('/learn/listen?corpus=mine&source=5');
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/Could not load this audio set\./);
+    expect(alert).not.toHaveTextContent(/boom internal/);
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(
+      await screen.findByRole('button', {
+        name: 'Open track 1: Intro (Ready)',
+      }),
+    ).toBeInTheDocument();
+    expect(vi.mocked(listMyAudio)).toHaveBeenCalledTimes(2);
+  });
+
+  it('the source-view BackButton returns to the My Audio listing', async () => {
+    const user = userEvent.setup();
+    vi.mocked(listMyAudio).mockResolvedValue([MULTI_SOURCE]);
+    renderPage('/learn/listen?corpus=mine&source=5');
+    await screen.findByRole('heading', { name: 'TTMIK Level 1' });
+
+    await user.click(screen.getByRole('button', { name: 'Back to My Audio' }));
+
+    // Back at the flat listing — the "set" row is the listing surface.
+    expect(
+      await screen.findByRole('button', {
+        name: 'Open audio set: TTMIK Level 1, 3 tracks (Ready)',
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it('a track opened THROUGH a source goes BACK to that source list, not the flat listing', async () => {
+    const user = userEvent.setup();
+    vi.mocked(listMyAudio).mockResolvedValue([MULTI_SOURCE]);
+    // Deep link carrying both — the source rides along for back-nav.
+    renderPage('/learn/listen?corpus=mine&source=5&track=51');
+
+    // Track detail first (track wins over source in the parse).
+    await screen.findByRole('heading', { name: '팟캐스트 1화' });
+    expect(vi.mocked(getAudioTrack)).toHaveBeenCalledWith(
+      51,
+      expect.any(AbortSignal),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Back to My Audio' }));
+
+    // Back lands on the SOURCE's track list (heading + track rows), NOT the
+    // flat listing (no "set" row here).
+    expect(
+      await screen.findByRole('heading', { name: 'TTMIK Level 1' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Open track 1: Intro (Ready)' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /Open audio set:/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('a well-formed but unknown ?source= shows the uniform not-found (never an error card)', async () => {
+    // The list resolves fine; the id is simply not among the user's sources.
+    vi.mocked(listMyAudio).mockResolvedValue(SETTLED_SOURCES);
+    renderPage('/learn/listen?corpus=mine&source=999');
+
+    expect(
+      await screen.findByText("That audio set couldn't be found."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('a malformed ?source= falls back to the My Audio listing, never into a source view', async () => {
+    renderPage('/learn/listen?corpus=mine&source=abc');
+
+    expect(
+      await screen.findByRole('button', {
+        name: 'Open audio: 팟캐스트 1화 (Ready)',
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it('the source view polls while a track is unsettled and stops once the set settles', async () => {
+    vi.useFakeTimers();
+    vi.mocked(listMyAudio)
+      .mockResolvedValueOnce([MULTI_SOURCE_PENDING]) // initial — has unsettled
+      .mockResolvedValueOnce([MULTI_SOURCE]) // poll tick 1 — all settle
+      .mockResolvedValue([MULTI_SOURCE]); // safety
+    renderPage('/learn/listen?corpus=mine&source=5');
+    await flushAsync();
+
+    // Track 2 is Transcribing, track 3 Queued.
+    expect(
+      screen.getByRole('button', {
+        name: 'Open track 2: Track 02 (Transcribing)',
+      }),
+    ).toBeInTheDocument();
+    expect(vi.mocked(listMyAudio)).toHaveBeenCalledTimes(1);
+
+    await flushAsync(4000);
+    expect(
+      screen.getByRole('button', { name: 'Open track 2: Track 02 (Ready)' }),
+    ).toBeInTheDocument();
+    expect(vi.mocked(listMyAudio)).toHaveBeenCalledTimes(2);
+
+    // All settled → the source-view poll stopped itself.
+    await flushAsync(12_000);
+    expect(vi.mocked(listMyAudio)).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
+  it('unmounting the source view clears its poll interval — no timer leak, no late fetch', async () => {
+    vi.useFakeTimers();
+    vi.mocked(listMyAudio).mockResolvedValue([MULTI_SOURCE_PENDING]);
+    const { unmount } = renderPage('/learn/listen?corpus=mine&source=5');
+    await flushAsync();
+    expect(vi.mocked(listMyAudio)).toHaveBeenCalledTimes(1);
+
+    unmount();
+    await flushAsync(12_000);
+    expect(vi.mocked(listMyAudio)).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('unmounting the source view aborts the in-flight poll REQUEST itself, not just the interval', async () => {
+    vi.useFakeTimers();
+    const signals: AbortSignal[] = [];
+    vi.mocked(listMyAudio)
+      .mockImplementationOnce((signal?: AbortSignal) => {
+        if (signal !== undefined) signals.push(signal);
+        return Promise.resolve([MULTI_SOURCE_PENDING]);
+      })
+      .mockImplementation((signal?: AbortSignal) => {
+        if (signal !== undefined) signals.push(signal);
+        // Hangs — the tick is still in flight when the unmount happens.
+        return new Promise<AudioSource[]>(() => {});
+      });
+    const { unmount } = renderPage('/learn/listen?corpus=mine&source=5');
+    await flushAsync();
+    await flushAsync(4000); // tick 1 fires and hangs in flight
+    expect(signals).toHaveLength(2);
+    expect(signals[1]!.aborted).toBe(false);
+
+    unmount();
+    // The cleanup must abort the in-flight tick's signal, not only clear
+    // the interval — a hung request left un-aborted would still occupy the
+    // connection and could land a late setState on a dead component.
+    expect(signals[1]!.aborted).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it('a source stuck unsettled stops polling at the attempt ceiling — bounded churn', async () => {
+    vi.useFakeTimers();
+    // Stuck 'pending'/'running' forever (dead worker) — never settles.
+    vi.mocked(listMyAudio).mockResolvedValue([MULTI_SOURCE_PENDING]);
+    renderPage('/learn/listen?corpus=mine&source=5');
+    await flushAsync();
+    expect(vi.mocked(listMyAudio)).toHaveBeenCalledTimes(1);
+
+    // MY_AUDIO_POLL_MAX_TICKS = 225 (15 min at 4 s). Advance past the whole
+    // budget: exactly 225 poll fetches on top of the initial load, then the
+    // ceiling clears the interval.
+    await flushAsync(4000 * 230);
+    expect(vi.mocked(listMyAudio)).toHaveBeenCalledTimes(226);
+
+    // Well past the ceiling — the poll is genuinely stopped, not just slow.
+    await flushAsync(40_000);
+    expect(vi.mocked(listMyAudio)).toHaveBeenCalledTimes(226);
+    vi.useRealTimers();
+  });
+
+  it('a source that vanishes mid-poll goes terminal not-found and the poll stops', async () => {
+    vi.useFakeTimers();
+    vi.mocked(listMyAudio)
+      .mockResolvedValueOnce([MULTI_SOURCE_PENDING]) // initial — unsettled
+      .mockResolvedValueOnce([]) // poll tick 1 — the source vanished
+      .mockResolvedValue([MULTI_SOURCE_PENDING]); // safety — must never be reached
+    renderPage('/learn/listen?corpus=mine&source=5');
+    await flushAsync();
+    expect(
+      screen.getByRole('button', {
+        name: 'Open track 2: Track 02 (Transcribing)',
+      }),
+    ).toBeInTheDocument();
+    expect(vi.mocked(listMyAudio)).toHaveBeenCalledTimes(1);
+
+    await flushAsync(4000);
+    expect(
+      screen.getByText("That audio set couldn't be found."),
+    ).toBeInTheDocument();
+    expect(vi.mocked(listMyAudio)).toHaveBeenCalledTimes(2);
+
+    // Terminal (mirrors the track detail's mid-poll 404): no further hits
+    // on a list that no longer holds the source.
+    await flushAsync(12_000);
+    expect(vi.mocked(listMyAudio)).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
   });
 });
