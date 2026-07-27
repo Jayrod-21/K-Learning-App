@@ -415,7 +415,8 @@ type ListenView =
   | { kind: 'landing' }
   | { kind: 'list'; corpus: Corpus }
   | { kind: 'detail'; selection: Selection }
-  | { kind: 'mineTrack'; trackId: number };
+  | { kind: 'mineSource'; sourceId: number }
+  | { kind: 'mineTrack'; trackId: number; sourceId: number | null };
 
 /**
  * Bounded positive-int parser for untrusted search params. Digits only
@@ -475,11 +476,18 @@ function parseListenView(params: URLSearchParams): ListenView {
     return { kind: 'list', corpus: 'iyagi' };
   }
   if (corpus === 'mine') {
-    // Same fall-back-UP-the-hierarchy contract: a malformed `track` lands on
-    // the My Audio listing, never in a fetch with an attacker-shaped id.
+    // Same fall-back-UP-the-hierarchy contract: a malformed `track`/`source`
+    // lands on the My Audio listing, never in a fetch with an attacker-shaped
+    // id. `track` is the DEEPER view so it wins when both are present; its
+    // (optional, may be malformed→null) `source` rides along ONLY so the
+    // track detail's "back" can return to that source's track list.
     const track = parsePositiveId(params.get('track'));
+    const source = parsePositiveId(params.get('source'));
     if (track !== null) {
-      return { kind: 'mineTrack', trackId: track };
+      return { kind: 'mineTrack', trackId: track, sourceId: source };
+    }
+    if (source !== null) {
+      return { kind: 'mineSource', sourceId: source };
     }
     return { kind: 'list', corpus: 'mine' };
   }
@@ -496,8 +504,18 @@ function lessonPath(lesson: Pick<TtmikLesson, 'level' | 'number'>): string {
 function episodePath(number: number): string {
   return `${listPath('iyagi')}&episode=${String(number)}`;
 }
-function myAudioTrackPath(trackId: number): string {
-  return `${listPath('mine')}&track=${String(trackId)}`;
+function myAudioSourcePath(sourceId: number): string {
+  return `${listPath('mine')}&source=${String(sourceId)}`;
+}
+/** Track detail URL. When `sourceId` is given (navigation came THROUGH a
+ *  source's track list) it rides along so the detail's "back" can return to
+ *  that list — the track-detail payload carries no source id of its own. A
+ *  bare form (upload / deep link) omits it and "back" goes to the listing. */
+function myAudioTrackPath(trackId: number, sourceId?: number): string {
+  const base = listPath('mine');
+  return sourceId !== undefined
+    ? `${base}&source=${String(sourceId)}&track=${String(trackId)}`
+    : `${base}&track=${String(trackId)}`;
 }
 
 export default function Ttmik(): JSX.Element {
@@ -515,10 +533,21 @@ export default function Ttmik(): JSX.Element {
     back = (
       <BackButton to={listPath(corpus)} label={COLLECTION_LABEL[corpus]} />
     );
+  } else if (view.kind === 'mineSource') {
+    back = <BackButton to={listPath('mine')} label={COLLECTION_LABEL.mine} />;
   } else if (view.kind === 'mineTrack') {
-    back = (
-      <BackButton to={listPath('mine')} label={COLLECTION_LABEL.mine} />
-    );
+    // Back to the source's track list when we arrived through one (the URL
+    // carried a well-formed `source`); otherwise — a bare deep link or an
+    // in-app upload — back to the My Audio listing.
+    back =
+      view.sourceId !== null ? (
+        <BackButton
+          to={myAudioSourcePath(view.sourceId)}
+          label={COLLECTION_LABEL.mine}
+        />
+      ) : (
+        <BackButton to={listPath('mine')} label={COLLECTION_LABEL.mine} />
+      );
   }
 
   return (
@@ -543,6 +572,14 @@ export default function Ttmik(): JSX.Element {
       ) : null}
       {view.kind === 'list' && view.corpus === 'mine' ? (
         <MyAudioListing />
+      ) : null}
+      {view.kind === 'mineSource' ? (
+        // Keyed on the source id — opening a different set remounts fresh
+        // (fresh fetch, fresh poll), mirroring the track detail's contract.
+        <MyAudioSourceDetail
+          key={`mineSource:${String(view.sourceId)}`}
+          sourceId={view.sourceId}
+        />
       ) : null}
       {view.kind === 'mineTrack' ? (
         // Keyed on the track id — a different track remounts fresh (fresh
@@ -2215,7 +2252,15 @@ function MyAudioListing(): JSX.Element {
         <Card className="km-reference__list" variant="flat">
           <ul aria-label="Your audio">
             {sources.map((source) => {
-              const track = source.tracks[0];
+              const trackCount = source.tracks.length;
+              const firstTrack = source.tracks[0];
+              // Multi-track sources are corpus-loaded sets (a TTMIK level, a
+              // TOPIK mock test, a folktale collection); every in-app upload
+              // is single-track. Single-track opens the player directly (no
+              // needless one-row middle list — the pre-existing upload UX);
+              // multi-track opens its track list first. Trackless (a corpus
+              // edge case) stays non-navigable.
+              const isSet = trackCount > 1;
               const status = TRANSCRIPT_STATUS_META[sourceStatus(source)];
               return (
                 <li
@@ -2226,14 +2271,22 @@ function MyAudioListing(): JSX.Element {
                     type="button"
                     className="km-resources__list-open focusring"
                     onClick={() => {
-                      if (track === undefined) return;
-                      void navigate(myAudioTrackPath(track.id));
+                      if (isSet) {
+                        void navigate(myAudioSourcePath(source.id));
+                      } else if (firstTrack !== undefined) {
+                        void navigate(myAudioTrackPath(firstTrack.id));
+                      }
                     }}
-                    disabled={track === undefined}
+                    disabled={firstTrack === undefined}
                     // aria-label replaces the subtree name, so the status
                     // pill's state must travel inside it (the SF-2 fold-in
-                    // the corpus rows above use).
-                    aria-label={`Open audio: ${source.title} (${status.en})`}
+                    // the corpus rows above use). A set announces its track
+                    // count so AT distinguishes "opens a list" from "plays".
+                    aria-label={
+                      isSet
+                        ? `Open audio set: ${source.title}, ${String(trackCount)} tracks (${status.en})`
+                        : `Open audio: ${source.title} (${status.en})`
+                    }
                   >
                     <span className="kr km-reference__row-kr">
                       {source.title}
@@ -2242,13 +2295,236 @@ function MyAudioListing(): JSX.Element {
                       <Bilingual en={status.en} kr={status.kr} compact />
                     </Pill>
                     <span className="km-resources__pager-count">
-                      {formatAudioDate(source.createdAt)}
+                      {isSet
+                        ? `${String(trackCount)} tracks`
+                        : formatAudioDate(source.createdAt)}
                     </span>
                   </button>
                 </li>
               );
             })}
           </ul>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One audio SOURCE's track list — the middle level between the My Audio
+ * listing and a single track's player. Corpus-loaded sources hold many
+ * tracks (a TTMIK level, a TOPIK mock test, a folktale collection); this
+ * view lists them in play order with live per-track status pills, each row
+ * opening that track's player + transcript. In-app uploads are single-track
+ * and skip this level (the listing opens their player directly).
+ *
+ * Data comes from the SAME `GET /audio` the listing uses, narrowed to this
+ * source id — there is no single-source endpoint, and the source set is
+ * small (server caps it at 50) so re-fetching all of it is cheap and keeps
+ * the view deep-linkable (a bookmarked `?corpus=mine&source=<id>` resolves
+ * without router state). Corollary of that cap: a deep-linked source that
+ * exists but has aged beyond the server's most-recent-50 window reads as
+ * not-found here — the same invisibility it has in the listing; a
+ * `GET /audio/sources/:id` endpoint is the fix if source counts ever grow
+ * past the cap. Polls while any of THIS source's tracks is
+ * unsettled, with the listing's stop/cleanup/abort-before-fetch contract; a
+ * source that vanishes resolves to the uniform not-found state (terminal,
+ * like the track detail's mid-poll 404).
+ */
+function MyAudioSourceDetail({
+  sourceId,
+}: {
+  sourceId: number;
+}): JSX.Element {
+  const navigate = useNavigate();
+  const [source, setSource] = useState<AudioSource | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
+  const ctrlRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    ctrlRef.current?.abort();
+    ctrlRef.current = ctrl;
+    // Sync-to-external-system (network fetch) — same documented exception
+    // as every other kickoff setState on this page.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setLoading(true);
+    setError(null);
+    setNotFound(false);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    listMyAudio(ctrl.signal)
+      .then((rows) => {
+        if (ctrl.signal.aborted) return;
+        const found = rows.find((s) => s.id === sourceId) ?? null;
+        setSource(found);
+        // A well-formed id that is not among the user's sources reads as the
+        // uniform not-found (deleted, or never theirs) — never an error card.
+        setNotFound(found === null);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setError(errorMessageFor(err, 'Could not load this audio set.'));
+        setLoading(false);
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [sourceId, reloadTick]);
+
+  const refetch = useCallback(() => {
+    setReloadTick((t) => t + 1);
+  }, []);
+
+  // Poll while any of THIS source's tracks is unsettled — the listing's poll
+  // contract (STOP CONDITIONS: settle / unmount / attempt ceiling), plus the
+  // track detail's terminal-not-found: a source gone mid-poll stops NOW and
+  // shows not-found rather than hammering a list that no longer holds it.
+  const unsettled =
+    source !== null &&
+    source.tracks.some((t) => isUnsettled(t.transcriptStatus));
+  const pollTickCtrlRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    if (!unsettled || error !== null || notFound) return;
+    let ticks = 0; // effect-local — every (re)start gets a fresh budget
+    const id = window.setInterval(() => {
+      ticks += 1;
+      if (ticks > MY_AUDIO_POLL_MAX_TICKS) {
+        window.clearInterval(id);
+        return;
+      }
+      pollTickCtrlRef.current?.abort();
+      const ctrl = new AbortController();
+      pollTickCtrlRef.current = ctrl;
+      listMyAudio(ctrl.signal)
+        .then((rows) => {
+          if (ctrl.signal.aborted) return;
+          const found = rows.find((s) => s.id === sourceId) ?? null;
+          if (found === null) {
+            // Source gone mid-poll — terminal (mirror the track detail).
+            window.clearInterval(id);
+            setNotFound(true);
+            return;
+          }
+          setSource(found);
+        })
+        .catch((err: unknown) => {
+          if (ctrl.signal.aborted) return;
+          if (err instanceof ApiError && err.code === 'canceled') return;
+          // Transient poll failure — keep the list on screen, next tick
+          // retries; a background refresh never replaces it with an error.
+        });
+    }, MY_AUDIO_POLL_MS);
+    return () => {
+      window.clearInterval(id);
+      pollTickCtrlRef.current?.abort();
+      pollTickCtrlRef.current = null;
+    };
+  }, [unsettled, sourceId, error, notFound]);
+
+  // F-162: same scroll restore as the listings, keyed per-source so
+  // different sets don't cross-bleed positions.
+  const scrollRootRef = useListScrollRestore(
+    `${LISTEN_SCROLL_KEY.mine}:src:${String(sourceId)}`,
+    !loading,
+  );
+
+  // Defensive ordinal sort (the page's list stance — the server already
+  // orders tracks by track_number).
+  const orderedTracks = useMemo(
+    () =>
+      source !== null
+        ? [...source.tracks].sort((a, b) => a.trackNumber - b.trackNumber)
+        : [],
+    [source],
+  );
+
+  if (loading) return <SkeletonCard />;
+  if (notFound) {
+    return (
+      <p
+        className="km-reference__empty km-giwa km-hangul-watermark"
+        data-glyph="오디오"
+      >
+        <Bilingual
+          en="That audio set couldn't be found."
+          kr="해당 오디오 모음을 찾을 수 없어요."
+        />
+      </p>
+    );
+  }
+  if (error !== null || source === null) {
+    return (
+      <ErrorCard
+        message={error ?? 'Could not load this audio set.'}
+        onRetry={refetch}
+      />
+    );
+  }
+
+  return (
+    <div ref={scrollRootRef}>
+      <Eyebrow>
+        <Bilingual en="My Audio" kr="내 오디오" />
+      </Eyebrow>
+      <h2 className="kr kr-display" style={{ margin: '4px 0 6px' }}>
+        {source.title}
+      </h2>
+      {orderedTracks.length === 0 ? (
+        <p
+          className="km-reference__empty km-giwa km-hangul-watermark"
+          data-glyph="오디오"
+        >
+          <Bilingual
+            en="This set has no tracks yet."
+            kr="이 모음에는 아직 트랙이 없어요."
+          />
+        </p>
+      ) : (
+        <Card className="km-reference__list" variant="flat">
+          <ol
+            aria-label={`Tracks in ${source.title}`}
+            style={{ listStyle: 'none', margin: 0, padding: 0 }}
+          >
+            {orderedTracks.map((track) => {
+              const status = TRANSCRIPT_STATUS_META[track.transcriptStatus];
+              const label =
+                track.title ?? `Track ${String(track.trackNumber)}`;
+              return (
+                <li
+                  key={`track:${String(track.id)}`}
+                  className="km-reference__row"
+                >
+                  <button
+                    type="button"
+                    className="km-resources__list-open focusring"
+                    onClick={() => {
+                      // Carry the source so the track detail's "back" returns
+                      // here, not to the flat listing.
+                      void navigate(myAudioTrackPath(track.id, source.id));
+                    }}
+                    // Status folded into the label (the SF-2 fold-in idiom).
+                    aria-label={`Open track ${String(track.trackNumber)}: ${label} (${status.en})`}
+                  >
+                    <span
+                      className="km-resources__pager-count"
+                      style={{ minWidth: '2.25em' }}
+                    >
+                      {String(track.trackNumber)}
+                    </span>
+                    <span className="kr km-reference__row-kr">{label}</span>
+                    <Pill tone={status.tone}>
+                      <Bilingual en={status.en} kr={status.kr} compact />
+                    </Pill>
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
         </Card>
       )}
     </div>
