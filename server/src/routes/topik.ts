@@ -7,6 +7,8 @@
  *   POST /topik/mock/submit    → bulk server-graded mock scoring (one tx, append log)
  *   POST /topik/study          → a shuffled cross-test draw matching a filter
  *   POST /topik/:itemId/answer → grade a pick, log the attempt, reveal the answer
+ *   GET  /topik/audio/:testNumber/:level → a paper's official listening MP3
+ *                                (Range-capable stream — F-119 Phase 4)
  *
  * SECURITY (see SECURITY.md §14):
  *   - TOPIK items are PUBLIC reference data. This is a study tool, not a secured
@@ -31,11 +33,12 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { getUserId, requireAuth } from '../middleware/auth.js';
-import { cheapLimiter } from '../middleware/rateLimits.js';
+import { cheapLimiter, mediaLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { query, withTransaction } from '../db/pool.js';
 import { NotFoundError } from '../middleware/errors.js';
 import { sharedPassageFor } from '../services/topik/passages.js';
+import { streamCorpusAudio } from '../services/corpusAudio.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -639,6 +642,90 @@ router.get('/tests', cheapLimiter(), validateQuery(TestsQuerySchema), async (req
     }));
 
     res.status(200).json({ tests, total });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /topik/audio/:testNumber/:level — official listening MP3 (F-119 Phase 4)
+// ---------------------------------------------------------------------------
+
+/** URL level discriminator → topik_tests.topik_level. Anything else → 404. */
+const TOPIK_AUDIO_LEVELS: Readonly<Record<string, TopikLevel>> = {
+  '1': 'TOPIK I',
+  '2': 'TOPIK II',
+};
+
+/**
+ * Resolve a raw `:level` path segment to a topik_level, or undefined (→ the
+ * uniform 404). Object.hasOwn first: TOPIK_AUDIO_LEVELS is a plain object
+ * literal, so a bare index with a prototype-chain key ('constructor',
+ * '__proto__', 'toString') would return a non-undefined INHERITED value and
+ * defeat an `=== undefined` guard — pg would then coerce that Function/object
+ * to text and the query would (today) just match zero rows, but correctness
+ * must not rest on pg's coercion of a prototype object. Exported ONLY for the
+ * unit test that pins this hardening (the slip is not observable over HTTP —
+ * see topik.audio.test.ts).
+ */
+export function resolveTopikAudioLevel(level: string | undefined): TopikLevel | undefined {
+  const key = level ?? '';
+  return Object.hasOwn(TOPIK_AUDIO_LEVELS, key) ? TOPIK_AUDIO_LEVELS[key] : undefined;
+}
+
+// Positive int, capped at int4 (test_number is INTEGER — an overflowing path
+// value must die at the boundary, never reach pg as a 22003 → 500).
+const TopikAudioTestNumberSchema = z.coerce.number().int().positive().max(INT4_MAX);
+
+/**
+ * GET /topik/audio/:testNumber/:level — stream a paper's whole-section
+ * official listening MP3 (F-119 Phase 4; plan §7). `:level` ∈ {1, 2} maps to
+ * 'TOPIK I'/'TOPIK II' (the migration-029 natural key needs it — TOPIK I/II
+ * sittings share every test_number, D-1); the section is pinned to
+ * 'listening' (the only section with audio).
+ *
+ * Semantics + posture:
+ *   - UNIFORM 404 for everything that isn't a streamable paper: a malformed
+ *     testNumber/level, an unknown paper, and a paper with no audio mapped
+ *     (audio_path NULL) are all indistinguishable NotFoundErrors — the
+ *     message here MUST stay byte-identical to corpusAudio.ts's
+ *     ('no audio for this unit') so the wire body never distinguishes a
+ *     malformed URL from a missing paper/file — this surface confirms
+ *     nothing about what papers/files exist, and a garbage URL can never
+ *     produce a 500. (Deliberate deviation from the 400-on-validation
+ *     convention: unlike a POST body, a bad path segment here is just a
+ *     resource that does not exist.)
+ *   - NON-user-scoped BY DESIGN: like /ttmik and /iyagi audio (and unlike
+ *     Track A's IDOR-guarded user /audio surface), the official exam MP3s are
+ *     shared licensed corpus content — requireAuth (router-level) is the only
+ *     gate, there is no per-user ownership to check.
+ *   - mediaLimiter, not cheapLimiter: seeking audio legitimately fires bursts
+ *     of Range requests (the ttmik/iyagi audio-route precedent).
+ *   - Path resolution + traversal/symlink defenses + Range mechanics live in
+ *     services/corpusAudio.ts (shared with TTMIK/Iyagi — one hardened
+ *     streamer, no drift).
+ */
+router.get('/audio/:testNumber/:level', mediaLimiter(), async (req, res, next) => {
+  try {
+    const testNumber = TopikAudioTestNumberSchema.safeParse(req.params.testNumber);
+    // noUncheckedIndexedAccess types req.params.level string | undefined; an
+    // absent segment can't match a level and falls into the uniform 404.
+    // resolveTopikAudioLevel is own-property-guarded (Object.hasOwn) so a
+    // prototype-chain key ('constructor', '__proto__', 'toString') 404s here
+    // like any other bad level instead of reaching the query.
+    const topikLevel = resolveTopikAudioLevel(req.params.level);
+    if (!testNumber.success || topikLevel === undefined) {
+      throw new NotFoundError('no audio for this unit');
+    }
+    const { rows } = await query<{ audio_path: string | null }>(
+      `SELECT audio_path
+         FROM topik_tests
+        WHERE test_number = $1 AND topik_level = $2 AND section = 'listening'::topik_section`,
+      [testNumber.data, topikLevel],
+    );
+    // No row and a NULL audio_path collapse to the same uniform 404 inside
+    // streamCorpusAudio ("no such paper" vs "no audio mapped" is not leaked).
+    await streamCorpusAudio(req, res, next, rows[0]?.audio_path ?? null);
   } catch (err) {
     next(err);
   }
