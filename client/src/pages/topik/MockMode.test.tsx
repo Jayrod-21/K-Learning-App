@@ -1541,10 +1541,17 @@ describe('MockMode (Mock test)', () => {
      * A mapped listening paper exercising all three real corpus shapes
      * (traced against the live DB — every listening row is stem-only, so
      * the DTO prompt carries the stem):
-     *   - 2001: single question — the prompt IS the dialogue (span mapped);
-     *   - 2002: still-unmapped item (no span) — per-item fallback;
+     *   - 2001: single question — the prompt IS the dialogue (span mapped,
+     *     `promptIsTranscript: true` — the server's mapRowToDTO verdict for
+     *     a stem-only row with no shared passage);
+     *   - 2002: still-unmapped item (no span) — per-item fallback (the flag
+     *     is true, but with no playable audio nothing hides);
      *   - 2003: paired question — printed question in `prompt`, dialogue in
-     *     the shared `passage` (span mapped).
+     *     the shared `passage` (span mapped, `promptIsTranscript: false` —
+     *     the server knows the stem here is question chrome).
+     * The flag values mirror what routes/topik.ts `mapRowToDTO` emits for
+     * exactly these row shapes (pinned by the server-side S-1 test) — keep
+     * them in sync or the fixture stops representing the real wire.
      */
     const LISTEN_AUDIO_TEST: MockTest = {
       sourceTest: 60,
@@ -1566,6 +1573,7 @@ describe('MockMode (Mock test)', () => {
           ],
           audioStartMs: 12_000,
           audioEndMs: 45_000,
+          promptIsTranscript: true,
         },
         {
           id: '2002',
@@ -1579,6 +1587,7 @@ describe('MockMode (Mock test)', () => {
             { id: 'c', kr: '셋', en: 'Three' },
             { id: 'd', kr: '넷', en: 'Four' },
           ],
+          promptIsTranscript: true,
         },
         {
           id: '2003',
@@ -1596,6 +1605,7 @@ describe('MockMode (Mock test)', () => {
           ],
           audioStartMs: 100_000,
           audioEndMs: 160_000,
+          promptIsTranscript: false,
         },
       ],
     };
@@ -1841,6 +1851,155 @@ describe('MockMode (Mock test)', () => {
         expect(
           screen.getByText(/한지 공예를 시작하신 지/),
         ).toBeInTheDocument();
+      });
+
+      it('a verbatim prompt === passage dup item (48 real rows) leaks the dialogue ZERO times in the runner, still visible in review (fix-pass S-3)', async () => {
+        // The dup corpus shape: a paired paper that copies the shared
+        // dialogue verbatim into the item's stem → the wire carries the SAME
+        // text in BOTH the prompt slot and the passage slot, and the server
+        // marks it `promptIsTranscript: true`. BOTH slots must stay blank in
+        // the timed runner — one leak through either defeats the listening
+        // item.
+        const DUP_DIALOGUE = '여자: 회의가 언제예요?\n남자: 내일 오후 두 시입니다.';
+        svc.fetchMockTest.mockResolvedValue({
+          sourceTest: 60,
+          topikLevel: 'TOPIK II',
+          section: 'listening',
+          audioUrl: '/topik/audio/60/2',
+          items: [
+            {
+              id: '2101',
+              section: '듣기',
+              number: 25,
+              level: 4,
+              prompt: DUP_DIALOGUE,
+              passage: DUP_DIALOGUE,
+              options: [
+                { id: 'a', kr: '월요일', en: 'Monday' },
+                { id: 'b', kr: '화요일', en: 'Tuesday' },
+                { id: 'c', kr: '수요일', en: 'Wednesday' },
+                { id: 'd', kr: '목요일', en: 'Thursday' },
+              ],
+              audioStartMs: 200_000,
+              audioEndMs: 230_000,
+              promptIsTranscript: true,
+            },
+          ],
+        });
+        svc.submitMockTest.mockResolvedValue({
+          sourceTest: 60,
+          section: 'listening',
+          totalItems: 1,
+          answered: 1,
+          correct: 0,
+          percentage: 0,
+          band: 'Below L3',
+          items: [
+            {
+              itemId: '2101',
+              picked: 'a',
+              correctChoiceId: 'b',
+              isCorrect: false,
+              explanation: 'The man says the meeting is tomorrow at two.',
+            },
+          ],
+        });
+        const user = userEvent.setup();
+        render(<MockMode />, { wrapper: MemoryRouter });
+        await startExam(user, 'Listening');
+        await waitFor(() => {
+          expect(screen.getByRole('timer')).toBeInTheDocument();
+        });
+
+        // ZERO occurrences anywhere in the timed runner — neither the prompt
+        // slot nor the passage slot may print the dialogue.
+        expect(screen.queryAllByText(/회의가 언제예요/)).toHaveLength(0);
+        // The item is still fully takeable: player + choices remain.
+        expect(
+          screen.getByRole('button', { name: /Play question audio/i }),
+        ).toBeInTheDocument();
+        expect(screen.getAllByRole('radio')).toHaveLength(4);
+
+        // Review surface: the dialogue IS visible for studying the miss.
+        await user.click(screen.getByRole('radio', { name: /월요일/ }));
+        await user.click(screen.getByRole('button', { name: /Submit test/i }));
+        await user.click(screen.getByRole('button', { name: '제출 · Submit' }));
+        await waitFor(() => {
+          expect(screen.getByText('Below L3')).toBeInTheDocument();
+        });
+        expect(
+          screen.getAllByText(/회의가 언제예요/).length,
+        ).toBeGreaterThan(0);
+      });
+    });
+
+    describe('F-160 runtime stream failure (fix-pass B1 + S-2/rev1)', () => {
+      it('an <audio> error un-hides the transcript so the item stays answerable — the alert tells the truth (B1)', async () => {
+        const user = userEvent.setup();
+        const audio = await startListeningAudioExam(user);
+
+        // Sanity: while playable, item 2001's dialogue prompt is hidden.
+        expect(
+          screen.queryByText(/남자: 학생이에요\?/),
+        ).not.toBeInTheDocument();
+
+        fireEvent.error(audio);
+
+        // The F-160 alert appears — and its claim ("shows its transcript
+        // instead") must be TRUE: the dialogue prompt is back.
+        expect(screen.getByRole('alert')).toHaveTextContent(
+          /Audio couldn't load/,
+        );
+        expect(screen.getByText(/남자: 학생이에요\?/)).toBeInTheDocument();
+        // The play control is gone…
+        expect(
+          screen.queryByRole('button', { name: /Play question audio/i }),
+        ).not.toBeInTheDocument();
+        // …and the DISTINCT per-item "not mapped yet" note is not conflated
+        // with the error state.
+        expect(
+          screen.queryByText(/No audio for this question yet/),
+        ).not.toBeInTheDocument();
+
+        // The failure is exam-global (one element, one whole-section file):
+        // the paired item's shared dialogue passage reappears too, alongside
+        // its always-visible printed question.
+        await user.click(screen.getByRole('button', { name: /Question 3/i }));
+        expect(screen.getByRole('alert')).toBeInTheDocument();
+        expect(
+          screen.getByText('남자는 누구인지 고르십시오.'),
+        ).toBeInTheDocument();
+        expect(
+          screen.getByText(/한지 공예를 시작하신 지/),
+        ).toBeInTheDocument();
+      });
+
+      it('a successful load after an error clears it — the player and decision-#2 hiding come back (S-2/rev1)', async () => {
+        const user = userEvent.setup();
+        const audio = await startListeningAudioExam(user);
+
+        fireEvent.error(audio);
+        expect(screen.getByRole('alert')).toBeInTheDocument();
+        expect(screen.getByText(/남자: 학생이에요\?/)).toBeInTheDocument();
+
+        // The stream recovers (say, the network came back and the element
+        // re-fetched its metadata): `loadedmetadata` clears the error…
+        fireEvent.loadedMetadata(audio);
+
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+        expect(
+          screen.getByRole('button', { name: /Play question audio/i }),
+        ).toBeInTheDocument();
+        // …and the transcript hides again (pure listening resumes).
+        expect(
+          screen.queryByText(/남자: 학생이에요\?/),
+        ).not.toBeInTheDocument();
+
+        // `canplay` clears it too — whichever event the browser fires first.
+        fireEvent.error(audio);
+        expect(screen.getByRole('alert')).toBeInTheDocument();
+        fireEvent.canPlay(audio);
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument();
       });
     });
   });

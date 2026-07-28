@@ -318,6 +318,61 @@ describe('fetchMockTest', () => {
     expect(res.items[0]?.audioEndMs).toBeUndefined();
   });
 
+  // ── decision-#2 `promptIsTranscript` normalization (fix-pass S-1) ───────
+  // The flag drives transcript HIDING in the timed runner — the dangerous
+  // direction — so only a real boolean may pass; junk is stripped to
+  // `undefined`, which the runner treats as "keep the prompt visible".
+
+  it('passes a boolean promptIsTranscript through verbatim (both values)', async () => {
+    vi.spyOn(api, 'post').mockResolvedValueOnce({
+      ...MOCK_TEST,
+      section: 'listening',
+      items: [
+        { ...MOCK_TEST.items[0]!, promptIsTranscript: true },
+        { ...MOCK_TEST.items[0]!, id: '1002', promptIsTranscript: false },
+      ],
+    });
+
+    const res = await fetchMockTest('listening');
+
+    expect(res.items[0]?.promptIsTranscript).toBe(true);
+    expect(res.items[1]?.promptIsTranscript).toBe(false);
+  });
+
+  it.each([
+    ['a truthy string', 'true'],
+    ['a number', 1],
+    ['null', null],
+    ['an object', {}],
+  ])(
+    'strips a non-boolean promptIsTranscript (%s) — junk must never hide a prompt',
+    async (_label, junk) => {
+      vi.spyOn(api, 'post').mockResolvedValueOnce({
+        ...MOCK_TEST,
+        section: 'listening',
+        items: [
+          {
+            ...MOCK_TEST.items[0]!,
+            promptIsTranscript: junk as unknown as boolean,
+          },
+        ],
+      });
+
+      const res = await fetchMockTest('listening');
+
+      expect(res.items[0]?.promptIsTranscript).toBeUndefined();
+      expect(res.items[0]).not.toHaveProperty('promptIsTranscript');
+    },
+  );
+
+  it('leaves an absent promptIsTranscript absent (older server envelope)', async () => {
+    vi.spyOn(api, 'post').mockResolvedValueOnce({ ...MOCK_TEST });
+
+    const res = await fetchMockTest('reading');
+
+    expect(res.items[0]).not.toHaveProperty('promptIsTranscript');
+  });
+
   it('normalization never weakens the answer strip (no correct/explanation reintroduced)', async () => {
     vi.spyOn(api, 'post').mockResolvedValueOnce({
       ...MOCK_TEST,

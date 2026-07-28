@@ -195,27 +195,36 @@ function readAudioSpan(
  * Normalize the F-119 audio fields on a `POST /topik/mock` envelope:
  * `audioUrl` must be a string or null (any other shape → null; the strict
  * route-shape allow-list check lives in `buildAudioSrc`, which the player
- * calls on this value), and each item's span must satisfy `readAudioSpan`
- * (both-or-neither — a half/invalid window is dropped entirely). Everything
- * else — notably the answer-strip contract — passes through untouched.
+ * calls on this value), each item's span must satisfy `readAudioSpan`
+ * (both-or-neither — a half/invalid window is dropped entirely), and the
+ * decision-#2 `promptIsTranscript` flag must be a REAL boolean or absent
+ * (fix-pass S-1) — any other wire shape is stripped to `undefined`, which
+ * the runner treats as "not a transcript" (the prompt stays visible; hiding
+ * is the dangerous direction, so junk must never truthy its way into a
+ * hide). Everything else — notably the answer-strip contract — passes
+ * through untouched.
  */
 function normalizeMockAudio(test: MockTest): MockTest {
   const rawUrl: unknown = test.audioUrl;
   const audioUrl = typeof rawUrl === 'string' ? rawUrl : null;
   const items = test.items.map((item): TopikMockItem => {
+    const next = { ...item };
     const span = readAudioSpan(item);
     if (span !== null) {
-      // Re-spread the validated pair so a valid span survives verbatim.
-      return { ...item, ...span };
+      // Re-assign the validated pair so a valid span survives verbatim.
+      next.audioStartMs = span.audioStartMs;
+      next.audioEndMs = span.audioEndMs;
+    } else {
+      // Invalid/half window → strip BOTH bounds (no-span, per the doc above).
+      delete next.audioStartMs;
+      delete next.audioEndMs;
     }
-    if (item.audioStartMs === undefined && item.audioEndMs === undefined) {
-      return item;
+    // The wire type SAYS boolean-or-absent, but this came off the network —
+    // re-check at runtime like the span above.
+    if (typeof next.promptIsTranscript !== 'boolean') {
+      delete next.promptIsTranscript;
     }
-    // Invalid/half window → strip BOTH bounds (no-span, per the doc above).
-    const stripped = { ...item };
-    delete stripped.audioStartMs;
-    delete stripped.audioEndMs;
-    return stripped;
+    return next;
   });
   return { ...test, audioUrl, items };
 }

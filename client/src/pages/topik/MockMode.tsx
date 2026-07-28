@@ -1810,6 +1810,14 @@ function ExamRunner({
   const onAudioError = useCallback((): void => {
     setAudioError(true);
   }, []);
+  // Recovery (fix-pass S-2/rev1): a successful load AFTER a failure —
+  // `loadedmetadata`/`canplay` firing means the stream is fetchable again
+  // (e.g. a transient network blip on the metadata preload) — clears the
+  // error so the player comes back instead of staying dead for a 60-minute
+  // exam. Setting false when already false is a no-op render-wise.
+  const onAudioLoaded = useCallback((): void => {
+    setAudioError(false);
+  }, []);
   const onAudioPlay = useCallback((): void => {
     setAudioPlaying(true);
   }, []);
@@ -1908,32 +1916,31 @@ function ExamRunner({
   // the results/review surface (`TopikResults`) is a separate component that
   // always shows the transcript for studying misses.
   //
-  // WHERE the transcript lives on the wire (traced against all 960 listening
-  // rows in the live corpus — every one is stem-only, so the DTO `prompt`
-  // takes the stem, see routes/topik.ts `mapRowToDTO`):
-  //   - paired/announced questions (375 rows + 3 question-stem variants):
-  //     the dialogue rides in the SHARED passage (`topik_tests.passages`)
-  //     and the stem is the PRINTED question ("…고르십시오." /
-  //     "…합니까?") → show the prompt, hide the passage;
-  //   - single questions (the majority): the stem IS the dialogue — no
-  //     separate printed question exists (the real paper shows only the
-  //     options under a section instruction) → hide the prompt;
-  //   - a few papers duplicate the shared transcript verbatim into each
-  //     paired item's stem (48 rows) → prompt === passage → hide both.
-  // This also covers the re-admitted `[듣기 지문 없음 …]` placeholder stems
-  // (reviewer note N-2): span-mapped, no passage → the stale curator note is
-  // hidden and the learner just listens.
+  // "Playable" requires `!audioError` (fix-pass B1): a RUNTIME stream failure
+  // is exam-global (one element, one whole-section file), so on error EVERY
+  // span-mapped item must fall back to its transcript — otherwise the timed
+  // exam shows neither audio nor text while the F-160 alert below claims
+  // "transcript shown instead". Errors are the worst direction to hide in.
+  //
+  // WHICH text is the transcript is the SERVER's call (fix-pass S-1):
+  // `promptIsTranscript` is decided in routes/topik.ts `mapRowToDTO`, where
+  // the prompt slot's column provenance is known — true only when the prompt
+  // is the spoken dialogue (stem-only single questions, and the 48 rows that
+  // duplicate the shared dialogue into the stem, plus the re-admitted
+  // `[듣기 지문 없음 …]` placeholder stems), false for every PRINTED question
+  // (the 375 paired items whose dialogue rides in the shared passage). The
+  // strict `=== true` fails SAFE: an absent/stripped flag (older server,
+  // malformed wire value) keeps the prompt visible — answerable beats pure.
+  // A listening `passage` is always the spoken dialogue — never show it
+  // while the audio is playable.
   const questionAudioPlayable =
     test.section === 'listening' &&
+    !audioError &&
     audioSrc !== null &&
     audioSpanOf(current) !== null;
-  const promptIsPrintedQuestion =
-    current.passage !== undefined &&
-    current.prompt.trim() !== current.passage.trim();
-  // A listening `passage` is always the spoken dialogue — never show it while
-  // the audio plays. The prompt hides only when it isn't a printed question.
   const hideTranscriptPassage = questionAudioPlayable;
-  const hideTranscriptPrompt = questionAudioPlayable && !promptIsPrintedQuestion;
+  const hideTranscriptPrompt =
+    questionAudioPlayable && current.promptIsTranscript === true;
 
   return (
     <div className="km-mock__exam">
@@ -1977,6 +1984,8 @@ function ExamRunner({
               onPlay={onAudioPlay}
               onPause={onAudioPause}
               onError={onAudioError}
+              onLoadedMetadata={onAudioLoaded}
+              onCanPlay={onAudioLoaded}
             />
             {audioSpanOf(current) !== null ? (
               audioError ? (

@@ -273,6 +273,16 @@ export interface TopikMockItem {
   audioStartMs?: number;
   /** End (ms, exclusive) of the question's audio window — see `audioStartMs`. */
   audioEndMs?: number;
+  /** F-119 decision #2 (fix-pass S-1): the SERVER's authoritative answer to
+   *  "is this item's `prompt` text the spoken transcript?" — decided in
+   *  `mapRowToDTO`, where the text's column provenance is known (true only
+   *  when the prompt slot fell back to a stem that carries the dialogue;
+   *  false for every printed question). The timed runner hides the prompt
+   *  only when this is EXACTLY `true`; `undefined` (an older server, or a
+   *  malformed wire value stripped by `fetchMockTest`) fails SAFE — the
+   *  prompt stays visible, keeping the item answerable. Question metadata
+   *  (what kind of text the prompt is), never answer data. */
+  promptIsTranscript?: boolean;
 }
 
 /** Envelope returned by `POST /topik/mock` — the answer-stripped exam payload. */
