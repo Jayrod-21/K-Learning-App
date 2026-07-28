@@ -16,8 +16,11 @@ Question STRUCTURE (single vs paired units + stems) comes from either:
 Validation text per item (best available wins):
   1. the official ``*-Listening-Transcript.pdf`` (auto-derived from the MP3
      path, or ``--transcript-pdf``) — 22/24 papers ship one, but only the
-     text-extractable ones (~12/24) actually parse; image-only scans parse
-     EMPTY (warned + surfaced in the QA report) and fall through to 2./3.;
+     text-extractable ones (~12/24) parse directly; the image-only scans
+     (10/24) fall back to Google Vision OCR (``transcript_ocr``, cached by
+     PDF sha256, disable with ``--no-ocr``) — when OCR too is unavailable
+     (no ``$GOOGLE_VISION_API_KEY``, no pdftoppm, API failure) the paper
+     degrades to 2./3., warned + surfaced in the QA report;
   2. the structure file's shared ``passages`` (paired groups) + the stem;
   3. the DB/structure stem alone. ``[듣기 지문 없음]`` placeholders are
      treated as absent (paper 60-I's known gap — those spans align by anchor
@@ -48,6 +51,7 @@ import statistics
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import structlog
 
@@ -59,7 +63,8 @@ from .segment import (
 )
 from .segment import align as align_units
 from .transcribe import transcribe_paper
-from .transcript_pdf import parse_transcript_pdf
+from .transcript_ocr import ocr_transcript_pdf
+from .transcript_pdf import parse_transcript_pdf, parse_transcript_text
 
 logger = structlog.get_logger(__name__)
 
@@ -181,6 +186,51 @@ def compose_validation_texts(
     return texts
 
 
+# How the paper's per-item transcript texts were obtained — drives the QA
+# report line and nothing else.
+TranscriptSource = Literal["text-pdf", "ocr", "unusable", "absent"]
+
+
+def resolve_transcript_texts(
+    pdf_path: Path, *, cache_dir: Path, ocr_enabled: bool
+) -> tuple[dict[int, str], TranscriptSource]:
+    """Best per-item transcript texts for the paper, plus their source.
+
+    Order: direct ``pdftotext`` parse (the 12 text-PDFs) -> Google Vision
+    OCR fallback (the 10 image-only scans; sha256-cached, skipped with
+    ``--no-ocr``) -> nothing. The OCR text goes through the SAME pure
+    ``parse_transcript_text`` as a pdftotext dump. OCR is a QA-signal
+    enhancement: ANY failure inside it degrades to ``({}, "unusable")``,
+    never an exception — the run must produce its artifact regardless.
+    """
+    pdf_texts = parse_transcript_pdf(pdf_path)
+    if pdf_texts:
+        return pdf_texts, "text-pdf"
+    if not pdf_path.is_file():
+        return {}, "absent"
+    if ocr_enabled:
+        try:
+            ocr_text = ocr_transcript_pdf(pdf_path, cache_dir=cache_dir)
+        except Exception as exc:  # defensive: OCR must never sink the run
+            logger.warning(
+                "transcript_ocr_unexpected_error",
+                path=str(pdf_path),
+                error=f"{type(exc).__name__}: {exc}"[:300],
+            )
+            ocr_text = None
+        if ocr_text:
+            ocr_texts = parse_transcript_text(ocr_text)
+            if ocr_texts:
+                logger.info(
+                    "transcript_ocr_parsed", path=str(pdf_path), items=len(ocr_texts)
+                )
+                return ocr_texts, "ocr"
+            # OCR produced text but no question markers survived the parse —
+            # distinct from the API failing (which transcript_ocr logs).
+            logger.warning("transcript_ocr_parsed_empty", path=str(pdf_path))
+    return {}, "unusable"
+
+
 def derive_transcript_pdf_path(audio_path: Path) -> Path:
     """Sibling transcript PDF from the corpus naming convention
     (``...-Listening-Audio.mp3`` -> ``...-Listening-Transcript.pdf``)."""
@@ -221,14 +271,22 @@ def write_artifact(out_path: Path, artifact: dict) -> None:
     os.replace(tmp_path, out_path)
 
 
-def transcript_pdf_note(pdf_path: Path, pdf_texts: dict[int, str]) -> str:
-    """One QA-report line describing the official transcript's availability:
-    parsed / present-but-unusable (image-only scan, needs OCR) / absent."""
-    if pdf_texts:
-        return f"{pdf_path.name} ({len(pdf_texts)} items)"
-    if pdf_path.is_file():
-        return f"{pdf_path.name} — present but unusable (parsed empty; image-only scan needs OCR)"
-    return "absent"
+def transcript_pdf_note(
+    pdf_path: Path, pdf_texts: dict[int, str], source: TranscriptSource
+) -> str:
+    """One QA-report line naming the validation source actually used:
+    text-PDF (N items) / OCR (N items) / present but unusable / absent
+    (stems only)."""
+    if source == "text-pdf":
+        return f"{pdf_path.name} — text-PDF ({len(pdf_texts)} items)"
+    if source == "ocr":
+        return f"{pdf_path.name} — OCR ({len(pdf_texts)} items)"
+    if source == "unusable":
+        return (
+            f"{pdf_path.name} — present but unusable "
+            "(no text layer; OCR disabled, unavailable, or failed — stems only)"
+        )
+    return "absent (stems only)"
 
 
 def print_qa_report(
@@ -303,6 +361,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("DATABASE_URL"),
         help="Postgres URL for the structure query (default: $DATABASE_URL)",
     )
+    p.add_argument(
+        "--no-ocr",
+        action="store_true",
+        help=(
+            "skip the Google Vision OCR fallback for image-only transcript "
+            "PDFs (OCR is on by default and needs $GOOGLE_VISION_API_KEY; "
+            "without it the paper validates against DB stems)"
+        ),
+    )
     p.add_argument("--out-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     p.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     p.add_argument("--min-confidence", type=float, default=DEFAULT_MIN_CONFIDENCE)
@@ -350,7 +417,9 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         pdf_path = args.transcript_pdf or derive_transcript_pdf_path(args.audio)
-        pdf_texts = parse_transcript_pdf(pdf_path)
+        pdf_texts, pdf_source = resolve_transcript_texts(
+            pdf_path, cache_dir=args.cache_dir, ocr_enabled=not args.no_ocr
+        )
         validation_texts = compose_validation_texts(structure, pdf_texts)
 
         result = align_units(
@@ -386,6 +455,6 @@ def main(argv: list[str] | None = None) -> int:
         total_items=len(structure.items),
         min_confidence=args.min_confidence,
         out_path=out_path,
-        pdf_note=transcript_pdf_note(pdf_path, pdf_texts),
+        pdf_note=transcript_pdf_note(pdf_path, pdf_texts, pdf_source),
     )
     return 1 if result.unresolved_items else 0
