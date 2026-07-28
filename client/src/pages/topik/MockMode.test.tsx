@@ -58,6 +58,7 @@ const TEST: MockTest = {
   sourceTest: 7,
   topikLevel: 'TOPIK II',
   section: 'reading',
+  audioUrl: null,
   items: [
     {
       id: '1001',
@@ -1475,11 +1476,11 @@ describe('MockMode (Mock test)', () => {
     });
   });
 
-  describe('F-080 listening audio (honest data-gap stub)', () => {
-    it('a Listening exam discloses the audio gap up front — transcripts, no fake play control', async () => {
-      // Per-question audio is not servable (the corpus holds only one
-      // whole-section MP3 per paper, un-ingested and un-segmented — data-gap
-      // ticket F-119); the UI must say so rather than render a dead player.
+  describe('F-080 listening audio (honest fallback for an unmapped paper)', () => {
+    it('a Listening exam with NO mapped audio keeps the honest note — transcripts, no fake play control', async () => {
+      // F-119 serves per-question audio for MAPPED papers; a paper with
+      // `audioUrl: null` (nothing mapped) must still disclose the gap rather
+      // than render a dead player.
       svc.fetchMockTest.mockResolvedValue({ ...TEST, section: 'listening' });
       const user = userEvent.setup();
       render(<MockMode />, { wrapper: MemoryRouter });
@@ -1490,9 +1491,11 @@ describe('MockMode (Mock test)', () => {
       await user.click(
         screen.getByRole('button', { name: /Recommended Listening exam/i }),
       );
-      // Disclosed BEFORE the timer starts (start page)…
+      // The start page can't know the paper's mapping before the fetch, so
+      // its note describes both outcomes honestly (F-119 — the old blanket
+      // "Audio isn't available yet" would be false for mapped papers).
       expect(
-        screen.getByText(/Audio isn't available yet/),
+        screen.getByText(/Questions with mapped audio play the real recording/),
       ).toBeInTheDocument();
 
       await user.click(
@@ -1501,7 +1504,8 @@ describe('MockMode (Mock test)', () => {
       await waitFor(() => {
         expect(screen.getByRole('timer')).toBeInTheDocument();
       });
-      // …and again in the exam head. No fabricated player anywhere.
+      // The exam head keeps the whole-exam honest note for this unmapped
+      // paper. No fabricated player anywhere.
       expect(
         screen.getByText(/Audio isn't available yet/),
       ).toBeInTheDocument();
@@ -1521,6 +1525,323 @@ describe('MockMode (Mock test)', () => {
       expect(
         screen.queryByText(/Audio isn't available yet/),
       ).not.toBeInTheDocument();
+      expect(document.querySelector('audio')).toBeNull();
+    });
+  });
+
+  describe('F-119 per-question listening audio (mapped paper)', () => {
+    // NOTE on the media element in tests: unlike jsdom, happy-dom implements
+    // HTMLMediaElement.play()/pause()/currentTime/paused natively (play()
+    // returns a promise and fires the play/pause events synchronously), so
+    // no prototype stubs are needed — playback state is asserted straight
+    // off the element, and the ~4Hz `timeupdate` the browser would emit is
+    // driven manually via fireEvent.timeUpdate after seeking.
+
+    /**
+     * A mapped listening paper exercising all three real corpus shapes
+     * (traced against the live DB — every listening row is stem-only, so
+     * the DTO prompt carries the stem):
+     *   - 2001: single question — the prompt IS the dialogue (span mapped);
+     *   - 2002: still-unmapped item (no span) — per-item fallback;
+     *   - 2003: paired question — printed question in `prompt`, dialogue in
+     *     the shared `passage` (span mapped).
+     */
+    const LISTEN_AUDIO_TEST: MockTest = {
+      sourceTest: 60,
+      topikLevel: 'TOPIK II',
+      section: 'listening',
+      audioUrl: '/topik/audio/60/2',
+      items: [
+        {
+          id: '2001',
+          section: '듣기',
+          number: 1,
+          level: 3,
+          prompt: '남자: 학생이에요?\n여자: 네, 학생이에요.',
+          options: [
+            { id: 'a', kr: '가', en: 'A' },
+            { id: 'b', kr: '나', en: 'B' },
+            { id: 'c', kr: '다', en: 'C' },
+            { id: 'd', kr: '라', en: 'D' },
+          ],
+          audioStartMs: 12_000,
+          audioEndMs: 45_000,
+        },
+        {
+          id: '2002',
+          section: '듣기',
+          number: 2,
+          level: 3,
+          prompt: '여자: 오늘 날씨가 참 좋네요.',
+          options: [
+            { id: 'a', kr: '하나', en: 'One' },
+            { id: 'b', kr: '둘', en: 'Two' },
+            { id: 'c', kr: '셋', en: 'Three' },
+            { id: 'd', kr: '넷', en: 'Four' },
+          ],
+        },
+        {
+          id: '2003',
+          section: '듣기',
+          number: 3,
+          level: 4,
+          prompt: '남자는 누구인지 고르십시오.',
+          passage:
+            '여자: 한지 공예를 시작하신 지 얼마나 되셨어요?\n남자: 삼십 년쯤 됐습니다.',
+          options: [
+            { id: 'a', kr: '공예가', en: 'Artisan' },
+            { id: 'b', kr: '기자', en: 'Reporter' },
+            { id: 'c', kr: '교사', en: 'Teacher' },
+            { id: 'd', kr: '의사', en: 'Doctor' },
+          ],
+          audioStartMs: 100_000,
+          audioEndMs: 160_000,
+        },
+      ],
+    };
+
+    /** Start the mapped listening exam and return its persistent element. */
+    async function startListeningAudioExam(
+      user: ReturnType<typeof userEvent.setup>,
+    ): Promise<HTMLAudioElement> {
+      svc.fetchMockTest.mockResolvedValue(LISTEN_AUDIO_TEST);
+      render(<MockMode />, { wrapper: MemoryRouter });
+      await startExam(user, 'Listening');
+      await waitFor(() => {
+        expect(screen.getByRole('timer')).toBeInTheDocument();
+      });
+      const audio = document.querySelector('audio');
+      expect(audio).not.toBeNull();
+      return audio as HTMLAudioElement;
+    }
+
+    it('renders ONE persistent element (allow-listed src, metadata preload, no native controls, no autoplay)', async () => {
+      const user = userEvent.setup();
+      const audio = await startListeningAudioExam(user);
+
+      expect(document.querySelectorAll('audio')).toHaveLength(1);
+      // The allow-listed app-relative src (API base '' in tests).
+      expect(audio).toHaveAttribute('src', '/topik/audio/60/2');
+      expect(audio).toHaveAttribute('preload', 'metadata');
+      // Playback is button-driven only: a native scrubber could play the
+      // whole section tape outside the question's window.
+      expect(audio).not.toHaveAttribute('controls');
+      // No autoplay — mounting the exam starts nothing.
+      expect(audio.paused).toBe(true);
+      expect(
+        screen.getByRole('button', { name: /Play question audio/i }),
+      ).toBeInTheDocument();
+    });
+
+    it('keeps the SAME element across item navigation — a palette jump re-seeks, never remounts', async () => {
+      const user = userEvent.setup();
+      const audio = await startListeningAudioExam(user);
+
+      // → item 2 (unmapped): the per-item note swaps in, the ELEMENT stays.
+      await user.click(screen.getByRole('button', { name: /Question 2/i }));
+      // Identity assertion — the exact same DOM node (reference equality), a
+      // remount would produce a new element and dump the buffered file.
+      expect(document.querySelector('audio')).toBe(audio);
+      expect(
+        screen.queryByRole('button', { name: /Play question audio/i }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByText(/No audio for this question yet/),
+      ).toBeInTheDocument();
+
+      // → item 3 (mapped): the play control returns; still the same node.
+      await user.click(screen.getByRole('button', { name: /Question 3/i }));
+      expect(document.querySelector('audio')).toBe(audio);
+      expect(
+        screen.getByRole('button', { name: /Play question audio/i }),
+      ).toBeInTheDocument();
+      expect(audio).toHaveAttribute('src', '/topik/audio/60/2');
+    });
+
+    it('"Play question audio" seeks to audioStartMs/1000 and plays; the control flips to Pause', async () => {
+      const user = userEvent.setup();
+      const audio = await startListeningAudioExam(user);
+
+      await user.click(
+        screen.getByRole('button', { name: /Play question audio/i }),
+      );
+
+      // Seeked to item 2001's window start: 12000ms → 12s.
+      expect(audio.currentTime).toBe(12);
+      expect(audio.paused).toBe(false);
+      const pauseBtn = screen.getByRole('button', { name: /일시 정지 · Pause/ });
+      // …and the Pause control actually pauses.
+      await user.click(pauseBtn);
+      expect(audio.paused).toBe(true);
+    });
+
+    it('pauses at audioEndMs/1000 via the timeupdate clamp, and replays without limit (decision #3)', async () => {
+      const user = userEvent.setup();
+      const audio = await startListeningAudioExam(user);
+
+      await user.click(
+        screen.getByRole('button', { name: /Play question audio/i }),
+      );
+      expect(audio.paused).toBe(false);
+
+      // Mid-window timeupdate: still inside [12s, 45s) — keeps playing.
+      audio.currentTime = 30;
+      fireEvent.timeUpdate(audio);
+      expect(audio.paused).toBe(false);
+
+      // Crossing the end bound (45s, +~250ms overshoot tolerance) pauses.
+      audio.currentTime = 45.2;
+      fireEvent.timeUpdate(audio);
+      expect(audio.paused).toBe(true);
+
+      // Unlimited replay: pressing Play again restarts from the window start.
+      await user.click(
+        screen.getByRole('button', { name: /Play question audio/i }),
+      );
+      expect(audio.currentTime).toBe(12);
+      expect(audio.paused).toBe(false);
+    });
+
+    it('navigating to another item pauses playback (no ghost audio under the next question)', async () => {
+      const user = userEvent.setup();
+      const audio = await startListeningAudioExam(user);
+
+      await user.click(
+        screen.getByRole('button', { name: /Play question audio/i }),
+      );
+      expect(audio.paused).toBe(false);
+
+      await user.click(screen.getByRole('button', { name: /Question 2/i }));
+      expect(audio.paused).toBe(true);
+      // The element survives the navigation (identity contract, above).
+      expect(document.querySelector('audio')).toBe(audio);
+    });
+
+    it('a tampered/off-origin envelope audioUrl is rejected — no element, honest whole-exam note', async () => {
+      // fetchMockTest is mocked here, so the SERVICE normalization never ran
+      // — this proves the component's own buildAudioSrc gate fails closed.
+      svc.fetchMockTest.mockResolvedValue({
+        ...LISTEN_AUDIO_TEST,
+        audioUrl: 'https://evil.example/a.mp3',
+      });
+      const user = userEvent.setup();
+      render(<MockMode />, { wrapper: MemoryRouter });
+      await startExam(user, 'Listening');
+      await waitFor(() => {
+        expect(screen.getByRole('timer')).toBeInTheDocument();
+      });
+
+      expect(document.querySelector('audio')).toBeNull();
+      expect(
+        screen.queryByRole('button', { name: /Play question audio/i }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByText(/Audio isn't available yet/),
+      ).toBeInTheDocument();
+      // Fail-closed on the transcript too: with no playable audio the item
+      // keeps its transcript (otherwise it would be unanswerable).
+      expect(screen.getByText(/남자: 학생이에요\?/)).toBeInTheDocument();
+    });
+
+    describe('decision #2 — transcript hidden in the timed runner, visible in review', () => {
+      it('hides a dialogue PROMPT while its audio is playable; the options and meta stay', async () => {
+        const user = userEvent.setup();
+        await startListeningAudioExam(user);
+
+        // Item 2001: stem-only single question — the prompt IS the spoken
+        // dialogue, so the timed runner must not print it.
+        expect(
+          screen.queryByText(/남자: 학생이에요\?/),
+        ).not.toBeInTheDocument();
+        // The question is still fully takeable: number, choices, player.
+        expect(screen.getByText('No. 1')).toBeInTheDocument();
+        expect(screen.getAllByRole('radio')).toHaveLength(4);
+        expect(
+          screen.getByRole('button', { name: /Play question audio/i }),
+        ).toBeInTheDocument();
+      });
+
+      it('keeps a PRINTED question prompt visible and hides only the dialogue passage', async () => {
+        const user = userEvent.setup();
+        await startListeningAudioExam(user);
+
+        await user.click(screen.getByRole('button', { name: /Question 3/i }));
+
+        // The printed question ("…고르십시오.") is question chrome — shown.
+        expect(
+          screen.getByText('남자는 누구인지 고르십시오.'),
+        ).toBeInTheDocument();
+        // The shared passage IS the dialogue — hidden while audio plays.
+        expect(
+          screen.queryByText(/한지 공예를 시작하신 지/),
+        ).not.toBeInTheDocument();
+        expect(screen.getAllByRole('radio')).toHaveLength(4);
+      });
+
+      it('keeps the transcript for a STILL-UNMAPPED item (no span) alongside the honest note', async () => {
+        const user = userEvent.setup();
+        await startListeningAudioExam(user);
+
+        await user.click(screen.getByRole('button', { name: /Question 2/i }));
+
+        // No audio to play → hiding the transcript would make the item
+        // unanswerable. It stays, with the per-item note.
+        expect(
+          screen.getByText(/여자: 오늘 날씨가 참 좋네요\./),
+        ).toBeInTheDocument();
+        expect(
+          screen.getByText(/No audio for this question yet/),
+        ).toBeInTheDocument();
+      });
+
+      it('shows the transcript in the RESULTS review surface (studying what was misheard)', async () => {
+        svc.fetchMockTest.mockResolvedValue(LISTEN_AUDIO_TEST);
+        svc.submitMockTest.mockResolvedValue({
+          sourceTest: 60,
+          section: 'listening',
+          totalItems: 3,
+          answered: 1,
+          correct: 0,
+          percentage: 0,
+          band: 'Below L3',
+          items: [
+            {
+              itemId: '2001',
+              picked: 'a',
+              correctChoiceId: 'b',
+              isCorrect: false,
+              explanation: 'She answers that she is a student.',
+            },
+            {
+              itemId: '2003',
+              picked: null,
+              correctChoiceId: 'a',
+              isCorrect: false,
+              explanation: 'The man is the artisan being interviewed.',
+            },
+          ],
+        });
+        const user = userEvent.setup();
+        render(<MockMode />, { wrapper: MemoryRouter });
+        await startExam(user, 'Listening');
+        await waitFor(() => {
+          expect(screen.getByRole('timer')).toBeInTheDocument();
+        });
+        await user.click(screen.getByRole('radio', { name: /나/ }));
+        await user.click(screen.getByRole('button', { name: /Submit test/i }));
+        await user.click(screen.getByRole('button', { name: '제출 · Submit' }));
+        await waitFor(() => {
+          expect(screen.getByText('Below L3')).toBeInTheDocument();
+        });
+
+        // The dialogue transcript the timed runner hid IS visible here —
+        // review is where the learner studies what they misheard.
+        expect(screen.getByText(/남자: 학생이에요\?/)).toBeInTheDocument();
+        // Item 2003's shared dialogue passage renders in its review row too.
+        expect(
+          screen.getByText(/한지 공예를 시작하신 지/),
+        ).toBeInTheDocument();
+      });
     });
   });
 

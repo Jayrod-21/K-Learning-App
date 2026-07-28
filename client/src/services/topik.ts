@@ -50,6 +50,7 @@ import type {
   TopikAnswerResult,
   TopikItem,
   TopikLevel,
+  TopikMockItem,
 } from '../types/domain';
 
 /** Filter for `POST /topik/study`. All fields optional → whole-pool draw. */
@@ -143,8 +144,11 @@ export async function recordTopikAnswer(
  * "recommended exam" / resume paths, which only know a `sourceTest`, still
  * omit it and let the server resolve deterministically as before.
  *
- * Typed pass-through: the server's answer-stripped DTO matches `MockTest`
- * field-for-field, so this returns the envelope as-is (no per-field mapping).
+ * Typed pass-through for the answer-stripped exam content (the server DTO
+ * matches `MockTest` field-for-field), EXCEPT the F-119 audio fields, which
+ * are normalized through `normalizeMockAudio` below: they steer a real
+ * `<audio>` element and a seek/clamp loop, so a malformed value must degrade
+ * to "no audio" (the transcript-only rendering) rather than reach the player.
  */
 export async function fetchMockTest(
   section: MockSection,
@@ -156,11 +160,64 @@ export async function fetchMockTest(
     { section };
   if (sourceTest !== undefined) body.sourceTest = sourceTest;
   if (topikLevel !== undefined) body.topikLevel = topikLevel;
-  return api.post<MockTest>(
+  const res = await api.post<MockTest>(
     '/topik/mock',
     body,
     signal !== undefined ? { signal } : undefined,
   );
+  return normalizeMockAudio(res);
+}
+
+/**
+ * Validate one mock item's F-119 audio window against the SAME invariant the
+ * DB enforces at rest (078's `ck_topik_items_audio_span`) and the server
+ * re-asserts on emit: both bounds present, finite non-negative integers,
+ * `end > start`. Anything else — a half window (only one bound), a
+ * non-number, a negative/fractional value, an inverted or empty range —
+ * yields `null` (no span): the item keeps its transcript-only fallback
+ * instead of seeding `<audio>.currentTime` / the pause clamp with garbage
+ * (an off-window seek would leak a DIFFERENT question's audio mid-exam).
+ */
+function readAudioSpan(
+  item: TopikMockItem,
+): { audioStartMs: number; audioEndMs: number } | null {
+  // The wire type SAYS number, but these came off the network — re-check at
+  // runtime like the rest of the file's defensive parses.
+  const start: unknown = item.audioStartMs;
+  const end: unknown = item.audioEndMs;
+  if (typeof start !== 'number' || typeof end !== 'number') return null;
+  if (!Number.isInteger(start) || !Number.isInteger(end)) return null;
+  if (start < 0 || end <= start) return null;
+  return { audioStartMs: start, audioEndMs: end };
+}
+
+/**
+ * Normalize the F-119 audio fields on a `POST /topik/mock` envelope:
+ * `audioUrl` must be a string or null (any other shape → null; the strict
+ * route-shape allow-list check lives in `buildAudioSrc`, which the player
+ * calls on this value), and each item's span must satisfy `readAudioSpan`
+ * (both-or-neither — a half/invalid window is dropped entirely). Everything
+ * else — notably the answer-strip contract — passes through untouched.
+ */
+function normalizeMockAudio(test: MockTest): MockTest {
+  const rawUrl: unknown = test.audioUrl;
+  const audioUrl = typeof rawUrl === 'string' ? rawUrl : null;
+  const items = test.items.map((item): TopikMockItem => {
+    const span = readAudioSpan(item);
+    if (span !== null) {
+      // Re-spread the validated pair so a valid span survives verbatim.
+      return { ...item, ...span };
+    }
+    if (item.audioStartMs === undefined && item.audioEndMs === undefined) {
+      return item;
+    }
+    // Invalid/half window → strip BOTH bounds (no-span, per the doc above).
+    const stripped = { ...item };
+    delete stripped.audioStartMs;
+    delete stripped.audioEndMs;
+    return stripped;
+  });
+  return { ...test, audioUrl, items };
 }
 
 /** A persisted in-progress mock attempt (F-007), as GET /topik/attempt returns it. */
