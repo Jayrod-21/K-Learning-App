@@ -20,6 +20,8 @@ from tools.ingest.topik_audio.run import (
     load_structure_file,
     load_structure_from_db,
     main,
+    resolve_transcript_texts,
+    transcript_pdf_note,
     write_artifact,
 )
 from tools.ingest.topik_audio.segment import DEFAULT_MIN_CONFIDENCE
@@ -149,7 +151,27 @@ def _fake_transcript(*, missing_two: bool = False) -> dict:
     }
 
 
-def _run_cli(tmp_path, monkeypatch, *, missing_two: bool = False) -> tuple[int, Path]:
+# Raw OCR text that parse_transcript_text maps to items 1..3 — what the
+# Vision fallback yields for an image-only scan of the test structure.
+_OCR_TEXT = (
+    "1. 여자 : 우산이 있어요?\n"
+    "2. 남자 : 회의는 언제입니까?\n"
+    "3. 여자 : 내일 만나요."
+)
+
+
+def _run_cli(
+    tmp_path,
+    monkeypatch,
+    *,
+    missing_two: bool = False,
+    pdf_exists: bool = False,
+    pdf_items: dict[int, str] | None = None,
+    ocr_text: str | None = None,
+    ocr_raises: bool = False,
+    no_ocr: bool = False,
+    ocr_calls: list | None = None,
+) -> tuple[int, Path]:
     structure = _structure_json(tmp_path)
     # Audio nested corpus-style so source_mp3 exercises a multi-level
     # relative path with spaces (the real corpus layout).
@@ -157,24 +179,38 @@ def _run_cli(tmp_path, monkeypatch, *, missing_two: bool = False) -> tuple[int, 
     audio_dir.mkdir(parents=True, exist_ok=True)
     audio = audio_dir / "60th-TOPIK-II-Listening-Audio.mp3"
     audio.write_bytes(b"MP3")
+    if pdf_exists:
+        (audio_dir / "60th-TOPIK-II-Listening-Transcript.pdf").write_bytes(b"%PDF")
     out_dir = tmp_path / "segments"
     monkeypatch.setattr(
         run_mod,
         "transcribe_paper",
         lambda *a, **k: _fake_transcript(missing_two=missing_two),
     )
-    monkeypatch.setattr(run_mod, "parse_transcript_pdf", lambda *a, **k: {})
-    code = main(
-        [
-            "--test-number", "60",
-            "--level", "2",
-            "--audio", str(audio),
-            "--corpus-root", str(tmp_path),
-            "--structure", str(structure),
-            "--out-dir", str(out_dir),
-            "--cache-dir", str(tmp_path / "cache"),
-        ]
+    monkeypatch.setattr(
+        run_mod, "parse_transcript_pdf", lambda *a, **k: dict(pdf_items or {})
     )
+    calls = ocr_calls if ocr_calls is not None else []
+
+    def fake_ocr(pdf_path, *, cache_dir):
+        calls.append((pdf_path, cache_dir))
+        if ocr_raises:
+            raise RuntimeError("vision exploded")
+        return ocr_text
+
+    monkeypatch.setattr(run_mod, "ocr_transcript_pdf", fake_ocr)
+    argv = [
+        "--test-number", "60",
+        "--level", "2",
+        "--audio", str(audio),
+        "--corpus-root", str(tmp_path),
+        "--structure", str(structure),
+        "--out-dir", str(out_dir),
+        "--cache-dir", str(tmp_path / "cache"),
+    ]
+    if no_ocr:
+        argv.append("--no-ocr")
+    code = main(argv)
     return code, out_dir / "topik_60_II_listening.json"
 
 
@@ -225,7 +261,7 @@ def test_cli_writes_contract_artifact_and_exits_zero(tmp_path, monkeypatch, caps
     report = capsys.readouterr().out
     assert "units resolved: 2/2" in report
     assert "items covered:  3/3" in report
-    assert "transcript PDF: absent" in report
+    assert "transcript PDF: absent (stems only)" in report
 
 
 def test_cli_rerun_is_byte_identical(tmp_path, monkeypatch) -> None:
@@ -244,6 +280,154 @@ def test_cli_unresolved_items_exit_one_but_artifact_written(
     artifact = json.loads(out_path.read_text(encoding="utf-8"))
     assert artifact["unresolved_items"] == [2, 3]
     assert "unresolved items: [2, 3]" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# OCR fallback wiring: triggers only for a present-but-unparsable PDF,
+# honors --no-ocr, and NEVER crashes the run.
+# ---------------------------------------------------------------------------
+
+
+def test_cli_ocr_fallback_feeds_validation_and_qa_note(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    ocr_calls: list = []
+    code, out_path = _run_cli(
+        tmp_path, monkeypatch, pdf_exists=True, ocr_text=_OCR_TEXT, ocr_calls=ocr_calls
+    )
+    assert code == 0
+    assert out_path.is_file()
+    ((pdf_path, cache_dir),) = ocr_calls
+    assert pdf_path.name == "60th-TOPIK-II-Listening-Transcript.pdf"
+    assert cache_dir == tmp_path / "cache"  # shares the CLI cache dir
+    report = capsys.readouterr().out
+    assert "60th-TOPIK-II-Listening-Transcript.pdf — OCR (3 items)" in report
+
+
+def test_cli_no_ocr_flag_skips_ocr(tmp_path, monkeypatch, capsys) -> None:
+    ocr_calls: list = []
+    code, _ = _run_cli(
+        tmp_path,
+        monkeypatch,
+        pdf_exists=True,
+        ocr_text=_OCR_TEXT,
+        no_ocr=True,
+        ocr_calls=ocr_calls,
+    )
+    assert code == 0
+    assert ocr_calls == []
+    assert "present but unusable" in capsys.readouterr().out
+
+
+def test_cli_ocr_not_called_when_pdf_absent(tmp_path, monkeypatch, capsys) -> None:
+    ocr_calls: list = []
+    code, _ = _run_cli(tmp_path, monkeypatch, ocr_text=_OCR_TEXT, ocr_calls=ocr_calls)
+    assert code == 0
+    assert ocr_calls == []  # nothing to OCR — 36-II / 60-I have no PDF at all
+    assert "transcript PDF: absent (stems only)" in capsys.readouterr().out
+
+
+def test_cli_ocr_not_called_when_text_pdf_parses(tmp_path, monkeypatch, capsys) -> None:
+    ocr_calls: list = []
+    code, _ = _run_cli(
+        tmp_path,
+        monkeypatch,
+        pdf_exists=True,
+        pdf_items={1: "공식 대본 하나", 2: "공식 대본 둘"},
+        ocr_text=_OCR_TEXT,
+        ocr_calls=ocr_calls,
+    )
+    assert code == 0
+    assert ocr_calls == []  # pdftotext already delivered — Vision costs money
+    assert "— text-PDF (2 items)" in capsys.readouterr().out
+
+
+def test_cli_ocr_unavailable_falls_back_to_stems(tmp_path, monkeypatch, capsys) -> None:
+    # ocr_transcript_pdf returning None (no key / no pdftoppm / API down)
+    # must leave the run intact on stem validation.
+    code, out_path = _run_cli(tmp_path, monkeypatch, pdf_exists=True, ocr_text=None)
+    assert code == 0
+    assert out_path.is_file()
+    assert "present but unusable" in capsys.readouterr().out
+
+
+def test_cli_ocr_exception_does_not_crash_run(tmp_path, monkeypatch, capsys) -> None:
+    code, out_path = _run_cli(tmp_path, monkeypatch, pdf_exists=True, ocr_raises=True)
+    assert code == 0  # artifact written, stems used — never exit 2
+    assert out_path.is_file()
+    assert "present but unusable" in capsys.readouterr().out
+
+
+def test_cli_ocr_rerun_is_byte_identical(tmp_path, monkeypatch) -> None:
+    # Determinism must hold on the OCR path too, not just the absent-PDF one.
+    _, out_path = _run_cli(tmp_path, monkeypatch, pdf_exists=True, ocr_text=_OCR_TEXT)
+    first = out_path.read_bytes()
+    code, _ = _run_cli(tmp_path, monkeypatch, pdf_exists=True, ocr_text=_OCR_TEXT)
+    assert code == 0
+    assert out_path.read_bytes() == first
+
+
+def test_cli_ocr_failure_with_unresolved_items_still_exits_one(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    # OCR degradation (None) must not mask the unresolved-items exit code:
+    # stems-only validation + missing units -> artifact written, exit 1.
+    code, out_path = _run_cli(
+        tmp_path, monkeypatch, missing_two=True, pdf_exists=True, ocr_text=None
+    )
+    assert code == 1
+    artifact = json.loads(out_path.read_text(encoding="utf-8"))
+    assert artifact["unresolved_items"] == [2, 3]
+    report = capsys.readouterr().out
+    assert "present but unusable" in report
+    assert "unresolved items: [2, 3]" in report
+
+
+def test_resolve_transcript_texts_parses_ocr_text(tmp_path, monkeypatch) -> None:
+    pdf = tmp_path / "t.pdf"
+    pdf.write_bytes(b"%PDF")
+    monkeypatch.setattr(run_mod, "parse_transcript_pdf", lambda *a, **k: {})
+    monkeypatch.setattr(
+        run_mod, "ocr_transcript_pdf", lambda *a, **k: _OCR_TEXT
+    )
+    texts, source = resolve_transcript_texts(
+        pdf, cache_dir=tmp_path / "cache", ocr_enabled=True
+    )
+    assert source == "ocr"
+    assert sorted(texts) == [1, 2, 3]
+    assert texts[1] == "여자 : 우산이 있어요?"
+
+
+def test_resolve_transcript_texts_unparsable_ocr_text_is_unusable(
+    tmp_path, monkeypatch
+) -> None:
+    # Vision returned SOMETHING but no question markers survived — still a
+    # graceful "unusable", not an OCR source with zero items.
+    pdf = tmp_path / "t.pdf"
+    pdf.write_bytes(b"%PDF")
+    monkeypatch.setattr(run_mod, "parse_transcript_pdf", lambda *a, **k: {})
+    monkeypatch.setattr(
+        run_mod, "ocr_transcript_pdf", lambda *a, **k: "표지 페이지일 뿐"
+    )
+    texts, source = resolve_transcript_texts(
+        pdf, cache_dir=tmp_path / "cache", ocr_enabled=True
+    )
+    assert (texts, source) == ({}, "unusable")
+
+
+def test_transcript_pdf_note_covers_all_sources(tmp_path) -> None:
+    pdf = tmp_path / "60th-TOPIK-II-Listening-Transcript.pdf"
+    texts = {1: "가", 2: "나"}
+    assert (
+        transcript_pdf_note(pdf, texts, "text-pdf")
+        == "60th-TOPIK-II-Listening-Transcript.pdf — text-PDF (2 items)"
+    )
+    assert (
+        transcript_pdf_note(pdf, texts, "ocr")
+        == "60th-TOPIK-II-Listening-Transcript.pdf — OCR (2 items)"
+    )
+    assert "present but unusable" in transcript_pdf_note(pdf, {}, "unusable")
+    assert transcript_pdf_note(pdf, {}, "absent") == "absent (stems only)"
 
 
 def test_cli_without_structure_or_db_is_usage_error(tmp_path, monkeypatch, capsys) -> None:

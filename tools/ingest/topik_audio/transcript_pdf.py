@@ -6,7 +6,9 @@ deliberately simple and defensive: 22 of 24 papers ship the PDF, but only
 the text-extractable ones (~12/24) actually parse — papers 64/83/91/96/102
 (both levels) are IMAGE-ONLY scans whose ``pdftotext`` dump is just form
 feeds, so their parse is empty (logged ``transcript_pdf_parsed_empty``;
-they would need OCR). Whenever the PDF is absent, unreadable, image-only,
+the runner then falls back to ``transcript_ocr`` — Google Vision — which
+feeds its text through the same :func:`parse_transcript_text`; this module
+itself stays NETWORK-FREE). Whenever the PDF is absent, unreadable, image-only,
 or ``pdftotext`` is unavailable, everything degrades to ``{}`` and the
 caller falls back to DB stems.
 
