@@ -2030,6 +2030,298 @@ describe('served-but-unanswerable exclusions (data sweep D-2 / D-5)', () => {
   });
 });
 
+describe('TOPIK mock audio (F-119 Phase 5) — item spans + envelope audioUrl', () => {
+  const NO_TRANSCRIPT_STEM =
+    '[듣기 지문 없음 — 대화/담화가 오디오로만 제공됨(전사 파일 없음)]';
+
+  /** Write an item's (audio_start_ms, audio_end_ms) window — migration 078. */
+  async function setAudioSpan(itemId: number, startMs: number, endMs: number): Promise<void> {
+    await pg.pool.query(
+      `UPDATE topik_items SET audio_start_ms = $2, audio_end_ms = $3 WHERE id = $1`,
+      [itemId, startMs, endMs],
+    );
+  }
+
+  /** Map a paper's whole-section MP3 (topik_tests.audio_path — migration 078). */
+  async function setTestAudioPath(
+    testNumber: number,
+    topikLevel: 'TOPIK I' | 'TOPIK II',
+    audioPath: string,
+  ): Promise<void> {
+    await pg.pool.query(
+      `UPDATE topik_tests SET audio_path = $3
+        WHERE test_number = $1 AND topik_level = $2 AND section = 'listening'::topik_section`,
+      [testNumber, topikLevel, audioPath],
+    );
+  }
+
+  it('mock items carry audioStartMs/audioEndMs (both-or-neither), paired items share one span, and the envelope names the paper stream', async () => {
+    // Item 1's span starts at 0 — proves the mapper checks null-ness, not
+    // truthiness (a 0 start must still emit).
+    const q1 = await seedTopikItem(pg.pool, {
+      section: 'listening',
+      testNumber: 3100,
+      itemNumber: 1,
+    });
+    await setAudioSpan(q1, 0, 10_000);
+    // A paired dialogue (one recording, two questions — Q21/22) carries the
+    // IDENTICAL span on both items (078's deliberate denormalization).
+    const q21 = await seedTopikItem(pg.pool, {
+      section: 'listening',
+      testNumber: 3100,
+      itemNumber: 21,
+    });
+    const q22 = await seedTopikItem(pg.pool, {
+      section: 'listening',
+      testNumber: 3100,
+      itemNumber: 22,
+    });
+    await setAudioSpan(q21, 60_000, 95_000);
+    await setAudioSpan(q22, 60_000, 95_000);
+    // An unmapped item: no span → NEITHER field on the wire.
+    await seedTopikItem(pg.pool, { section: 'listening', testNumber: 3100, itemNumber: 30 });
+    await setTestAudioPath(
+      3100,
+      'TOPIK II',
+      'TOPIK TEST/3100 - Test/TOPIK-II/3100th-TOPIK-II-Listening-Audio.mp3',
+    );
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.post('/topik/mock').send({ sourceTest: 3100, section: 'listening' });
+    expect(res.status).toBe(200);
+    // ONE URL per exam — the items' windows index into it. TOPIK II → /2.
+    expect(res.body.audioUrl).toBe('/topik/audio/3100/2');
+
+    const items = res.body.items as Array<{
+      number: number;
+      audioStartMs?: number;
+      audioEndMs?: number;
+    }>;
+    expect(items.map((i) => i.number)).toEqual([1, 21, 22, 30]);
+
+    const [i1, i21, i22, i30] = items;
+    expect(i1!.audioStartMs).toBe(0);
+    expect(i1!.audioEndMs).toBe(10_000);
+    // Paired items: identical spans on both.
+    expect(i21!.audioStartMs).toBe(60_000);
+    expect(i21!.audioEndMs).toBe(95_000);
+    expect(i22!.audioStartMs).toBe(i21!.audioStartMs);
+    expect(i22!.audioEndMs).toBe(i21!.audioEndMs);
+    // Both-or-neither: the unmapped item carries NEITHER key.
+    expect(i30).not.toHaveProperty('audioStartMs');
+    expect(i30).not.toHaveProperty('audioEndMs');
+
+    // The answer-strip is UNCHANGED by the audio fields: no `explanation`, no
+    // `correct` anywhere on the wire (the span rides like hasImage/passage).
+    for (const item of res.body.items as Array<Record<string, unknown>>) {
+      expect(item).not.toHaveProperty('explanation');
+      expect(JSON.stringify(item)).not.toContain('correct');
+      for (const opt of item['options'] as Array<Record<string, unknown>>) {
+        expect(Object.keys(opt).sort()).toEqual(['en', 'id', 'kr']);
+      }
+    }
+  });
+
+  it('study/browse DTOs carry the span too (question metadata on every item surface)', async () => {
+    const q1 = await seedTopikItem(pg.pool, {
+      section: 'listening',
+      testNumber: 3105,
+      itemNumber: 1,
+    });
+    await setAudioSpan(q1, 5_000, 20_000);
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const browse = await agent.get('/topik/items').query({ source_test: 3105 });
+    expect(browse.status).toBe(200);
+    expect(browse.body.items[0].audioStartMs).toBe(5_000);
+    expect(browse.body.items[0].audioEndMs).toBe(20_000);
+  });
+
+  it('audioUrl uses /1 for a TOPIK I paper and is null when the paper has no audio_path', async () => {
+    await seedTopikItem(pg.pool, {
+      section: 'listening',
+      testNumber: 3101,
+      itemNumber: 1,
+      topikLevel: 'TOPIK I',
+    });
+    await setTestAudioPath(
+      3101,
+      'TOPIK I',
+      'TOPIK TEST/3101 - Test/TOPIK-I/3101th-TOPIK-I-Listening-Audio.mp3',
+    );
+    // A paper WITHOUT a mapped MP3 — envelope must say null, not fabricate a URL.
+    await seedTopikItem(pg.pool, { section: 'listening', testNumber: 3102, itemNumber: 1 });
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const topikI = await agent
+      .post('/topik/mock')
+      .send({ sourceTest: 3101, topikLevel: 'TOPIK I', section: 'listening' });
+    expect(topikI.status).toBe(200);
+    expect(topikI.body.audioUrl).toBe('/topik/audio/3101/1');
+
+    const noAudio = await agent
+      .post('/topik/mock')
+      .send({ sourceTest: 3102, section: 'listening' });
+    expect(noAudio.status).toBe(200);
+    expect(noAudio.body.audioUrl).toBeNull();
+
+    // The empty-resolve envelope (unknown paper) is null too.
+    const unknown = await agent
+      .post('/topik/mock')
+      .send({ sourceTest: 999_999, section: 'listening' });
+    expect(unknown.status).toBe(200);
+    expect(unknown.body.items).toEqual([]);
+    expect(unknown.body.audioUrl).toBeNull();
+  });
+
+  it('D-2 re-admission (decision #1): a placeholder-stem item WITH an audio span is served + answerable everywhere; one WITHOUT stays excluded', async () => {
+    const normal = await seedTopikItem(pg.pool, {
+      section: 'listening',
+      testNumber: 3103,
+      itemNumber: 1,
+      options: ['가', '나', '다', '라'],
+      answer: 2,
+    });
+    // The D-2 placeholder — but its recording is now mapped, so the learner
+    // LISTENS to the content the note stood in for: genuinely answerable.
+    const readmitted = await seedTopikItem(pg.pool, {
+      section: 'listening',
+      testNumber: 3103,
+      itemNumber: 2,
+      stem: NO_TRANSCRIPT_STEM,
+      prompt: null,
+      options: ['가', '나', '다', '라'],
+      answer: 1,
+    });
+    await setAudioSpan(readmitted, 12_000, 30_000);
+    // The same placeholder with NO span — still nothing to answer against.
+    const stillExcluded = await seedTopikItem(pg.pool, {
+      section: 'listening',
+      testNumber: 3103,
+      itemNumber: 3,
+      stem: NO_TRANSCRIPT_STEM,
+      prompt: null,
+      options: ['가', '나', '다', '라'],
+      answer: 1,
+    });
+    await setTestAudioPath(
+      3103,
+      'TOPIK II',
+      'TOPIK TEST/3103 - Test/TOPIK-II/3103th-TOPIK-II-Listening-Audio.mp3',
+    );
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    // Mock serve: normal + re-admitted (with its span), NOT the span-less one.
+    const mock = await agent.post('/topik/mock').send({ sourceTest: 3103, section: 'listening' });
+    expect(mock.status).toBe(200);
+    const mockItems = mock.body.items as Array<{
+      id: string;
+      audioStartMs?: number;
+      audioEndMs?: number;
+    }>;
+    expect(mockItems.map((i) => i.id)).toEqual([String(normal), String(readmitted)]);
+    expect(mockItems[1]!.audioStartMs).toBe(12_000);
+    expect(mockItems[1]!.audioEndMs).toBe(30_000);
+
+    // Grading universe agrees with the served set (mock ↔ submit coherence).
+    const submit = await agent.post('/topik/mock/submit').send({
+      sourceTest: 3103,
+      section: 'listening',
+      answers: [
+        { itemId: normal, picked: 'b' },
+        { itemId: readmitted, picked: 'a' },
+      ],
+    });
+    expect(submit.status).toBe(200);
+    expect(submit.body.totalItems).toBe(2);
+    expect(submit.body.correct).toBe(2);
+
+    // Browse: the SQL gate re-admits it in BOTH the page and total.
+    const browse = await agent.get('/topik/items').query({ source_test: 3103 });
+    expect(browse.status).toBe(200);
+    expect(browse.body.total).toBe(2);
+    expect((browse.body.items as Array<{ id: string }>).map((i) => i.id)).toEqual([
+      String(normal),
+      String(readmitted),
+    ]);
+
+    // Study draw: re-admitted in, span-less placeholder out.
+    const study = await agent.post('/topik/study').send({ section: 'listening', limit: 50 });
+    expect(study.status).toBe(200);
+    const studyIds = (study.body.items as Array<{ id: string }>).map((i) => i.id);
+    expect(studyIds).toContain(String(readmitted));
+    expect(studyIds).not.toContain(String(stillExcluded));
+
+    // /tests paper enumeration counts the re-admitted item.
+    const tests = await agent.get('/topik/tests').query({ section: 'listening' });
+    expect(tests.status).toBe(200);
+    const paper = (
+      tests.body.tests as Array<{ testNumber: number; itemCount: number }>
+    ).find((p) => p.testNumber === 3103);
+    expect(paper?.itemCount).toBe(2);
+
+    // Direct answer-by-id: the render gate admits the re-admitted item (grades
+    // + logs) and still 404s the span-less placeholder without logging.
+    const graded = await agent.post(`/topik/${readmitted}/answer`).send({ picked: 'a' });
+    expect(graded.status).toBe(200);
+    expect(graded.body.correct).toBe(true);
+    const blocked = await agent.post(`/topik/${stillExcluded}/answer`).send({ picked: 'a' });
+    expect(blocked.status).toBe(404);
+    const log = await pg.pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM topik_responses WHERE mode = 'study'`,
+    );
+    expect(log.rows[0]?.n).toBe('1');
+  });
+
+  it('a READING mock never advertises an audio URL, even when its paper row carries a stray audio_path', async () => {
+    // 078 deliberately does NOT CHECK-pin audio_path to listening rows (the
+    // loader owns that scoping), so the envelope re-asserts it at render time:
+    // a manual UPDATE putting audio_path on a reading paper must NOT make a
+    // reading mock advertise the listening MP3 URL.
+    await seedTopikItem(pg.pool, { section: 'reading', testNumber: 3104, itemNumber: 1 });
+    await pg.pool.query(
+      `UPDATE topik_tests SET audio_path = $3
+        WHERE test_number = $1 AND topik_level = $2 AND section = 'reading'::topik_section`,
+      [3104, 'TOPIK II', 'TOPIK TEST/3104 - Test/TOPIK-II/3104th-TOPIK-II-Listening-Audio.mp3'],
+    );
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.post('/topik/mock').send({ sourceTest: 3104, section: 'reading' });
+    expect(res.status).toBe(200);
+    expect(res.body.items).toHaveLength(1);
+    // The key is PRESENT (stable envelope shape) and explicitly null.
+    expect(res.body).toHaveProperty('audioUrl');
+    expect(res.body.audioUrl).toBeNull();
+  });
+
+  it('the emitted audioUrl resolves to the Phase-4 streaming route (URL ↔ route contract, not just format)', async () => {
+    // The envelope's URL must be a real route in THIS server, not a string that
+    // happens to look right. The paper's audio_path names a file that does NOT
+    // exist under the test corpus root, so a GET that reaches the Phase-4
+    // route answers its UNIFORM 404 ('no audio for this unit' — the streamer's
+    // deliberate non-oracle posture), while an Express route-miss would fall
+    // through to the generic not-found handler with a different body.
+    await seedTopikItem(pg.pool, { section: 'listening', testNumber: 3106, itemNumber: 1 });
+    await setTestAudioPath(
+      3106,
+      'TOPIK II',
+      'TOPIK TEST/3106 - Test/TOPIK-II/3106th-TOPIK-II-Listening-Audio.mp3',
+    );
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const mock = await agent.post('/topik/mock').send({ sourceTest: 3106, section: 'listening' });
+    expect(mock.status).toBe(200);
+    expect(mock.body.audioUrl).toBe('/topik/audio/3106/2');
+
+    const audio = await agent.get(mock.body.audioUrl as string);
+    expect(audio.status).toBe(404);
+    expect((audio.body as { error: unknown }).error).toEqual({
+      code: 'not_found',
+      message: 'no audio for this unit',
+    });
+  });
+});
+
 describe('F-UP-014 — a delayed save cannot resurrect a submitted attempt (fresh-completed guard)', () => {
   /** Seed a 1-item reading paper + save an in-progress attempt for it. */
   async function seedAndSave(

@@ -90,7 +90,11 @@ const INT4_MAX = 2_147_483_647;
 //   D-2: 28 TOPIK-I listening items whose stem is
 //        "[듣기 지문 없음 — 대화/담화가 오디오로만 제공됨(전사 파일 없음)]" —
 //        the audio was never transcribed, so the only "question" is a note
-//        saying the content does not exist.
+//        saying the content does not exist. F-119 decision #1 narrows this
+//        class: once such an item carries an audio span (078's
+//        audio_start_ms/audio_end_ms), the recording IS the content and the
+//        item is re-admitted by both gates below — only placeholder items
+//        still WITHOUT audio remain excluded.
 //   D-5: 8 reading comprehension items whose shared passage (topik_tests.
 //        passages) is the copyright-withholding notice
 //        "[저작권 관련 법령에 따라 본 문항의 지문은 공개하지 않습니다…]" —
@@ -196,6 +200,20 @@ interface TopikItemDTO {
   readonly hasImage: boolean;
   /** Curated text description of the image(s), when the corpus captured one. */
   readonly imageText?: string;
+  /**
+   * This question's window (ms) into the paper's whole-section listening MP3
+   * (topik_tests.audio_path, migration 078) — the client seeks the shared
+   * `<audio>` element to `audioStartMs` and pauses at `audioEndMs` (F-119).
+   * Emitted only when BOTH bounds are present (the both-or-neither CHECK
+   * ck_topik_items_audio_span guarantees this at rest; the mapper re-asserts it
+   * so a wire item never carries a half-window). QUESTION metadata — where in
+   * the recording the item is spoken — not answer data, so it survives the
+   * mock answer-strip exactly like `hasImage`/`passage` (see `toMockItemDTO`).
+   * Paired questions (one dialogue, e.g. Q21-22) carry identical spans.
+   */
+  readonly audioStartMs?: number;
+  /** End (ms, exclusive) of the question's audio window — see `audioStartMs`. */
+  readonly audioEndMs?: number;
 }
 
 /** A topik_items row as selected for the DTO mapping. */
@@ -218,6 +236,20 @@ interface TopikItemRow {
    * mapRowToDTO can resolve the passage covering `item_number` (B-008).
    */
   test_passages: Record<string, unknown> | null;
+  /**
+   * The question's window into the paper's listening MP3 (migration 078).
+   * INTEGER columns under the both-or-neither CHECK ck_topik_items_audio_span —
+   * either both are set (a valid window) or both are NULL (no audio mapped).
+   */
+  audio_start_ms: number | null;
+  audio_end_ms: number | null;
+  /**
+   * The parent test's `audio_path` (topik_tests, migration 078) — non-null when
+   * the paper's whole-section listening MP3 is mapped. Used by `POST /mock` to
+   * decide whether the envelope carries an `audioUrl`; never emitted on the
+   * item DTO itself (the client gets one URL per exam, not one per item).
+   */
+  test_audio_path: string | null;
 }
 
 /**
@@ -292,12 +324,18 @@ function mapRowToDTO(row: TopikItemRow): TopikItemDTO | null {
   //   - a stem that is the no-transcript curator note (D-2; also excluded in
   //     SQL via ANSWERABLE_ITEM_SQL — this is the render-time belt to that
   //     suspender, and the only guard on surfaces that fetch by id, like
-  //     /:itemId/answer and /mistakes),
+  //     /:itemId/answer and /mistakes). F-119 decision #1 RE-ADMITS a
+  //     placeholder-stem item once it carries an audio span (`audio_end_ms IS
+  //     NOT NULL` — mirrors the SQL gate exactly): the stem was only ever a
+  //     stand-in for the untranscribed AUDIO, and with the recording now mapped
+  //     the item is answerable on its merits (real options + answer key; the
+  //     learner listens instead of reading). A placeholder item with NO span
+  //     stays excluded — still nothing to answer against.
   //   - a shared passage that is the copyright-withholding notice (D-5; the
   //     comprehension question asks about text that is deliberately absent).
   // Either way the item cannot be answered on its merits — drop it exactly
   // like a structurally ungradeable row.
-  if (stemText.startsWith(NO_TRANSCRIPT_STEM_PREFIX)) return null;
+  if (stemText.startsWith(NO_TRANSCRIPT_STEM_PREFIX) && row.audio_end_ms == null) return null;
   if (shared.startsWith(WITHHELD_PASSAGE_PREFIX)) return null;
 
   const passage =
@@ -314,6 +352,14 @@ function mapRowToDTO(row: TopikItemRow): TopikItemDTO | null {
     explanation,
     hasImage: row.has_image,
     ...(imageText !== '' ? { imageText } : {}),
+    // Audio window (F-119): emitted only when BOTH bounds are present. The DB
+    // CHECK (ck_topik_items_audio_span, 078) already forbids a half-window at
+    // rest; the && is the render-time re-assertion so the wire invariant
+    // ("audioStartMs and audioEndMs travel together or not at all") holds even
+    // against a constraint-dropped or hand-edited row.
+    ...(row.audio_start_ms !== null && row.audio_end_ms !== null
+      ? { audioStartMs: row.audio_start_ms, audioEndMs: row.audio_end_ms }
+      : {}),
   };
 }
 
@@ -336,10 +382,12 @@ function mapRows(rows: readonly TopikItemRow[]): TopikItemDTO[] {
 // mock item would fail to compile, so the answer cannot leak by accident — the
 // only field on a mock choice is `{ id, kr, en }`, and the only fields on a mock
 // item are id/section/number/level/prompt/passage/passageRef/options plus the
-// image metadata (`hasImage`/`imageText`). `passage` is the shared reading text
+// image metadata (`hasImage`/`imageText`) and the audio window
+// (`audioStartMs`/`audioEndMs` — F-119). `passage` is the shared reading text
 // the QUESTION is about (B-008) — question content, not answer data, exactly
-// like the prompt itself. The `correct` flag + `explanation` are revealed only
-// by `POST /topik/mock/submit`, post-exam.
+// like the prompt itself; the audio window is WHERE in the exam recording the
+// question is spoken — timing, not answers. The `correct` flag + `explanation`
+// are revealed only by `POST /topik/mock/submit`, post-exam.
 // ---------------------------------------------------------------------------
 
 /** A mock choice — the study choice with `correct` removed (type-level). */
@@ -359,7 +407,12 @@ type TopikMockItemDTO = Omit<TopikItemDTO, 'options' | 'explanation'> & {
  * image the exam PDF showed), carry no answer information, and the exam needs
  * them to render image-dependent items answerably. `passage` survives for the
  * same reason (B-008): it is the reading text the question is asked about —
- * without it a shared-passage item is unanswerable in the timed exam.
+ * without it a shared-passage item is unanswerable in the timed exam. The
+ * audio window (`audioStartMs`/`audioEndMs` — F-119) survives too: it tells
+ * the client WHERE in the section MP3 (the envelope's `audioUrl`) to seek for
+ * this question — pure timing metadata, and the whole point of a listening
+ * mock is hearing it. mapRowToDTO already enforced both-or-neither, so the
+ * pair is copied under one guard, never split.
  */
 function toMockItemDTO(item: TopikItemDTO): TopikMockItemDTO {
   return {
@@ -373,6 +426,9 @@ function toMockItemDTO(item: TopikItemDTO): TopikMockItemDTO {
     options: item.options.map((o) => ({ id: o.id, kr: o.kr, en: o.en })),
     hasImage: item.hasImage,
     ...(item.imageText !== undefined ? { imageText: item.imageText } : {}),
+    ...(item.audioStartMs !== undefined && item.audioEndMs !== undefined
+      ? { audioStartMs: item.audioStartMs, audioEndMs: item.audioEndMs }
+      : {}),
   };
 }
 
@@ -408,7 +464,9 @@ const ITEM_COLUMNS = `i.id::text AS id,
                       i.proficiency::text AS proficiency,
                       i.stem, i.prompt, i.options, i.answer,
                       i.has_image, i.image_text, i.extra,
-                      t.passages AS test_passages`;
+                      i.audio_start_ms, i.audio_end_ms,
+                      t.passages AS test_passages,
+                      t.audio_path AS test_audio_path`;
 
 /**
  * The answerable-item guard, shared by every draw/assembly so they all agree:
@@ -419,16 +477,23 @@ const ITEM_COLUMNS = `i.id::text AS id,
  *     so all four choices render identically and the item is unanswerable
  *     (tester sweep P2-1). 900 answerable listening items remain — plenty for a
  *     mock. Assumes topik_items is aliased `i`.
- *   - excludes no-transcript listening items (D-2): 28 items whose stem is the
+ *   - excludes no-transcript listening items (D-2): items whose stem is the
  *     "[듣기 지문 없음 …]" curator note — real options + answer key, but the
  *     audio content was never transcribed, so the learner would guess blind.
  *     coalesce() keeps a NULL stem from failing the NOT LIKE (NULL-propagation
- *     would silently drop every stem-less row).
+ *     would silently drop every stem-less row). F-119 decision #1: an audio
+ *     span RE-ADMITS the item (`OR i.audio_end_ms IS NOT NULL` — 078's
+ *     both-or-neither CHECK makes either bound a complete-window proof): with
+ *     the recording mapped, the learner LISTENS to the content the placeholder
+ *     stood in for, so the item is genuinely answerable. This leg is shared by
+ *     every consumer (resolveMockTest, /tests counts,
+ *     resolveTotalItemsForLevel, /mock/submit), so served item counts grow
+ *     together across the whole surface — intended.
  */
 const ANSWERABLE_ITEM_SQL =
   "jsonb_array_length(i.options) >= 2 AND i.answer IS NOT NULL " +
   "AND i.options->>0 NOT IN ('①','②','③','④') " +
-  `AND coalesce(i.stem, '') NOT LIKE '${NO_TRANSCRIPT_STEM_PREFIX}%'`;
+  `AND (coalesce(i.stem, '') NOT LIKE '${NO_TRANSCRIPT_STEM_PREFIX}%' OR i.audio_end_ms IS NOT NULL)`;
 
 // Official TOPIK II section size (F-UP-007): the corpus tests carry MORE items
 // than the real exam, so a mock caps to the first N answerable items per section
@@ -1581,11 +1646,21 @@ async function resolveMockTest(
  *
  * Body: `{ section: 'reading'|'listening' (or 읽기/듣기), sourceTest?: number,
  * topikLevel?: 'TOPIK I'|'TOPIK II' }`. Returns `{ sourceTest, topikLevel,
- * section, items: TopikMockItemDTO[] }` — `sourceTest` + `topikLevel` name the
- * ONE resolved exam paper (D-1: both levels share every test_number) and are
- * echoed so `/topik/mock/submit` grades the same paper; `section` is the
- * normalized enum. Items are stripped via `toMockItemDTO` (no `correct`, no
- * `explanation` — type-level, see above + SECURITY.md §14.1).
+ * section, audioUrl, items: TopikMockItemDTO[] }` — `sourceTest` + `topikLevel`
+ * name the ONE resolved exam paper (D-1: both levels share every test_number)
+ * and are echoed so `/topik/mock/submit` grades the same paper; `section` is
+ * the normalized enum. Items are stripped via `toMockItemDTO` (no `correct`,
+ * no `explanation` — type-level, see above + SECURITY.md §14.1).
+ *
+ * `audioUrl` (F-119): the streaming URL of the resolved paper's whole-section
+ * listening MP3 — `/topik/audio/<sourceTest>/<1|2>` (1 = TOPIK I, 2 = TOPIK
+ * II, the `GET /topik/audio/:testNumber/:level` contract) — when the paper has
+ * an `audio_path` mapped (078), else `null`. ONE URL per exam: each item's
+ * `audioStartMs`/`audioEndMs` window indexes into this single file, so the
+ * client keeps one buffered `<audio>` element and seeks per question. Read off
+ * the fetched rows' `test_audio_path` (every row belongs to the one resolved
+ * paper), so the envelope and the items describe the same test by
+ * construction.
  *
  * Writing section → 400 (MockSectionSchema; FU-NF-47). An empty result (unknown
  * or empty test/section/level) is a valid 200 with `items: []` — same posture as
@@ -1602,6 +1677,7 @@ router.post('/mock', cheapLimiter(), validateBody(MockBodySchema), async (req, r
         sourceTest: body.sourceTest ?? null,
         topikLevel: body.topikLevel ?? null,
         section: body.section,
+        audioUrl: null,
         items: [],
       });
       return;
@@ -1620,10 +1696,26 @@ router.post('/mock', cheapLimiter(), validateBody(MockBodySchema), async (req, r
       [resolved.sourceTest, resolved.topikLevel, body.section],
     );
 
+    // F-119: one audio URL for the whole exam when the paper's MP3 is mapped.
+    // Every fetched row carries the resolved paper's `audio_path` (the t JOIN),
+    // so rows[0] speaks for the paper; `resolved` non-null guarantees at least
+    // one answerable row exists under the same guard, and `?? null` covers the
+    // vanishingly-thin race where the corpus changed between the two queries.
+    // Section-pinned to listening: 078 deliberately leaves audio_path scoping
+    // to the loader (no CHECK ties it to the listening row), so this is the
+    // render-time re-assertion — a reading mock NEVER advertises the listening
+    // MP3 URL, even if a stray UPDATE puts audio_path on a reading row.
+    const audioPath = rows[0]?.test_audio_path ?? null;
+    const audioUrl =
+      body.section === 'listening' && audioPath !== null
+        ? `/topik/audio/${resolved.sourceTest}/${resolved.topikLevel === 'TOPIK II' ? 2 : 1}`
+        : null;
+
     res.status(200).json({
       sourceTest: resolved.sourceTest,
       topikLevel: resolved.topikLevel,
       section: body.section,
+      audioUrl,
       items: mapRows(rows).map(toMockItemDTO),
     });
   } catch (err) {
