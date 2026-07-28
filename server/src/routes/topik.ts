@@ -335,7 +335,7 @@ function mapRowToDTO(row: TopikItemRow): TopikItemDTO | null {
   //     comprehension question asks about text that is deliberately absent).
   // Either way the item cannot be answered on its merits — drop it exactly
   // like a structurally ungradeable row.
-  if (stemText.startsWith(NO_TRANSCRIPT_STEM_PREFIX) && row.audio_end_ms === null) return null;
+  if (stemText.startsWith(NO_TRANSCRIPT_STEM_PREFIX) && row.audio_end_ms == null) return null;
   if (shared.startsWith(WITHHELD_PASSAGE_PREFIX)) return null;
 
   const passage =
@@ -1701,9 +1701,13 @@ router.post('/mock', cheapLimiter(), validateBody(MockBodySchema), async (req, r
     // so rows[0] speaks for the paper; `resolved` non-null guarantees at least
     // one answerable row exists under the same guard, and `?? null` covers the
     // vanishingly-thin race where the corpus changed between the two queries.
+    // Section-pinned to listening: 078 deliberately leaves audio_path scoping
+    // to the loader (no CHECK ties it to the listening row), so this is the
+    // render-time re-assertion — a reading mock NEVER advertises the listening
+    // MP3 URL, even if a stray UPDATE puts audio_path on a reading row.
     const audioPath = rows[0]?.test_audio_path ?? null;
     const audioUrl =
-      audioPath !== null
+      body.section === 'listening' && audioPath !== null
         ? `/topik/audio/${resolved.sourceTest}/${resolved.topikLevel === 'TOPIK II' ? 2 : 1}`
         : null;
 

@@ -2272,6 +2272,54 @@ describe('TOPIK mock audio (F-119 Phase 5) — item spans + envelope audioUrl', 
     );
     expect(log.rows[0]?.n).toBe('1');
   });
+
+  it('a READING mock never advertises an audio URL, even when its paper row carries a stray audio_path', async () => {
+    // 078 deliberately does NOT CHECK-pin audio_path to listening rows (the
+    // loader owns that scoping), so the envelope re-asserts it at render time:
+    // a manual UPDATE putting audio_path on a reading paper must NOT make a
+    // reading mock advertise the listening MP3 URL.
+    await seedTopikItem(pg.pool, { section: 'reading', testNumber: 3104, itemNumber: 1 });
+    await pg.pool.query(
+      `UPDATE topik_tests SET audio_path = $3
+        WHERE test_number = $1 AND topik_level = $2 AND section = 'reading'::topik_section`,
+      [3104, 'TOPIK II', 'TOPIK TEST/3104 - Test/TOPIK-II/3104th-TOPIK-II-Listening-Audio.mp3'],
+    );
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.post('/topik/mock').send({ sourceTest: 3104, section: 'reading' });
+    expect(res.status).toBe(200);
+    expect(res.body.items).toHaveLength(1);
+    // The key is PRESENT (stable envelope shape) and explicitly null.
+    expect(res.body).toHaveProperty('audioUrl');
+    expect(res.body.audioUrl).toBeNull();
+  });
+
+  it('the emitted audioUrl resolves to the Phase-4 streaming route (URL ↔ route contract, not just format)', async () => {
+    // The envelope's URL must be a real route in THIS server, not a string that
+    // happens to look right. The paper's audio_path names a file that does NOT
+    // exist under the test corpus root, so a GET that reaches the Phase-4
+    // route answers its UNIFORM 404 ('no audio for this unit' — the streamer's
+    // deliberate non-oracle posture), while an Express route-miss would fall
+    // through to the generic not-found handler with a different body.
+    await seedTopikItem(pg.pool, { section: 'listening', testNumber: 3106, itemNumber: 1 });
+    await setTestAudioPath(
+      3106,
+      'TOPIK II',
+      'TOPIK TEST/3106 - Test/TOPIK-II/3106th-TOPIK-II-Listening-Audio.mp3',
+    );
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const mock = await agent.post('/topik/mock').send({ sourceTest: 3106, section: 'listening' });
+    expect(mock.status).toBe(200);
+    expect(mock.body.audioUrl).toBe('/topik/audio/3106/2');
+
+    const audio = await agent.get(mock.body.audioUrl as string);
+    expect(audio.status).toBe(404);
+    expect((audio.body as { error: unknown }).error).toEqual({
+      code: 'not_found',
+      message: 'no audio for this unit',
+    });
+  });
 });
 
 describe('F-UP-014 — a delayed save cannot resurrect a submitted attempt (fresh-completed guard)', () => {

@@ -422,3 +422,13 @@ pair (or one script with `down`/`up` args), e.g. `Deploy/stack-down.sh` /
   order dependency (km-db before servers before km-lb).
 - Nice-to-have: a `status` arg that prints each container's running/health state
   (the manual `docker ps -a --filter name=km-` we keep running).
+
+## Diagnostic TOPIK draw missing the D-2 placeholder exclusion (pre-existing; noted in F-119 Phase-5 review, 2026-07-28)
+
+`server/src/routes/diagnostic.ts` `pickTopikRow` mirrors `ANSWERABLE_ITEM_SQL`'s
+structural legs (options >= 2, answer present, no circled-glyph options) but has
+NEVER carried the D-2 `[듣기 지문 없음 …]` stem-exclusion leg — so a diagnostic
+can serve a span-less no-transcript placeholder item the learner must guess
+blind. Pre-existing (predates F-119; NOT introduced by the Phase-5 widening).
+Fix by sharing/duplicating the D-2 leg (with the audio-span re-admission `OR
+i.audio_end_ms IS NOT NULL`) into `pickTopikRow`'s WHERE. Own ticket.
