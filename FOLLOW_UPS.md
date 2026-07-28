@@ -400,3 +400,25 @@ one-liners "for the next touch of this file":
 `client/src/pages/Ttmik.tsx` My Audio passed its 4-phase /fixpass (PASS, full suite 2322/0). Two low-risk test-coverage gaps the re-review noted — the CODE is verified correct by trace + the listing tests; only the detail-poll's own coverage is thin:
 - **A4B-1:** the `MY_AUDIO_POLL_MAX_TICKS=225` ceiling has a plateau test on the listing poll but not the DETAIL poll (same constant + structure, verified by reading). Add a detail-poll ceiling plateau test.
 - **A4B-2:** the transient-poll-failure retry branch ("a 5xx during a tick keeps the last-good data and the next tick retries") is asserted only by code comment, for both the listing and detail polls. Add a transient-error-then-recover test.
+
+## Deploy tooling — one-command stack teardown + bring-up (requested 2026-07-19)
+
+Manually `docker stop`ping individual containers leaves the stack half-up in a
+confusing way — e.g. stopping just `km-lb` takes the whole app offline even
+though blue/db/etc. are fine (km-lb is the LB). Want a single operator script
+pair (or one script with `down`/`up` args), e.g. `Deploy/stack-down.sh` /
+`Deploy/stack-up.sh`:
+- **down:** gracefully STOP (not `down`, never `-v`) every km-* container across
+  all three compose projects (km-shared / km-blue / km-green) in a safe order
+  (LB first, then colors, then shared), so data + containers survive and bring-up
+  is trivial. Print a clear "stack stopped" summary.
+- **up:** bring the shared services (km-lb/km-db/km-backup/km-worker) + BOTH
+  colors back up (or shared + the recorded ACTIVE color), re-point km-lb at the
+  active color's nginx conf, wait for health, and verify prod on :1840 — i.e. a
+  reconcile that recovers from any partial/wedged state (what `local-standup.sh`
+  does for the active color, generalized to a clean down/up cycle).
+- Guardrails: refuse/​warn on `-v`; idempotent; source deployment-utils.sh for the
+  house loggers/compose_shared/compose_color helpers + load_environment; note the
+  order dependency (km-db before servers before km-lb).
+- Nice-to-have: a `status` arg that prints each container's running/health state
+  (the manual `docker ps -a --filter name=km-` we keep running).
