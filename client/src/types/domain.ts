@@ -2424,6 +2424,18 @@ export interface AudioSource {
   tracks: AudioTrackSummary[];
 }
 
+/**
+ * One curated shared source from `GET /audio/shared` (F-207). Same wire DTO
+ * as `GET /audio`, but here the `slug` is KEPT by the service mapper — the
+ * Listen page's curated tile manifest keys its presentation (title pair,
+ * tone, icon, paired reading book) on it. Carries NO owner identity: the
+ * server serves these rows cross-account and never projects user_id/email
+ * (asserted by the route tests).
+ */
+export interface SharedAudioSource extends AudioSource {
+  slug: string;
+}
+
 /** One ordered transcript line; the [startMs, endMs] window is what a future
  *  play-position highlight would key on. */
 export interface AudioSegment {

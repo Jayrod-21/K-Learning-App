@@ -2,15 +2,21 @@
  * Listen screen (F-012, reworked Phase 3C-2: F-071 / F-072 / F-024) —
  * TTMIK lesson / Iyagi episode audio + read-along.
  *
- * Structure — three URL-addressed views on `/learn/listen` (the same
+ * Structure — URL-addressed views on `/learn/listen` (the same
  * search-param idiom Grammar/Hanja use, so browser Back works and every
- * nested view has a deterministic BackButton parent):
+ * nested view has a deterministic BackButton parent). The original three
+ * views are below; the My Audio (`corpus=mine`) and shared curated
+ * (`corpus=shared`) view families follow the same contract — see the
+ * F-207 addendum at the end of this comment:
  *
- *   1. LANDING (`/learn/listen`) — F-071: a responsive 2-across grid of
- *      SQUARE collection tiles (TTMIK Lessons, Iyagi Episodes), flowing
- *      down. The grid is data-driven off `COLLECTIONS`, so when more audio
- *      is added a new collection is one more entry — the grid just grows.
- *      No fetch happens on the landing; tiles are pure navigation.
+ *   1. LANDING (`/learn/listen`) — F-071: responsive 2-across grids of
+ *      SQUARE collection tiles, grouped since F-207 into swipeable themed
+ *      pages (`SwipeCarousel` over `TILE_PAGES`). The original tiles
+ *      (TTMIK Lessons, Iyagi Episodes, My Audio) stay data-driven off
+ *      `COLLECTIONS` and are pure navigation, but the landing now ALSO
+ *      fetches `GET /audio/shared` to decide which curated tiles render —
+ *      a manifest slug absent from that fetch paints no tile, while the
+ *      static tiles render regardless of the fetch's outcome.
  *   2. LISTING (`?corpus=ttmik` / `?corpus=iyagi`) — F-072: the browse list
  *      windowed to 15 rows via `usePagination` + `ShowMore` (additive
  *      reveal, never loses the user's place). TTMIK adds a level
@@ -159,6 +165,25 @@
  * listing or vice versa. Every storage access is try/catch-guarded — a
  * browser with storage disabled (private mode, quota) degrades to "always
  * restores to the top," never a crash.
+ *
+ * F-207 phase 3 (shared curated corpus) — the landing's flat tile grid
+ * becomes a `SwipeCarousel` of themed tile-pages (phone-home-screen style,
+ * page dots): Lessons / Stories & News / Yours. The original three tiles
+ * keep their exact behavior; the six curated categories (TTMIK Grammar,
+ * Real-Life Conversations, Folktales, Easy Reading, Blue Jindo Dog, News)
+ * surface the operator-shared sets from `GET /audio/shared`. Presentation
+ * lives in the client-side `CURATED_TILES` manifest (the corpus is known
+ * and curated — docs/LISTEN_SHARED_CORPUS_PLAN.md §2/§7); a manifest slug
+ * absent from the fetch simply doesn't render its tile (no dead tiles),
+ * and TTMIK Grammar's ten level sets collapse to ONE tile fronting a level
+ * list. A curated set's tracks reuse the My Audio track player + transcript
+ * flow (`GET /audio/tracks/:id` was read-widened to shared sources in
+ * phase 1; streaming rides the same allow-listed route). The three
+ * categories with an OCR'd reading version offer a Read action into the
+ * chapter reader (`/learn/reading?book=<id>`). Threat posture: the new
+ * `set` search param narrows against the manifest's CLOSED slug set and
+ * `track` through `parsePositiveId` — malformed input falls back UP the
+ * hierarchy (track→set→landing) exactly like every other param here.
  */
 import {
   useCallback,
@@ -183,6 +208,7 @@ import { Icon, type IconName } from '../components/Icon';
 import { PageHubHeader } from '../components/PageHubHeader';
 import { Pill, type PillTone } from '../components/Pill';
 import { ShowMore } from '../components/ShowMore';
+import { SwipeCarousel } from '../components/SwipeCarousel';
 import { Tabs } from '../components/Tabs';
 import { Tapword } from '../components/Tapword';
 import { WordPopover } from '../components/WordPopover';
@@ -203,6 +229,7 @@ import { navItem } from '../lib/nav';
 import {
   checkAudioFile,
   getAudioTrack,
+  getSharedAudio,
   listMyAudio,
   uploadAudio,
 } from '../services/audio';
@@ -222,6 +249,7 @@ import type {
   AudioTranscriptStatus,
   IyagiEpisode,
   ListenSentence,
+  SharedAudioSource,
   TtmikLesson,
   TtmikTranscriptLine,
 } from '../types/domain';
@@ -292,6 +320,193 @@ const COLLECTION_LABEL: Record<Corpus, string> = {
   iyagi: 'Iyagi Episodes',
   mine: 'My Audio',
 };
+
+// ─────────────────────────────────────────────────────────────
+// F-207 — the curated shared-corpus tile manifest
+// ─────────────────────────────────────────────────────────────
+
+/** URL `group` key of the one multi-set tile: TTMIK Grammar's ten level
+ *  sets collapse to a single tile fronting a level list (mirroring how the
+ *  TTMIK Lessons listing fronts its levels) — never ten sibling tiles. */
+const SHARED_GROUP_GRAMMAR = 'ttmik-grammar';
+
+/** The ten grammar level-set slugs, in level order — this manifest order IS
+ *  the level list's display order (no runtime slug parsing needed). */
+const TTMIK_GRAMMAR_SLUGS: readonly string[] = Array.from(
+  { length: 10 },
+  (_, i) => `ttmik-grammar-level-${String(i + 1)}`,
+);
+
+/**
+ * One curated tile's presentation. Client-side manifest by design: the six
+ * categories are a known, curated corpus (plan §2 — operator-flagged, not
+ * user-generated), so their display names, tones, icons and paired reading
+ * books live here rather than on the wire. A tile only RENDERS when at
+ * least one of its slugs is present in the `GET /audio/shared` response —
+ * an un-ingested (or renamed) slug never paints a dead tile.
+ */
+interface CuratedTile {
+  /** Stable identity; doubles as the `?group=` URL key for the one
+   *  multi-slug tile (TTMIK Grammar). */
+  key: string;
+  en: string;
+  kr: string;
+  subEn: string;
+  subKr: string;
+  icon: IconName;
+  /** Fixed CityCard tone — the same "always this hue" contract as the
+   *  original three tiles in `COLLECTIONS`. */
+  tone: CityCardTone;
+  /** Shared-set slug(s) this tile fronts, from the ingested corpus. */
+  slugs: readonly string[];
+  /** Paired reading book (`book_uploads` id) — only the three categories
+   *  with an OCR'd reading version (plan §3: Folktales 17, Easy Reading 18,
+   *  Real-Life Conversations 19). Adds the Read action to the tile's
+   *  collection view; audio-only categories omit it. */
+  readBookId?: number;
+}
+
+const CURATED_TILES: readonly CuratedTile[] = [
+  {
+    key: SHARED_GROUP_GRAMMAR,
+    en: 'TTMIK Grammar Textbook',
+    kr: 'TTMIK 문법 교재',
+    subEn: 'Textbook lessons, levels 1–10',
+    subKr: '레벨 1–10 교재 레슨',
+    icon: 'grammar',
+    tone: 'cyan',
+    slugs: TTMIK_GRAMMAR_SLUGS,
+  },
+  {
+    key: 'real-life-korean-conversations-intermediate',
+    en: 'Real-Life Conversations',
+    kr: '실전 회화',
+    subEn: 'Intermediate real-life dialogues',
+    subKr: '중급 실전 대화',
+    icon: 'chat',
+    tone: 'ochre',
+    slugs: ['real-life-korean-conversations-intermediate'],
+    readBookId: 19,
+  },
+  {
+    key: 'korean-folktales',
+    en: 'Korean Folktales',
+    kr: '전래 동화',
+    subEn: 'Classic folktales, read aloud',
+    subKr: '소리 내어 읽는 전래 동화',
+    icon: 'book',
+    tone: 'crimson',
+    slugs: ['korean-folktales'],
+    readBookId: 17,
+  },
+  {
+    key: 'easy-korean-reading-beginners',
+    en: 'Easy Korean Reading',
+    kr: '쉬운 한국어 읽기',
+    subEn: 'Beginner stories with audio',
+    subKr: '오디오로 듣는 초급 이야기',
+    icon: 'learn',
+    tone: 'mint',
+    slugs: ['easy-korean-reading-beginners'],
+    readBookId: 18,
+  },
+  {
+    key: 'jindo-dog',
+    en: 'Blue Jindo Dog',
+    kr: '파란 진돗개',
+    subEn: 'A story in easy Korean',
+    subKr: '쉬운 한국어 이야기',
+    icon: 'compass',
+    tone: 'cyan',
+    slugs: ['jindo-dog'],
+  },
+  {
+    key: 'news-in-korean',
+    en: 'News in Korean',
+    kr: '한국어 뉴스',
+    subEn: 'Short real news stories',
+    subKr: '짧은 실제 뉴스 기사',
+    icon: 'bell',
+    tone: 'stone',
+    slugs: ['news-in-korean'],
+  },
+];
+
+/** Closed slug set for the untrusted `?set=` param — only slugs the
+ *  manifest knows may address a shared-set view; anything else falls back
+ *  to the landing and never shapes a fetch. */
+const CURATED_SLUG_SET: ReadonlySet<string> = new Set(
+  CURATED_TILES.flatMap((t) => t.slugs),
+);
+const CURATED_TILE_BY_KEY: ReadonlyMap<string, CuratedTile> = new Map(
+  CURATED_TILES.map((t) => [t.key, t]),
+);
+const CURATED_TILE_BY_SLUG: ReadonlyMap<string, CuratedTile> = new Map(
+  CURATED_TILES.flatMap((t) => t.slugs.map((s) => [s, t] as const)),
+);
+
+/** Narrow the untrusted `set` param against the manifest's closed slug set. */
+function parseCuratedSlug(raw: string | null): string | null {
+  return raw !== null && CURATED_SLUG_SET.has(raw) ? raw : null;
+}
+
+/** The owning tile's bilingual name for a shared track detail's eyebrow —
+ *  undefined only if a slug ever left the manifest (the view then keeps the
+ *  My Audio fallback copy rather than crashing). */
+function curatedEyebrow(slug: string): { en: string; kr: string } | undefined {
+  const tile = CURATED_TILE_BY_SLUG.get(slug);
+  return tile !== undefined ? { en: tile.en, kr: tile.kr } : undefined;
+}
+
+/** One entry on a landing tile-page: an original collection tile or a
+ *  curated shared tile (referenced by manifest key). */
+type TilePageEntry =
+  | { kind: 'static'; corpus: Corpus }
+  | { kind: 'curated'; tileKey: string };
+
+/** §7 page grouping — Lessons / Stories & News / Yours. Entry order within
+ *  a page is display order; curated entries render only when matched
+ *  against the shared fetch (see `CollectionTiles`). */
+const TILE_PAGES: ReadonlyArray<{
+  key: string;
+  en: string;
+  kr: string;
+  /** Grid aria-label override for pages where the default
+   *  `"${en} collections"` template reads awkwardly to a screen reader
+   *  ("Yours collections"). */
+  ariaLabel?: string;
+  entries: readonly TilePageEntry[];
+}> = [
+  {
+    key: 'lessons',
+    en: 'Lessons',
+    kr: '레슨',
+    entries: [
+      { kind: 'static', corpus: 'ttmik' },
+      { kind: 'curated', tileKey: SHARED_GROUP_GRAMMAR },
+      { kind: 'static', corpus: 'iyagi' },
+      { kind: 'curated', tileKey: 'real-life-korean-conversations-intermediate' },
+    ],
+  },
+  {
+    key: 'stories',
+    en: 'Stories & News',
+    kr: '이야기와 뉴스',
+    entries: [
+      { kind: 'curated', tileKey: 'korean-folktales' },
+      { kind: 'curated', tileKey: 'easy-korean-reading-beginners' },
+      { kind: 'curated', tileKey: 'jindo-dog' },
+      { kind: 'curated', tileKey: 'news-in-korean' },
+    ],
+  },
+  {
+    key: 'yours',
+    en: 'Yours',
+    kr: '내 오디오',
+    ariaLabel: 'Your audio',
+    entries: [{ kind: 'static', corpus: 'mine' }],
+  },
+];
 
 /**
  * F-072 — the listing window: 15 rows per "page", additive reveal. `max`
@@ -416,7 +631,12 @@ type ListenView =
   | { kind: 'list'; corpus: Corpus }
   | { kind: 'detail'; selection: Selection }
   | { kind: 'mineSource'; sourceId: number }
-  | { kind: 'mineTrack'; trackId: number; sourceId: number | null };
+  | { kind: 'mineTrack'; trackId: number; sourceId: number | null }
+  // F-207 — the shared curated corpus views: a multi-set tile's set list
+  // (TTMIK Grammar levels), one set's track list, and one track's player.
+  | { kind: 'sharedGroup'; groupKey: string }
+  | { kind: 'sharedSet'; slug: string }
+  | { kind: 'sharedTrack'; trackId: number; slug: string };
 
 /**
  * Bounded positive-int parser for untrusted search params. Digits only
@@ -491,6 +711,24 @@ function parseListenView(params: URLSearchParams): ListenView {
     }
     return { kind: 'list', corpus: 'mine' };
   }
+  if (corpus === 'shared') {
+    // F-207 curated views — same fall-back-UP contract. `set` narrows
+    // against the manifest's CLOSED slug set (never a free-form string);
+    // `track` through the bounded id parser. A track without a valid set
+    // (the page never mints that shape) falls all the way to the landing.
+    const slug = parseCuratedSlug(params.get('set'));
+    if (slug !== null) {
+      const track = parsePositiveId(params.get('track'));
+      if (track !== null) {
+        return { kind: 'sharedTrack', trackId: track, slug };
+      }
+      return { kind: 'sharedSet', slug };
+    }
+    if (params.get('group') === SHARED_GROUP_GRAMMAR) {
+      return { kind: 'sharedGroup', groupKey: SHARED_GROUP_GRAMMAR };
+    }
+    return { kind: 'landing' };
+  }
   return { kind: 'landing' };
 }
 
@@ -516,6 +754,20 @@ function myAudioTrackPath(trackId: number, sourceId?: number): string {
   return sourceId !== undefined
     ? `${base}&source=${String(sourceId)}&track=${String(trackId)}`
     : `${base}&track=${String(trackId)}`;
+}
+/** F-207 shared-corpus URLs. Slugs/group keys are manifest constants (the
+ *  closed sets above), never user input — same producer-only contract as
+ *  every other builder here. */
+function sharedGroupPath(groupKey: string): string {
+  return `${LISTEN_PATH}?corpus=shared&group=${groupKey}`;
+}
+function sharedSetPath(slug: string): string {
+  return `${LISTEN_PATH}?corpus=shared&set=${slug}`;
+}
+/** The set slug rides along so the track detail's "back" returns to its
+ *  owning set list (the myAudioTrackPath `source` idiom). */
+function sharedTrackPath(trackId: number, slug: string): string {
+  return `${sharedSetPath(slug)}&track=${String(trackId)}`;
 }
 
 export default function Ttmik(): JSX.Element {
@@ -548,6 +800,27 @@ export default function Ttmik(): JSX.Element {
       ) : (
         <BackButton to={listPath('mine')} label={COLLECTION_LABEL.mine} />
       );
+  } else if (view.kind === 'sharedGroup') {
+    back = <BackButton to={LISTEN_PATH} label={TTMIK_NAV.label} />;
+  } else if (view.kind === 'sharedSet') {
+    // A grammar level set goes back to its level list; a standalone
+    // curated set goes back to the landing — each view's ONE deterministic
+    // parent, derived from the manifest (no extra URL state needed).
+    const tile = CURATED_TILE_BY_SLUG.get(view.slug);
+    back =
+      tile !== undefined && tile.slugs.length > 1 ? (
+        <BackButton to={sharedGroupPath(tile.key)} label={tile.en} />
+      ) : (
+        <BackButton to={LISTEN_PATH} label={TTMIK_NAV.label} />
+      );
+  } else if (view.kind === 'sharedTrack') {
+    const tile = CURATED_TILE_BY_SLUG.get(view.slug);
+    back = (
+      <BackButton
+        to={sharedSetPath(view.slug)}
+        label={tile?.en ?? TTMIK_NAV.label}
+      />
+    );
   }
 
   return (
@@ -589,6 +862,29 @@ export default function Ttmik(): JSX.Element {
           trackId={view.trackId}
         />
       ) : null}
+      {view.kind === 'sharedGroup' ? (
+        <SharedGroupList
+          key={`sharedGroup:${view.groupKey}`}
+          groupKey={view.groupKey}
+        />
+      ) : null}
+      {view.kind === 'sharedSet' ? (
+        // Keyed on the slug — a different set remounts fresh (fresh fetch),
+        // the mineSource contract.
+        <SharedSetDetail key={`sharedSet:${view.slug}`} slug={view.slug} />
+      ) : null}
+      {view.kind === 'sharedTrack' ? (
+        // The SAME track player/transcript component the My Audio flow uses
+        // — `GET /audio/tracks/:id` reads shared-source tracks since F-207
+        // phase 1 — just wearing its curated collection's eyebrow (derived
+        // from the slug inside the component, along with the titleless-
+        // heading fallback).
+        <MyAudioDetail
+          key={`sharedTrack:${String(view.trackId)}`}
+          trackId={view.trackId}
+          sharedSlug={view.slug}
+        />
+      ) : null}
       {view.kind === 'detail' ? (
         // Keyed on the selection: opening a DIFFERENT unit remounts the
         // detail (fresh sub-tab, fresh player, fresh popover state), while
@@ -604,53 +900,205 @@ export default function Ttmik(): JSX.Element {
 }
 
 // ─────────────────────────────────────────────────────────────
-// F-071 — landing: square collection tiles, 2 across
+// F-071 / F-207 — landing: swipeable pages of square collection tiles
 // ─────────────────────────────────────────────────────────────
 
 /**
- * The landing grid. F-128 device #1: each collection is a `CityCard`
- * signboard/hanji-paper tile (`tone` per `COLLECTIONS`, fixed blue/mint —
- * see the file-top doc comment) with a full-bleed real `<button>` inside
- * doing the navigation — the `CollapsibleTile` "surface=city" idiom:
- * CityCard supplies the chrome (glow border/shadow, tokenized both
- * themes), the button inside is the sole keyboard-operable hit target and
- * accessible-name carrier (its content IS the visible bilingual text; the
- * icon is decorative). Layout (2-across squares, flowing down) lives in
- * Ttmik.css on `.km-ttmik__tiles`.
+ * One square collection tile. F-128 device #1: a `CityCard` signboard/
+ * hanji-paper tile (fixed tone — see `COLLECTIONS`/`CURATED_TILES`) with a
+ * full-bleed real `<button>` inside doing the navigation — the
+ * `CollapsibleTile` "surface=city" idiom: CityCard supplies the chrome
+ * (glow border/shadow, tokenized both themes), the button inside is the
+ * sole keyboard-operable hit target and accessible-name carrier (its
+ * content IS the visible bilingual text; the icon is decorative). Layout
+ * (2-across squares, flowing down) lives in Ttmik.css on
+ * `.km-ttmik__tiles`. Extracted from the pre-F-207 grid so the original
+ * three tiles and the curated tiles render through ONE markup path.
+ */
+function TileButton({
+  tone,
+  icon,
+  en,
+  kr,
+  subEn,
+  subKr,
+  onOpen,
+}: {
+  tone: CityCardTone;
+  icon: IconName;
+  en: string;
+  kr: string;
+  subEn: string;
+  subKr: string;
+  onOpen: () => void;
+}): JSX.Element {
+  return (
+    <li>
+      <CityCard tone={tone} className="km-ttmik__tile">
+        <button
+          type="button"
+          className="km-ttmik__tile-btn focusring"
+          onClick={onOpen}
+        >
+          <Icon name={icon} size={24} />
+          <span className="km-ttmik__tile-meta">
+            <span className="km-ttmik__tile-title">
+              <Bilingual en={en} kr={kr} compact />
+            </span>
+            <span className="km-ttmik__tile-sub">
+              <Bilingual en={subEn} kr={subKr} compact />
+            </span>
+          </span>
+        </button>
+      </CityCard>
+    </li>
+  );
+}
+
+/**
+ * F-207 — the landing: a `SwipeCarousel` (dots + drag, the Today/Progress
+ * primitive) of themed tile-pages per `TILE_PAGES`. The page COUNT is fixed
+ * at three regardless of fetch state, so the dots never jump while the
+ * shared list loads. The original three tiles are static entries (pure
+ * navigation, exactly as before); curated tiles render only for manifest
+ * slugs actually present in `GET /audio/shared` — a missing slug's tile is
+ * simply omitted, never a dead tile. A page left tile-less by that rule
+ * (only possible on Stories & News) shows the honest fetch state instead:
+ * loading note / ErrorCard with retry / "nothing shared yet" empty state.
  */
 function CollectionTiles(): JSX.Element {
   const navigate = useNavigate();
-  return (
-    <ul
-      className="km-ttmik__tiles"
-      aria-label="Audio collections"
-      data-tour="listen-collections"
-    >
-      {COLLECTIONS.map((c) => (
-        <li key={c.corpus}>
-          <CityCard tone={c.tone} className="km-ttmik__tile">
-            <button
-              type="button"
-              className="km-ttmik__tile-btn focusring"
-              onClick={() => {
-                void navigate(listPath(c.corpus));
-              }}
-            >
-              <Icon name={c.icon} size={24} />
-              <span className="km-ttmik__tile-meta">
-                <span className="km-ttmik__tile-title">
-                  <Bilingual en={c.en} kr={c.kr} compact />
-                </span>
-                <span className="km-ttmik__tile-sub">
-                  <Bilingual en={c.subEn} kr={c.subKr} compact />
-                </span>
-              </span>
-            </button>
-          </CityCard>
-        </li>
-      ))}
-    </ul>
+  const [shared, setShared] = useState<SharedAudioSource[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
+  const ctrlRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    ctrlRef.current?.abort();
+    ctrlRef.current = ctrl;
+    // Sync-to-external-system (network fetch) — same documented exception
+    // the listings use for their kickoff setState.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setLoading(true);
+    setError(null);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    getSharedAudio(ctrl.signal)
+      .then((rows) => {
+        if (ctrl.signal.aborted) return;
+        setShared(rows);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setError(errorMessageFor(err, 'Could not load the audio library.'));
+        setLoading(false);
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [reloadTick]);
+
+  const refetch = useCallback(() => {
+    setReloadTick((t) => t + 1);
+  }, []);
+
+  const sharedSlugs = useMemo(
+    () => new Set(shared.map((s) => s.slug)),
+    [shared],
   );
+
+  const pages = TILE_PAGES.map((page, pageIndex) => {
+    const tiles: JSX.Element[] = [];
+    for (const entry of page.entries) {
+      if (entry.kind === 'static') {
+        const c = COLLECTIONS.find((col) => col.corpus === entry.corpus);
+        if (c === undefined) continue; // unreachable — both sets are closed
+        tiles.push(
+          <TileButton
+            key={`static:${c.corpus}`}
+            tone={c.tone}
+            icon={c.icon}
+            en={c.en}
+            kr={c.kr}
+            subEn={c.subEn}
+            subKr={c.subKr}
+            onOpen={() => {
+              void navigate(listPath(c.corpus));
+            }}
+          />,
+        );
+        continue;
+      }
+      const tile = CURATED_TILE_BY_KEY.get(entry.tileKey);
+      if (tile === undefined) continue; // unreachable — closed manifest
+      // Omit the tile unless the fetch actually delivered (at least one of)
+      // its sets — the no-dead-tiles rule.
+      if (!tile.slugs.some((slug) => sharedSlugs.has(slug))) continue;
+      const to =
+        tile.slugs.length > 1
+          ? sharedGroupPath(tile.key)
+          : sharedSetPath(tile.slugs[0]);
+      tiles.push(
+        <TileButton
+          key={`curated:${tile.key}`}
+          tone={tile.tone}
+          icon={tile.icon}
+          en={tile.en}
+          kr={tile.kr}
+          subEn={tile.subEn}
+          subKr={tile.subKr}
+          onOpen={() => {
+            void navigate(to);
+          }}
+        />,
+      );
+    }
+
+    return (
+      <div key={page.key} className="km-ttmik__tile-page">
+        <Eyebrow>
+          <Bilingual en={page.en} kr={page.kr} />
+        </Eyebrow>
+        {tiles.length > 0 ? (
+          <ul
+            className="km-ttmik__tiles"
+            aria-label={page.ariaLabel ?? `${page.en} collections`}
+            // The tour anchors on the first page's grid (always populated —
+            // its static tiles render regardless of the shared fetch).
+            {...(pageIndex === 0 ? { 'data-tour': 'listen-collections' } : {})}
+          >
+            {tiles}
+          </ul>
+        ) : loading ? (
+          <div className="km-grammar__state" role="status">
+            <Bilingual
+              en="Loading collections…"
+              kr="컬렉션을 불러오는 중…"
+            />
+          </div>
+        ) : error !== null ? (
+          <ErrorCard message={error} onRetry={refetch} />
+        ) : (
+          // Honest empty state: /audio/shared returned nothing (pre-cutover
+          // environment, or the corpus was unshared) — say so, paint no tiles.
+          <p
+            className="km-reference__empty km-giwa km-hangul-watermark"
+            data-glyph="듣기"
+          >
+            <Bilingual
+              en="No shared audio yet."
+              kr="아직 공유된 오디오가 없어요."
+            />
+          </p>
+        )}
+      </div>
+    );
+  });
+
+  return <SwipeCarousel ariaLabel="Listen collections">{pages}</SwipeCarousel>;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -2540,8 +2988,27 @@ function MyAudioSourceDetail({
  * transcript panel below branches on `transcriptStatus` (transcribing /
  * failed / done). Polls `GET /audio/tracks/:id` while unsettled, with the
  * same stop/cleanup contract as the listing's poll.
+ *
+ * F-207: also serves the shared curated corpus's track detail — the route
+ * reads owned OR shared-source tracks since phase 1 (uniform 404 for
+ * everything else), so the only presentation differences are curated
+ * dressing: the eyebrow wears the collection's bilingual name instead of
+ * the "My Audio" default, and a titleless track's heading falls back to
+ * "Track N" (never "My audio" — that copy belongs to the owned flow).
  */
-function MyAudioDetail({ trackId }: { trackId: number }): JSX.Element {
+function MyAudioDetail({
+  trackId,
+  sharedSlug,
+}: {
+  trackId: number;
+  /** Set when this is a SHARED curated track (F-207): the owning set's
+   *  manifest slug (already narrowed against the closed slug set by
+   *  routing) — drives the collection eyebrow and the titleless-heading
+   *  fallback. Absent for the My Audio flow. */
+  sharedSlug?: string | undefined;
+}): JSX.Element {
+  const eyebrow =
+    sharedSlug !== undefined ? curatedEyebrow(sharedSlug) : undefined;
   const [data, setData] = useState<AudioTrackDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -2596,6 +3063,41 @@ function MyAudioDetail({ trackId }: { trackId: number }): JSX.Element {
   const refetch = useCallback(() => {
     setReloadTick((t) => t + 1);
   }, []);
+
+  // N-2 (F-207): the track-detail wire carries no track number (see
+  // routes/audio.ts's `GET /audio/tracks/:id` shape), so a titleless SHARED
+  // track resolves its "Track N" heading from the shared listing — the same
+  // URL-derived lookup SharedSetDetail performs, so a deep link resolves
+  // too (no router state). Fires only in that narrow case (shared + loaded
+  // + titleless + not yet resolved; the deps are primitives, so poll-tick
+  // `data` refreshes never refire it); a lookup miss or failure keeps the
+  // generic "Track" heading — cosmetic only, never an error surface.
+  const [sharedTrackNumber, setSharedTrackNumber] = useState<number | null>(
+    null,
+  );
+  const needsSharedTitle =
+    sharedSlug !== undefined &&
+    data !== null &&
+    data.track.title === null &&
+    sharedTrackNumber === null;
+  useEffect(() => {
+    if (!needsSharedTitle) return;
+    const ctrl = new AbortController();
+    getSharedAudio(ctrl.signal)
+      .then((rows) => {
+        if (ctrl.signal.aborted) return;
+        const number = rows
+          .find((s) => s.slug === sharedSlug)
+          ?.tracks.find((t) => t.id === trackId)?.trackNumber;
+        if (number !== undefined) setSharedTrackNumber(number);
+      })
+      .catch(() => {
+        // Cosmetic heading lookup only — the generic fallback stands.
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [needsSharedTitle, sharedSlug, trackId]);
 
   // Poll while this track's transcription is unsettled — same posture,
   // per-tick abort-before-fetch, and STOP CONDITIONS as the listing's poll
@@ -2685,12 +3187,23 @@ function MyAudioDetail({ trackId }: { trackId: number }): JSX.Element {
   // The strict allow-list resolver — the ONLY path to the <audio> src. A
   // tampered streamUrl resolves to null and the player simply doesn't render.
   const audioSrc = buildAudioSrc(data.track.streamUrl);
-  const title = data.track.title ?? 'My audio';
+  // Titleless fallback: curated content never reads "My audio" — a shared
+  // track uses its set-list row label ("Track N", or a bare "Track" while
+  // the number lookup above is unresolved); the owned-flow fallback is
+  // unchanged.
+  const title =
+    data.track.title ??
+    (sharedSlug !== undefined
+      ? `Track${sharedTrackNumber !== null ? ` ${String(sharedTrackNumber)}` : ''}`
+      : 'My audio');
 
   return (
     <div>
       <Eyebrow>
-        <Bilingual en="My Audio" kr="내 오디오" />
+        <Bilingual
+          en={eyebrow?.en ?? 'My Audio'}
+          kr={eyebrow?.kr ?? '내 오디오'}
+        />
       </Eyebrow>
       <h2 className="kr kr-display" style={{ margin: '4px 0 6px' }}>
         {title}
@@ -2796,6 +3309,318 @@ function MyAudioDetail({ trackId }: { trackId: number }): JSX.Element {
             />
           </p>
         </CityCard>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// F-207 — shared curated corpus views (group level list + set track list)
+// ─────────────────────────────────────────────────────────────
+//
+// Both fetch `GET /audio/shared` and narrow client-side — the curated
+// corpus is small (~21 sets, server-capped at 50) and there is no
+// single-set endpoint, the exact `MyAudioSourceDetail` posture. Unlike the
+// My Audio views these do NOT poll: the shared corpus is pre-ingested and
+// its transcripts settled (a still-unsettled track simply shows its status
+// pill). Read-only surface — no upload control, no mutations.
+
+/**
+ * The one multi-set tile's set list — TTMIK Grammar's ten level sets, in
+ * manifest (level) order. Each row opens that level set's track list.
+ */
+function SharedGroupList({ groupKey }: { groupKey: string }): JSX.Element {
+  const navigate = useNavigate();
+  const tile = CURATED_TILE_BY_KEY.get(groupKey) ?? null;
+  const [shared, setShared] = useState<SharedAudioSource[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
+  const ctrlRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    ctrlRef.current?.abort();
+    ctrlRef.current = ctrl;
+    // Sync-to-external-system (network fetch) — the page's house pattern.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setLoading(true);
+    setError(null);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    getSharedAudio(ctrl.signal)
+      .then((rows) => {
+        if (ctrl.signal.aborted) return;
+        setShared(rows);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setError(errorMessageFor(err, 'Could not load the audio library.'));
+        setLoading(false);
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [reloadTick]);
+
+  const refetch = useCallback(() => {
+    setReloadTick((t) => t + 1);
+  }, []);
+
+  // Manifest order (level 1..10), keeping only the sets the fetch actually
+  // delivered — a missing level is omitted, not a dead row.
+  const sets = useMemo(() => {
+    if (tile === null) return [];
+    const bySlug = new Map(shared.map((s) => [s.slug, s]));
+    return tile.slugs.flatMap((slug) => {
+      const set = bySlug.get(slug);
+      return set !== undefined ? [set] : [];
+    });
+  }, [shared, tile]);
+
+  // F-162: same scroll-restore contract as the other listings.
+  const scrollRootRef = useListScrollRestore(
+    `km:listen:scroll:shared:${groupKey}`,
+    !loading,
+  );
+
+  // Unreachable — parseListenView only admits manifest group keys.
+  if (tile === null) return <></>;
+  if (loading) {
+    return (
+      <div className="km-grammar__state" role="status">
+        <Bilingual en="Loading sets…" kr="모음을 불러오는 중…" />
+      </div>
+    );
+  }
+  if (error !== null) {
+    return <ErrorCard message={error} onRetry={refetch} />;
+  }
+  if (sets.length === 0) {
+    return (
+      <p
+        className="km-reference__empty km-giwa km-hangul-watermark"
+        data-glyph="오디오"
+      >
+        <Bilingual
+          en="No sets available yet."
+          kr="아직 준비된 모음이 없어요."
+        />
+      </p>
+    );
+  }
+
+  return (
+    <div ref={scrollRootRef}>
+      <Eyebrow>
+        <Bilingual en={tile.en} kr={tile.kr} />
+      </Eyebrow>
+      <Card className="km-reference__list" variant="flat">
+        <ol
+          aria-label={`Sets in ${tile.en}`}
+          style={{ listStyle: 'none', margin: 0, padding: 0 }}
+        >
+          {sets.map((set) => {
+            const status = TRANSCRIPT_STATUS_META[sourceStatus(set)];
+            const trackCount = set.tracks.length;
+            return (
+              <li key={`shared:${String(set.id)}`} className="km-reference__row">
+                <button
+                  type="button"
+                  className="km-resources__list-open focusring"
+                  onClick={() => {
+                    void navigate(sharedSetPath(set.slug));
+                  }}
+                  // Status folded into the label (the SF-2 fold-in idiom).
+                  aria-label={`Open set: ${set.title}, ${String(trackCount)} tracks (${status.en})`}
+                >
+                  <span className="kr km-reference__row-kr">{set.title}</span>
+                  <Pill tone={status.tone}>
+                    <Bilingual en={status.en} kr={status.kr} compact />
+                  </Pill>
+                  <span className="km-resources__pager-count">
+                    {`${String(trackCount)} tracks`}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+      </Card>
+    </div>
+  );
+}
+
+/**
+ * One curated shared set's track list — the `MyAudioSourceDetail` shape
+ * (numbered rows, status pills, rows open the track player) sourced from
+ * the shared corpus, plus the F-207 "both" wiring: where the manifest pairs
+ * a reading book (`readBookId`), a **Read** action navigates to the chapter
+ * reader (`/learn/reading?book=<id>`) so the collection offers Listen AND
+ * Read. Audio-only categories render no Read action at all.
+ */
+function SharedSetDetail({ slug }: { slug: string }): JSX.Element {
+  const navigate = useNavigate();
+  const tile = CURATED_TILE_BY_SLUG.get(slug) ?? null;
+  const [set, setSet] = useState<SharedAudioSource | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
+  const ctrlRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    ctrlRef.current?.abort();
+    ctrlRef.current = ctrl;
+    // Sync-to-external-system (network fetch) — the page's house pattern.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setLoading(true);
+    setError(null);
+    setNotFound(false);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    getSharedAudio(ctrl.signal)
+      .then((rows) => {
+        if (ctrl.signal.aborted) return;
+        const found = rows.find((s) => s.slug === slug) ?? null;
+        setSet(found);
+        // A manifest slug the shared listing doesn't carry (unshared, or a
+        // pre-cutover environment) — uniform not-found, never an error card.
+        setNotFound(found === null);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setError(errorMessageFor(err, 'Could not load this audio set.'));
+        setLoading(false);
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [slug, reloadTick]);
+
+  const refetch = useCallback(() => {
+    setReloadTick((t) => t + 1);
+  }, []);
+
+  // F-162: keyed per slug so different sets never cross-bleed positions.
+  const scrollRootRef = useListScrollRestore(
+    `km:listen:scroll:shared:${slug}`,
+    !loading,
+  );
+
+  // Defensive ordinal sort (the page's list stance).
+  const orderedTracks = useMemo(
+    () =>
+      set !== null
+        ? [...set.tracks].sort((a, b) => a.trackNumber - b.trackNumber)
+        : [],
+    [set],
+  );
+
+  if (loading) return <SkeletonCard />;
+  if (notFound) {
+    return (
+      <p
+        className="km-reference__empty km-giwa km-hangul-watermark"
+        data-glyph="오디오"
+      >
+        <Bilingual
+          en="That audio set couldn't be found."
+          kr="해당 오디오 모음을 찾을 수 없어요."
+        />
+      </p>
+    );
+  }
+  if (error !== null || set === null) {
+    return (
+      <ErrorCard
+        message={error ?? 'Could not load this audio set.'}
+        onRetry={refetch}
+      />
+    );
+  }
+
+  const readBookId = tile?.readBookId;
+
+  return (
+    <div ref={scrollRootRef}>
+      <Eyebrow>
+        <Bilingual en={tile?.en ?? 'Listen'} kr={tile?.kr ?? '듣기'} />
+      </Eyebrow>
+      <h2 className="kr kr-display" style={{ margin: '4px 0 6px' }}>
+        {set.title}
+      </h2>
+      {readBookId !== undefined ? (
+        // The Listen|Read pairing (plan §2 decision 3): Listen is the track
+        // list below; Read jumps to this category's OCR'd book in the
+        // chapter reader. The book id is a manifest constant — never
+        // user/wire input — so the path is producer-controlled.
+        <div style={{ margin: '0 0 12px' }}>
+          <Button
+            variant="ghost"
+            size="sm"
+            leadingIcon={<Icon name="book" size={14} />}
+            onClick={() => {
+              void navigate(`/learn/reading?book=${String(readBookId)}`);
+            }}
+          >
+            <Bilingual en="Read this book" kr="책으로 읽기" compact />
+          </Button>
+        </div>
+      ) : null}
+      {orderedTracks.length === 0 ? (
+        <p
+          className="km-reference__empty km-giwa km-hangul-watermark"
+          data-glyph="오디오"
+        >
+          <Bilingual
+            en="This set has no tracks yet."
+            kr="이 모음에는 아직 트랙이 없어요."
+          />
+        </p>
+      ) : (
+        <Card className="km-reference__list" variant="flat">
+          <ol
+            aria-label={`Tracks in ${set.title}`}
+            style={{ listStyle: 'none', margin: 0, padding: 0 }}
+          >
+            {orderedTracks.map((track) => {
+              const status = TRANSCRIPT_STATUS_META[track.transcriptStatus];
+              const label = track.title ?? `Track ${String(track.trackNumber)}`;
+              return (
+                <li
+                  key={`track:${String(track.id)}`}
+                  className="km-reference__row"
+                >
+                  <button
+                    type="button"
+                    className="km-resources__list-open focusring"
+                    onClick={() => {
+                      // Carry the slug so the track detail's "back" returns
+                      // here (the myAudioTrackPath source idiom).
+                      void navigate(sharedTrackPath(track.id, slug));
+                    }}
+                    aria-label={`Open track ${String(track.trackNumber)}: ${label} (${status.en})`}
+                  >
+                    <span
+                      className="km-resources__pager-count"
+                      style={{ minWidth: '2.25em' }}
+                    >
+                      {String(track.trackNumber)}
+                    </span>
+                    <span className="kr km-reference__row-kr">{label}</span>
+                    <Pill tone={status.tone}>
+                      <Bilingual en={status.en} kr={status.kr} compact />
+                    </Pill>
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
+        </Card>
       )}
     </div>
   );

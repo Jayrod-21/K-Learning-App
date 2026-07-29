@@ -2,7 +2,8 @@
  * audio service (Track A A-4b) — multipart upload config (boundary-clearing
  * Content-Type, long per-call timeout, real-bytes progress), the optional
  * title field, `GET /audio` wire → domain mapping (snake→camel, `slug`
- * dropped), `GET /audio/tracks/:id` URL construction + camelCase
+ * dropped), `GET /audio/shared` (`getSharedAudio`, F-207 — same envelope,
+ * `slug` KEPT), `GET /audio/tracks/:id` URL construction + camelCase
  * passthrough, the client pre-check, signal threading, and ApiError
  * re-throw. Mirrors uploads.test.ts's conventions.
  */
@@ -12,6 +13,7 @@ import {
   MAX_AUDIO_UPLOAD_BYTES,
   checkAudioFile,
   getAudioTrack,
+  getSharedAudio,
   listMyAudio,
   uploadAudio,
 } from './audio';
@@ -207,6 +209,64 @@ describe('listMyAudio', () => {
     );
 
     await expect(listMyAudio()).rejects.toMatchObject({ code: 'network' });
+  });
+});
+
+describe('getSharedAudio', () => {
+  it('GETs /audio/shared and maps the wire sources KEEPING the slug (the curated tile manifest keys on it)', async () => {
+    const wire = {
+      ...SOURCE_WIRE,
+      id: 40,
+      slug: 'korean-folktales',
+      title: '전래 동화',
+    };
+    const spy = vi
+      .spyOn(api, 'get')
+      .mockResolvedValueOnce({ sources: [wire] });
+
+    const got = await getSharedAudio();
+
+    expect(spy).toHaveBeenCalledWith('/audio/shared', undefined);
+    expect(got).toEqual([
+      {
+        id: 40,
+        slug: 'korean-folktales',
+        title: '전래 동화',
+        kind: 'standalone_listening',
+        createdAt: '2026-07-18T00:00:00Z',
+        tracks: [
+          {
+            id: 34,
+            trackNumber: 1,
+            title: '팟캐스트 1화',
+            byteSize: 2_048_000,
+            durationMs: 180_000,
+            transcriptStatus: 'running',
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('forwards an AbortSignal to the request config', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({ sources: [] });
+    const ctrl = new AbortController();
+
+    await getSharedAudio(ctrl.signal);
+
+    expect(spy).toHaveBeenCalledWith('/audio/shared', {
+      signal: ctrl.signal,
+    });
+  });
+
+  it('rethrows ApiError on a failed request', async () => {
+    vi.spyOn(api, 'get').mockRejectedValueOnce(
+      new ApiError('server error', { status: 500, code: 'server_error' }),
+    );
+
+    await expect(getSharedAudio()).rejects.toMatchObject({
+      code: 'server_error',
+    });
   });
 });
 

@@ -11,10 +11,15 @@
  *                             per-track `transcript_status` — the surface the
  *                             Listen page's My Audio listing POLLS while any
  *                             track is pending/running.
- *   GET  /audio/tracks/:id  — one owned track + ordered transcript segments.
- *                             `streamUrl` is the app-relative sibling stream
- *                             path the `<audio>` element plays (resolved via
- *                             services/ttmik.ts's `buildAudioSrc` allow-list).
+ *   GET  /audio/shared      — the F-207 curated shared corpus: the same DTO
+ *                             shape as GET /audio (no owner PII on the wire),
+ *                             visible to every account, read-only. `slug` is
+ *                             kept here (the curated tile manifest's key).
+ *   GET  /audio/tracks/:id  — one readable (owned or shared-source) track +
+ *                             ordered transcript segments. `streamUrl` is the
+ *                             app-relative sibling stream path the `<audio>`
+ *                             element plays (resolved via services/ttmik.ts's
+ *                             `buildAudioSrc` allow-list).
  *
  * Threat model (mirrors services/uploads.ts — the multipart posture is
  * deliberately identical, boundary handling included):
@@ -53,6 +58,7 @@ import type {
   AudioTrackSummary,
   AudioTranscriptStatus,
   AudioUploadResponse,
+  SharedAudioSource,
 } from '../types/domain';
 
 /**
@@ -83,9 +89,11 @@ interface AudioTrackWire {
   transcript_status: AudioTranscriptStatus;
 }
 
-/** Wire shape of one `GET /audio` source row (`AudioSourceDTO`). `slug` is
- *  an internal server key the client has no use for — dropped by the mapper
- *  (the ExtractionRun field-dropping precedent, services/uploads.ts). */
+/** Wire shape of one `GET /audio` / `GET /audio/shared` source row
+ *  (`AudioSourceDTO`). `slug` is an internal server key: `listMyAudio`'s
+ *  mapper drops it (the ExtractionRun field-dropping precedent,
+ *  services/uploads.ts), while the shared mapper KEEPS it as the curated
+ *  tile manifest's join key (F-207 — see {@link toSharedAudioSource}). */
 interface AudioSourceWire {
   id: number;
   slug: string;
@@ -118,6 +126,16 @@ function toAudioSource(wire: AudioSourceWire): AudioSource {
     kind: wire.kind,
     createdAt: wire.created_at,
     tracks: wire.tracks.map(toAudioTrackSummary),
+  };
+}
+
+/** Unlike {@link toAudioSource}, the `slug` is KEPT here — it is the join
+ *  key the Listen page's curated tile manifest matches shared sets on
+ *  (F-207); for the user's own uploads it stays a server-internal detail. */
+function toSharedAudioSource(wire: AudioSourceWire): SharedAudioSource {
+  return {
+    ...toAudioSource(wire),
+    slug: wire.slug,
   };
 }
 
@@ -183,6 +201,23 @@ export async function listMyAudio(signal?: AbortSignal): Promise<AudioSource[]> 
     signal !== undefined ? { signal } : undefined,
   );
   return res.sources.map(toAudioSource);
+}
+
+/**
+ * GET /audio/shared — the curated shared corpus (F-207): every account sees
+ * the same operator-flagged sets, read-only. The envelope is the exact
+ * `GET /audio` shape (server routes share one projection/grouping — no
+ * owner identity on the wire), so the mapping reuses the same wire types;
+ * only the `slug` is additionally retained (see {@link toSharedAudioSource}).
+ */
+export async function getSharedAudio(
+  signal?: AbortSignal,
+): Promise<SharedAudioSource[]> {
+  const res = await api.get<AudioSourcesEnvelope>(
+    '/audio/shared',
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.sources.map(toSharedAudioSource);
 }
 
 /**
