@@ -11,22 +11,43 @@ cause + a **category label** so work can be batched into focused coding sessions
   `CONFIG` (env/deploy). Many items are cross-cutting — the **primary** tag is
   where the bulk of the fix lives; secondary tags in parentheses.
 
-## Status snapshot (2026-07-17 — reconciled)
+## Status snapshot (2026-07-29 — reconciled against `origin/rebuild` @ 86a809e)
 
-**Bugs: 36 total — 33 done · 2 in progress · 1 open · 0 deferred.**
-🟡 in progress: **B-025** (read-along highlight needs forced alignment — deferred) and **B-026**
-(~58 mp3s absent from disk; blocked on user-supplied audio). 🔴 open: **B-031** (TOPIK item 222
-option-1 OCR glitch). Everything else — B-001–B-024, B-027–B-030, B-032–B-036 — is done.
+**This is the single source of truth. Update it as part of each ship (flip the row + the
+per-item status line in the same PR that lands the work).** Reconciliation trail below.
 
-**Features: 143 total — 128 done · 4 in progress · 11 open · 0 deferred.**
-🟡 in progress: **F-016** (dictionary done; nav rework deferred to the app overhaul), **F-080** and
-**F-081** (clients shipped; backends tracked as F-119/F-120), **F-198** (device-adaptive layouts epic).
-🔴 open: **F-084**, **F-109**, **F-119**, **F-120**, **F-194**, **F-197**, **F-200**, **F-201**,
-**F-202** (client vitest in CI — implementation lives on the unmerged `ci/client-vitest-gate` branch,
-PR #139), **F-203**, **F-204**. Reconciled 2026-07-17 against `origin/rebuild`: **F-053**, **F-056**,
-**F-059**, **F-093** upgraded 🟡→🟢 — their deferred backend halves shipped (f2e9d07 vocab
-saved-from-uploads, 967bdcc grammar saved-from-uploads + live OCR trigger, e76c55d settings notif
-contract step).
+### Truly OPEN / IN-PROGRESS right now (everything else is done)
+
+**Bugs**
+- 🟡 **B-025** P1 — verify TTMIK transcripts + highlights (read-along forced alignment, deferred).
+- 🟡 **B-026** P1 — missing audio (~10 TTMIK + ~48 Iyagi mp3s); blocked on user-supplied audio.
+- 🔴 **B-031** P3 — TOPIK item 222 option-1 OCR glitch (single-cell text fix).
+- 🟡 **B-037** P2 (NEW 2026-07-29) — 96 TOPIK section MP3s decode-corrupt (ffmpeg "Invalid data"); their papers stay transcript-only until re-downloaded. Blocked on user re-download, then re-run the F-119 segmenter+loader.
+- 🔴 **B-038** P4 (NEW 2026-07-29) — `diagnostic.ts` `pickTopikRow` mirrors `ANSWERABLE_ITEM_SQL`'s structural legs but never had the D-2 `[듣기 지문 없음]` placeholder-exclusion leg → can serve span-less placeholder items. Pre-existing; filed during F-119 Phase 5.
+
+**Features**
+- 🟡 **F-081** P2 — question-paired images: client shipped; backend is F-120.
+- 🔴 **F-084** P2 — Iyagi 51–100 transcript load (numbering-mismatch investigation).
+- 🔴 **F-109** P4 — retain `source_format` on uploads (enables literal source-format filter).
+- 🔴 **F-120** P3 — TOPIK question images — extract + serve (the F-081 data gap; sibling to the now-done F-119 audio).
+- 🔴 **F-194** P3 — 064 down-migration can't distinguish backfilled from real pre-064 rows.
+- 🟡 **F-197** P2 — Track A "my audio" PIPELINE shipped (#146–153: Whisper worker → upload → stream → client → corpus loader → multitrack). OPEN part: bulk-ingesting the ~1,021-file Downloads audio corpus through it (run status to confirm with Jared).
+- 🟡 **F-198** P2 — device-adaptive layouts epic (D2 shipped #123; remaining breakpoints ongoing).
+- 🔴 **F-200** P4 — clear legacy pre-070 mine-written tags from `vocab_entries.source_upload_id`.
+- 🔴 **F-201** P3 — failed logout (5xx) leaves the server session live.
+- 🔴 **F-203** P4 — server-side bigint id normalization (fix int8→string at the source).
+- 🔴 **F-204** P4 — shared `coerceId()` helper across services.
+- 🔴 **F-205** P3 — reading comprehension questions from exercise-bearing books (post-beta epic; OCR/classifier foundation shipped #141–145).
+- 🔴 **F-206** P3 (NEW 2026-07-29) — study-mode listening audio (F-119 deferred decision #4: mock-only in v1; extend the player to the non-mock study view).
+- 🔴 **F-207** P2 (NEW 2026-07-29) — Listen page: swipeable themed content tiles with page-dots (reuse `SwipeCarousel`). Only "Easy Reading" + "Folktales" exist as content today (user-scoped, on Reading); "Blue jindo dog", "News in Korean", "TTMIK Grammar Textbook" need content wiring first.
+
+### Flipped to DONE this reconciliation (2026-07-29)
+- **F-119** 🔴→🟢 — TOPIK listening audio, ingest + serve per-question. Shipped end-to-end this session (PRs #155–161, migration 078, 855 spans, blue/green deployed, verified in prod).
+- **F-080** 🟡→🟢 — listening mock exams playable per-question audio (client player + F-119 backend both landed).
+- **F-202** 🔴→🟢 — client vitest now runs in CI (`ci.yml` `npm test` → `vitest run`, PR #139 merged).
+- **F-016** 🟡→🟢 — More→Ask/Chat rework: chat rework shipped (#66) + the app overhaul (5-tab IA) landed, closing the deferred nav half.
+
+_Prior trail (2026-07-17):_ F-053/F-056/F-059/F-093 upgraded 🟡→🟢 (deferred backend halves shipped: f2e9d07, 967bdcc, e76c55d). The 2026-07-17 counts (Bugs 36: 33/2/1; Features 143: 128/4/11) predate #137–#161 — superseded by the OPEN list above.
 
 **Intense bug sweep (2026-07-06):** 5 Fable finders swept the whole codebase → ~40 real
 defects fixed across 6 batches + a CRITICAL, each mutation-tested + independently
@@ -40,8 +61,10 @@ Trail: `db/docs/{SWEEP,FIX_sweep,REVIEW_SWEEP}_*.md`. Residuals → FOLLOW_UPS F
 **Not in this doc — see `FOLLOW_UPS.md`:** F-UP-013…018 (answer-key data, resurrect-race
 hardening, resume-fail UX, carousel/Writing nits, and the bug-sweep residuals).
 
-> Snapshot reconciled 2026-07-17 against git `origin/rebuild`. Per-item detailed entries below are the
-> source of truth; path:line refs are pointers, not guaranteed exact after edits.
+> STATUS is governed by the **Status snapshot + Summary table above** (reconciled 2026-07-29 against
+> `origin/rebuild` @ 86a809e). The per-item detailed entries below are historical narrative/root-cause
+> reference and may show a pre-reconciliation status line; path:line refs are pointers, not guaranteed
+> exact after edits. When a detail-entry status disagrees with the table, the table wins.
 
 ---
 
@@ -103,6 +126,8 @@ Launch one focused session per group; cross-cutting items noted.
 | B-034 | Bug | 🟢 | P2 | UI | B-021 client slice — drill banner still says "next in ~10 minutes" for scheduledDays 0 |
 | B-035 | Bug | 🟢 | P2 | UI | B-027 client slice — Writing.tsx still indexes the deterministic prompt list |
 | B-036 | Bug | ✅ | P2 | bug · regression | Settings → Appearance text-size (S / M / L) does nothing |
+| B-037 | Bug | 🟡 | P2 | DATA (CONFIG) | 96 TOPIK section MP3s decode-corrupt → their papers stay transcript-only (blocked on user re-download, then re-run F-119 segmenter+loader) |
+| B-038 | Bug | 🔴 | P4 | BACKEND | `diagnostic.ts` `pickTopikRow` lacks the D-2 `[듣기 지문 없음]` exclusion → can serve span-less placeholder items |
 | F-001 | Feature | 🟢 | P2 | UI (BACKEND) | Make "Writing" a real writing feature (backend already exists) |
 | F-002 | Feature | 🟢 | P3 | DATABASE (DATA, BACKEND) | Add TOPIK Level 1 & 2 to the diagnostic |
 | F-003 | Feature | 🟢 | P3 | BACKEND (UI) | Vocabulary: genre + difficulty filters |
@@ -118,7 +143,7 @@ Launch one focused session per group; cross-cutting items noted.
 | F-013 | Feature | 🟢 | P2 | UI (BACKEND) | Word mastery view — see how well a word is known |
 | F-014 | Feature | 🟢 | P2 | UI (BACKEND) | Today "Writing" tab — rework (scope to be identified) |
 | F-015 | Feature | 🟢 | P2 | DATA (BACKEND, UI) | Hanja — finish the feature + populate the data |
-| F-016 | Feature | 🟡 | P2 | UI (BACKEND) | Rework the "More" tab → Ask/Chat/AI, with an in-chat dictionary |
+| F-016 | Feature | 🟢 | P2 | UI (BACKEND) | Rework the "More" tab → Ask/Chat/AI, with an in-chat dictionary |
 | F-017 | Feature | 🟢 | P2 | UI (BACKEND) | Today: swipeable multi-skill stats carousel |
 | F-018 | Feature | 🟢 | P3 | BACKEND (UI) | Rich grammar detail — render examples/dialogues/formation_rules |
 | F-019 | Feature | 🟢 | P2 | DATA | Generate wrong-answer explanations for topik_items |
@@ -182,7 +207,7 @@ Launch one focused session per group; cross-cutting items noted.
 | F-077 | Feature | 🟢 | P3 | UI | Hanja page reword |
 | F-078 | Feature | 🟢 | P2 | UI (BACKEND) | Daily right/wrong counter |
 | F-079 | Feature | 🟢 | P2 | UI (BACKEND) | Mock exam chooser with done-checkmarks + start page with attempts |
-| F-080 | Feature | 🟡 | P2 | UI (DATA, BACKEND) | Listening mock exams — playable per-question audio |
+| F-080 | Feature | 🟢 | P2 | UI (DATA, BACKEND) | Listening mock exams — playable per-question audio |
 | F-081 | Feature | 🟡 | P2 | DATA (UI) | Show question-paired images where possible |
 | F-082 | Feature | 🟢 | P2 | UI (BACKEND) | TOPIK landing "Previous attempts" review view |
 | F-083 | Feature | ✅ | P3 | DATABASE | DB hygiene cleanup migration |
@@ -221,7 +246,7 @@ Launch one focused session per group; cross-cutting items noted.
 | F-116 | Feature | 🟢 | P2 | API (BACKEND) | `POST /reading/translate` — whole-passage translation (reading F-070 backend) |
 | F-117 | Feature | 🟢 | P3 | BACKEND (DATABASE, API) | Widen the writing rubric taxonomy beyond Q53/Q54 (writing B-027 remainder) |
 | F-118 | Feature | 🟢 | P2 | BACKEND (API) | `GET /topik/tests` — enumerate TOPIK papers (TOPIK F-079 chooser backend) |
-| F-119 | Feature | 🔴 | P2 | DATA (BACKEND) | TOPIK listening audio — ingest + serve per-question (TOPIK F-080 data gap) |
+| F-119 | Feature | 🟢 | P2 | DATA (BACKEND) | TOPIK listening audio — ingest + serve per-question (TOPIK F-080 data gap) |
 | F-120 | Feature | 🔴 | P3 | DATA (BACKEND) | TOPIK question images — extract + serve (TOPIK F-081 data gap) |
 | F-121 | Feature | ✅ | P4 | UI (A11Y) | `ShowMore` final-reveal focus lands on an off-screen node (visible-focus polish) |
 | F-122 | Feature | 🟢 | P3 | BACKEND (DATABASE) | Persist `topik_level` on `topik_attempts` for full D-1 level-pinning |
@@ -238,15 +263,17 @@ Launch one focused session per group; cross-cutting items noted.
 | F-194 | Feature | 🔴 | P3 | DATABASE | 064's down-migration can't distinguish "backfilled" from "a real pre-064 row that happens to match the shape" |
 | F-195 | Feature | 🟢 | P3 | error-hygiene | `services/kiwi.ts` forwards raw upstream error `{name,message}` to the client |
 | F-196 | Feature | 🟢 | P4 | resilience | Replace the PastExams exhaustiveness `throw` with a page-scoped guard |
-| F-197 | Feature | 🔴 | P2 | content | Ingest the Downloads audio corpus (map Track N → app slot) |
+| F-197 | Feature | 🟡 | P2 | content | Ingest the Downloads audio corpus (map Track N → app slot) — pipeline shipped (#146–153); bulk ingest run TBD |
 | F-198 | Feature | 🟡 | P2 | design-system · epic | EPIC · Device-adaptive layouts (responsive desktop/tablet/mobile) |
 | F-199 | Feature | 🟢 | P4 | multi-user correctness | Per-user upload provenance — a 2nd user mining the same lemma silently loses their tag |
 | F-200 | Feature | 🔴 | P4 | data hygiene · follow-up (F-199) | Clear legacy pre-070 mine-written tags from `vocab_entries.source_upload_id` |
 | F-201 | Feature | 🔴 | P3 | auth resilience · follow-up (client logout button, `docs/REVIEW_logout.md` SF-2) | Failed logout (5xx) leaves the server session live — silent /login round-trip back into the app |
-| F-202 | Feature | 🔴 | P2 | CI / tooling | CI must run the client vitest suite (currently only lint/typecheck/build) |
+| F-202 | Feature | 🟢 | P2 | CI / tooling | CI must run the client vitest suite (currently only lint/typecheck/build) |
 | F-203 | Feature | 🔴 | P4 | wire-contract hardening · follow-up (`REVIEW_ticket-id-fix.md` probe 3) | Server-side bigint id normalization — fix the bigint→string class at the source |
 | F-204 | Feature | 🔴 | P4 | wire-boundary hardening · follow-up (`REVIEW_ticket-id-fix.md` NIT-1) | Shared `coerceId()` helper — guard every service's bare `Number(id)` wire coercion |
 | F-205 | Feature | 🔴 | P3 | DATABASE (BACKEND, UI, ingest) · post-beta epic | Reading comprehension questions from exercise-bearing books (Folktales/conversations/graded readers) |
+| F-206 | Feature | 🔴 | P3 | UI (BACKEND) | Study-mode listening audio — extend the F-119 player to the non-mock TOPIK study view (deferred decision #4) |
+| F-207 | Feature | 🔴 | P2 | UI (DATA, ingest) | Listen page swipeable themed content tiles + page-dots (reuse `SwipeCarousel`); 3 of 6 categories need content wiring first |
 
 ---
 
