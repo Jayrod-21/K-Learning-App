@@ -32,7 +32,7 @@ The rule: **shared = readable by all, mutable by none but the owner.** Concretel
 | Surface | Today | After |
 |---|---|---|
 | `GET /audio` ("My Audio" list) | `WHERE user_id=$me` | `WHERE user_id=$me AND is_shared=false` |
-| **NEW** shared-audio list (curated tiles) | — | `WHERE is_shared=true` (+ owner label), non-user-scoped |
+| **NEW** shared-audio list (curated tiles) | — | `WHERE is_shared=true`, non-user-scoped, **no owner identity in the DTO** (no user_id/email — served cross-account; enforced by tests) |
 | `GET /audio/tracks/:id/stream` (IDOR probe) | `WHERE id=$1 AND user_id=$me` | `WHERE id=$1 AND (user_id=$me OR is_shared=true)` — **read-only** |
 | `GET /uploads`, reading chapters/pages | `WHERE user_id=$me` | shared surfaces add `OR is_shared=true`; "my uploads" stays `AND is_shared=false` |
 | **All mutations** (rename/delete/upload/OCR-trigger, `POST/PATCH/DELETE`) | `WHERE id=$1 AND user_id=$me` | **UNCHANGED — owner-only** |
