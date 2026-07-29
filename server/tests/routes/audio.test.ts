@@ -6,6 +6,7 @@
  * Routes:
  *   POST /audio
  *   GET  /audio
+ *   GET  /audio/shared              (F-207 — curated shared sets, read-only)
  *   GET  /audio/tracks/:id          (A-4a — track detail + ordered segments)
  *   GET  /audio/tracks/:id/stream   (A-4a — user-scoped Range-capable bytes)
  *
@@ -54,6 +55,15 @@
  *     streamUrl + transcriptStatus + durationMs); IDOR → 404; a
  *     not-yet-transcribed track → segments: [] (normal state, not an error);
  *     nonexistent id → 404
+ *   - F-207 shared corpus (the access-control threat-model tests, plan §5):
+ *     a non-owner can LIST /audio/shared and STREAM/READ a shared set's
+ *     tracks (200 + exact bytes); a non-owner still 404s uniformly on the
+ *     owner's PRIVATE tracks (per-source flag — sharing one set opens no
+ *     sibling); NO mutation surface exists for audio rows and the upload
+ *     path cannot set is_shared (.strict() mass-assignment → 400, share-flag
+ *     hijack impossible); the owner's shared set leaves their "My Audio"
+ *     list (decision #2) while private uploads remain; the /audio/shared DTO
+ *     carries NO owner identity (exact-key assertions + response-text scan)
  */
 import os from 'node:os';
 import path from 'node:path';
@@ -193,6 +203,7 @@ describe('audio — auth required', () => {
   it.each([
     ['GET', '/audio'],
     ['POST', '/audio'],
+    ['GET', '/audio/shared'],
     ['GET', '/audio/tracks/1'],
     ['GET', '/audio/tracks/1/stream'],
   ])('%s %s unauthenticated → 401', async (method, p) => {
@@ -977,5 +988,271 @@ describe('GET /audio/tracks/:id — detail + segments', () => {
     const { agent } = await registerUser(t.app, pg.pool);
     expect((await agent.get('/audio/tracks/424242')).status).toBe(404);
     expect((await agent.get('/audio/tracks/not-a-number')).status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F-207 phase 1 — shared curated corpus: the access-control threat-model
+// tests (docs/LISTEN_SHARED_CORPUS_PLAN.md §5). The rule under test:
+// shared = READABLE by every account, MUTABLE by no one but the owner.
+// is_shared is operator-set only, so tests flip it the way the phase-2
+// cutover script will: a direct keyed UPDATE, never a route.
+// ---------------------------------------------------------------------------
+
+/** Upload one set via the real route and return BOTH ids (uploadTrack above
+ *  returns only the track id; these tests assert at the source level too). */
+async function uploadSet(
+  agent: ReturnType<typeof request.agent>,
+  bytes: Buffer,
+  title: string,
+): Promise<{ sourceId: number; trackId: number }> {
+  const res = await agent
+    .post('/audio')
+    .field('title', title)
+    .attach('file', bytes, { filename: 'set.mp3', contentType: 'audio/mpeg' });
+  expect(res.status).toBe(201);
+  return { sourceId: res.body.sourceId as number, trackId: res.body.trackId as number };
+}
+
+/** Operator-style share flip — the phase-2 cutover script's exact shape.
+ *  There is deliberately NO route that does this (share-flag-hijack threat). */
+async function shareSource(sourceId: number): Promise<void> {
+  await pg.pool.query(`UPDATE audio_sources SET is_shared = true WHERE id = $1`, [sourceId]);
+}
+
+describe('F-207 — GET /audio/shared (curated list, cross-account, no owner PII)', () => {
+  it('a NON-owner lists the shared set — and ONLY the shared one; private sets of any owner never appear', async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    const shared = await uploadSet(a.agent, fakeMp3(1500), 'Korean Folktales');
+    await uploadSet(a.agent, fakeMp3(), 'A private set'); // stays private
+    await uploadSet(b.agent, fakeMp3(), 'B private set'); // stays private
+    await shareSource(shared.sourceId);
+
+    const res = await b.agent.get('/audio/shared');
+    expect(res.status).toBe(200);
+    expect(res.body.sources).toHaveLength(1);
+    expect(res.body.sources[0]).toMatchObject({
+      id: shared.sourceId,
+      title: 'Korean Folktales',
+      kind: 'standalone_listening',
+    });
+    expect(res.body.sources[0].tracks).toEqual([
+      {
+        id: shared.trackId,
+        track_number: 1,
+        title: 'Korean Folktales',
+        byte_size: 1500,
+        duration_ms: null,
+        transcript_status: 'pending',
+      },
+    ]);
+  });
+
+  it('the DTO carries NO owner identity: exact key sets + no user_id/email anywhere on the wire', async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    const { sourceId } = await uploadSet(a.agent, fakeMp3(), 'Iyagi Episodes');
+    await shareSource(sourceId);
+
+    const res = await b.agent.get('/audio/shared');
+    expect(res.status).toBe(200);
+    expect(res.body.sources).toHaveLength(1);
+    // EXACT key sets — a future column added to the projection cannot slip
+    // into this response unnoticed (these are the owner's rows served to
+    // other accounts; the DTO is the privacy boundary).
+    expect(Object.keys(res.body.sources[0]).sort()).toEqual([
+      'created_at',
+      'id',
+      'kind',
+      'slug',
+      'title',
+      'tracks',
+    ]);
+    expect(Object.keys(res.body.sources[0].tracks[0]).sort()).toEqual([
+      'byte_size',
+      'duration_ms',
+      'id',
+      'title',
+      'track_number',
+      'transcript_status',
+    ]);
+    // Belt-and-braces: nothing owner-identifying anywhere in the raw payload.
+    const raw = JSON.stringify(res.body);
+    expect(raw).not.toContain('user_id');
+    expect(raw).not.toContain('userId');
+    expect(raw).not.toContain('email');
+    expect(raw).not.toContain(a.email);
+  });
+
+  it("the OWNER sees the same curated list (non-user-scoped includes the owner's own view)", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const { sourceId } = await uploadSet(a.agent, fakeMp3(), 'TTMIK Grammar');
+    await shareSource(sourceId);
+
+    const res = await a.agent.get('/audio/shared');
+    expect(res.status).toBe(200);
+    expect(res.body.sources.map((s: { id: number }) => s.id)).toEqual([sourceId]);
+  });
+
+  it('empty curated corpus → 200 with an empty list (never an error)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/audio/shared');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ sources: [] });
+  });
+});
+
+describe('F-207 — cross-account READ of a shared set (stream + detail)', () => {
+  it("a NON-owner streams a shared set's track: 200 + the exact bytes + the streaming headers", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    const bytes = fakeMp3(4096);
+    const { sourceId, trackId } = await uploadSet(a.agent, bytes, 'Folktale 01');
+    await shareSource(sourceId);
+
+    const res = await getAudio(b.agent, `/audio/tracks/${trackId}/stream`);
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('audio/mpeg');
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(res.headers['accept-ranges']).toBe('bytes');
+    expect(res.headers['content-length']).toBe(String(bytes.length));
+    expect(Buffer.compare(res.body as Buffer, bytes)).toBe(0);
+  });
+
+  it("a NON-owner reads a shared track's detail + segments (the Listen transcript surface)", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    const { sourceId, trackId } = await uploadSet(a.agent, fakeMp3(), 'Folktale 02');
+    await shareSource(sourceId);
+    await pg.pool.query(
+      `UPDATE audio_tracks SET transcript_status = 'done', duration_ms = 2000 WHERE id = $1`,
+      [trackId],
+    );
+    await seedAudioSegment(pg.pool, trackId, 1, { startMs: 0, endMs: 2000, body: '옛날 옛적에' });
+
+    const res = await b.agent.get(`/audio/tracks/${trackId}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      track: {
+        id: trackId,
+        title: 'Folktale 02',
+        transcriptStatus: 'done',
+        durationMs: 2000,
+        streamUrl: `/audio/tracks/${trackId}/stream`,
+      },
+      segments: [{ segmentNumber: 1, startMs: 0, endMs: 2000, body: '옛날 옛적에' }],
+    });
+  });
+
+  it("IDOR holds per-source: sharing ONE of A's sets opens NO sibling — B still gets the uniform 404 on A's private track (stream + detail)", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    const shared = await uploadSet(a.agent, fakeMp3(), 'Shared set');
+    const priv = await uploadSet(a.agent, fakeMp3(), 'Private set');
+    await shareSource(shared.sourceId);
+
+    // The shared one reads fine…
+    expect((await b.agent.get(`/audio/tracks/${shared.trackId}`)).status).toBe(200);
+
+    // …the private sibling is a uniform 404 on BOTH read routes —
+    // byte-identical error payload to a genuinely-missing id (no existence
+    // oracle survives the widening).
+    const ghostStream = await b.agent.get('/audio/tracks/999999/stream');
+    const privStream = await b.agent.get(`/audio/tracks/${priv.trackId}/stream`);
+    expect(ghostStream.status).toBe(404);
+    expect(privStream.status).toBe(404);
+    expect(privStream.body.error).toEqual(ghostStream.body.error);
+
+    const ghostDetail = await b.agent.get('/audio/tracks/999999');
+    const privDetail = await b.agent.get(`/audio/tracks/${priv.trackId}`);
+    expect(ghostDetail.status).toBe(404);
+    expect(privDetail.status).toBe(404);
+    expect(privDetail.body.error).toEqual(ghostDetail.body.error);
+
+    // And the OWNER's access to their private set is untouched.
+    expect((await a.agent.get(`/audio/tracks/${priv.trackId}/stream`)).status).toBe(200);
+  });
+});
+
+describe('F-207 — mutation stays owner-only; the share flag cannot be hijacked', () => {
+  it('sharing is READ-only: no mutation route exists for audio rows at all — every write verb on a shared id is 404 (no such surface)', async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    const { sourceId, trackId } = await uploadSet(a.agent, fakeMp3(), 'Shared set');
+    await shareSource(sourceId);
+
+    // The audio router mounts exactly POST /audio (create-own) + the GET
+    // reads. There is NO rename/delete/re-transcribe surface — for a
+    // non-owner OR the owner — so "a non-owner cannot mutate a shared set"
+    // holds structurally: 404 (no route), asserted against every plausible
+    // mutation shape so a future mutation route cannot land without tripping
+    // this test and adding its own owner-scope proof.
+    // Deferred (thunked) so each request is built + awaited ONE AT A TIME.
+    // Building all six supertest Tests eagerly in an array literal fires them
+    // concurrently against the ephemeral test server, and a later request
+    // reusing the agent's connection to an already-torn-down request server
+    // races into ECONNREFUSED — a harness artifact, not a route behavior.
+    const attempts: Array<() => Promise<{ status: number }>> = [
+      () => b.agent.patch(`/audio/${sourceId}`).send({ title: 'hijacked' }),
+      () => b.agent.put(`/audio/${sourceId}`).send({ title: 'hijacked' }),
+      () => b.agent.delete(`/audio/${sourceId}`),
+      () => b.agent.patch(`/audio/tracks/${trackId}`).send({ title: 'hijacked' }),
+      () => b.agent.delete(`/audio/tracks/${trackId}`),
+      () => b.agent.post(`/audio/tracks/${trackId}/transcribe`),
+    ];
+    for (const make of attempts) {
+      expect((await make()).status).toBe(404);
+    }
+
+    // Nothing changed under A's rows.
+    const src = await pg.pool.query<{ title: string; is_shared: boolean; user_id: string }>(
+      `SELECT title, is_shared, user_id FROM audio_sources WHERE id = $1`,
+      [sourceId],
+    );
+    expect(src.rows[0]).toEqual({
+      title: 'Shared set',
+      is_shared: true,
+      user_id: String(a.userId),
+    });
+  });
+
+  it('share-flag hijack via upload is impossible: an is_shared body field is REJECTED (.strict() → 400), and rows only ever land private', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+
+    // Attempt the mass-assignment: .strict() must 400, writing nothing.
+    const res = await agent
+      .post('/audio')
+      .field('title', 'Sneaky')
+      .field('is_shared', 'true')
+      .attach('file', fakeMp3(), { filename: 's.mp3', contentType: 'audio/mpeg' });
+    expect(res.status).toBe(400);
+    expect(await rowCount('audio_sources')).toBe(0);
+
+    // A clean upload lands is_shared = false (079's default — private).
+    const ok = await uploadSet(agent, fakeMp3(), 'Clean');
+    const { rows } = await pg.pool.query<{ is_shared: boolean; user_id: string }>(
+      `SELECT is_shared, user_id FROM audio_sources WHERE id = $1`,
+      [ok.sourceId],
+    );
+    expect(rows[0]).toEqual({ is_shared: false, user_id: String(userId) });
+  });
+});
+
+describe("F-207 — decision #2: a shared set leaves the owner's My Audio list", () => {
+  it("A's shared set is absent from A's GET /audio while A's private upload remains; B's list is untouched", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    const shared = await uploadSet(a.agent, fakeMp3(), 'Now curated');
+    const priv = await uploadSet(a.agent, fakeMp3(), 'Still mine');
+    const bOwn = await uploadSet(b.agent, fakeMp3(), 'B own');
+    await shareSource(shared.sourceId);
+
+    const aList = await a.agent.get('/audio');
+    expect(aList.status).toBe(200);
+    expect(aList.body.sources.map((s: { id: number }) => s.id)).toEqual([priv.sourceId]);
+
+    const bList = await b.agent.get('/audio');
+    expect(bList.body.sources.map((s: { id: number }) => s.id)).toEqual([bOwn.sourceId]);
   });
 });
