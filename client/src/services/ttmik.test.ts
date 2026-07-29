@@ -209,4 +209,35 @@ describe('buildAudioSrc', () => {
     expect(buildAudioSrc('/audio/tracks/1/stream ', '')).toBeNull();
     expect(buildAudioSrc('/audio/tracks/1\t/stream', '')).toBeNull();
   });
+
+  // F-119 — the TOPIK mock exam's whole-section audio joins the allow-list.
+  it('accepts the TOPIK exam audio shape (/topik/audio/:testNumber/:level)', () => {
+    expect(buildAudioSrc('/topik/audio/60/2', '')).toBe('/topik/audio/60/2');
+    expect(buildAudioSrc('/topik/audio/35/1', 'http://localhost:4000')).toBe(
+      'http://localhost:4000/topik/audio/35/1',
+    );
+  });
+
+  it('rejects near-misses of the TOPIK exam audio shape (the anchor holds)', () => {
+    // The level segment is EXACTLY 1 or 2 (the GET /topik/audio contract).
+    expect(buildAudioSrc('/topik/audio/60/3', '')).toBeNull();
+    expect(buildAudioSrc('/topik/audio/60/0', '')).toBeNull();
+    expect(buildAudioSrc('/topik/audio/60/12', '')).toBeNull();
+    // Non-numeric test number / missing segments.
+    expect(buildAudioSrc('/topik/audio/x/2', '')).toBeNull();
+    expect(buildAudioSrc('/topik/audio/2', '')).toBeNull();
+    expect(buildAudioSrc('/topik/audio//2', '')).toBeNull();
+    // Trailing junk / traversal past the anchored tail.
+    expect(buildAudioSrc('/topik/audio/60/2/', '')).toBeNull();
+    expect(buildAudioSrc('/topik/audio/60/2/extra', '')).toBeNull();
+    expect(buildAudioSrc('/topik/audio/60/2/../1', '')).toBeNull();
+    expect(buildAudioSrc('/topik/audio/60/2?x=1', '')).toBeNull();
+    // Off-origin variants (protocol-relative / absolute / normalization
+    // bypass — the same F-012 R3 family the other shapes reject).
+    expect(buildAudioSrc('//topik/audio/60/2', '')).toBeNull();
+    expect(buildAudioSrc('topik/audio/60/2', '')).toBeNull();
+    expect(buildAudioSrc('https://evil.example/topik/audio/60/2', '')).toBeNull();
+    expect(buildAudioSrc('/\\evil.example/topik/audio/60/2', '')).toBeNull();
+    expect(buildAudioSrc('/topik/audio/60/2\n', '')).toBeNull();
+  });
 });

@@ -222,6 +222,13 @@ const TOPIK_MOCK_ITEMS_FIXTURE: TopikMockItem[] = [
     // Question content, not answer data — survives the answer strip (B-008).
     passage: REMOTE_WORK_PASSAGE,
     passageRef: 'remote-work',
+    // F-119: a per-question window into the exam's whole-section audio file
+    // (question metadata — timing — NOT answer data; the fixture stays
+    // answer-stripped). Items 1–2 carry spans so the offline/dev path
+    // exercises the per-question player; items 3–4 deliberately have none,
+    // exercising the honest per-item "no audio yet" fallback alongside it.
+    audioStartMs: 12_000,
+    audioEndMs: 45_000,
     options: [
       { id: 'a', kr: '재택근무는 출퇴근 시간을 늘린다.', en: 'Remote work increases commute time.' },
       { id: 'b', kr: '재택근무에는 장점과 단점이 모두 있다.', en: 'Remote work has both pros and cons.' },
@@ -235,6 +242,9 @@ const TOPIK_MOCK_ITEMS_FIXTURE: TopikMockItem[] = [
     number: 2,
     level: 4,
     prompt: '밑줄 친 부분과 의미가 가장 비슷한 것은?',
+    // See item 1001 — the second mapped span (contiguous, later window).
+    audioStartMs: 47_000,
+    audioEndMs: 80_000,
     options: [
       { id: 'a', kr: '결국 계획을 미루기로 했다.', en: 'They decided to postpone the plan.' },
       { id: 'b', kr: '예상보다 일찍 일을 끝냈다.', en: 'They finished earlier than expected.' },
@@ -285,6 +295,12 @@ export async function loadTopikMockTest(section: MockSection): Promise<MockTest>
     // this as non-authoritative; there is no real corpus paper behind it).
     topikLevel: 'TOPIK II',
     section,
+    // F-119: a listening fixture advertises a well-formed exam-audio URL so
+    // the dev/offline path renders the per-question player (the request 404s
+    // against a real server — the player's own error note covers that, and
+    // the 🅂 badge already marks the exam as fixture data). Reading mocks
+    // carry no audio, mirroring the server's section-pinned `audioUrl`.
+    audioUrl: section === 'listening' ? '/topik/audio/60/2' : null,
     items: TOPIK_MOCK_ITEMS_FIXTURE.map((it) => ({
       ...it,
       options: it.options.map((o) => ({ ...o })),

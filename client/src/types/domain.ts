@@ -264,6 +264,25 @@ export interface TopikMockItem {
   hasImage?: boolean;
   /** See `TopikItem.imageText`. */
   imageText?: string;
+  /** Start (ms) of this question's window in the exam's ONE whole-section
+   *  listening file (`MockTest.audioUrl`) — question metadata (timing), never
+   *  answer data, so it survives the answer strip exactly like `passage`/
+   *  `hasImage` (F-119). The server emits it only together with `audioEndMs`
+   *  (both-or-neither — the 078 CHECK's wire mirror); `fetchMockTest` drops a
+   *  half/invalid window so a span is either fully playable or absent. */
+  audioStartMs?: number;
+  /** End (ms, exclusive) of the question's audio window — see `audioStartMs`. */
+  audioEndMs?: number;
+  /** F-119 decision #2 (fix-pass S-1): the SERVER's authoritative answer to
+   *  "is this item's `prompt` text the spoken transcript?" — decided in
+   *  `mapRowToDTO`, where the text's column provenance is known (true only
+   *  when the prompt slot fell back to a stem that carries the dialogue;
+   *  false for every printed question). The timed runner hides the prompt
+   *  only when this is EXACTLY `true`; `undefined` (an older server, or a
+   *  malformed wire value stripped by `fetchMockTest`) fails SAFE — the
+   *  prompt stays visible, keeping the item answerable. Question metadata
+   *  (what kind of text the prompt is), never answer data. */
+  promptIsTranscript?: boolean;
 }
 
 /** Envelope returned by `POST /topik/mock` — the answer-stripped exam payload. */
@@ -279,6 +298,15 @@ export interface MockTest {
    */
   topikLevel: TopikLevel;
   section: MockSection;
+  /**
+   * Streaming URL of the exam's ONE whole-section listening MP3
+   * (`/topik/audio/<testNumber>/<1|2>`, F-119) when the resolved paper has
+   * audio mapped, else `null` (no audio → the transcript-only rendering).
+   * Each item's `audioStartMs`/`audioEndMs` window indexes into this single
+   * file — the client keeps one buffered `<audio>` element and seeks per
+   * question rather than fetching per-question clips.
+   */
+  audioUrl: string | null;
   items: TopikMockItem[];
 }
 

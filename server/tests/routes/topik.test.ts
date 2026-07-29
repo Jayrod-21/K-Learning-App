@@ -2137,6 +2137,105 @@ describe('TOPIK mock audio (F-119 Phase 5) — item spans + envelope audioUrl', 
     expect(browse.body.items[0].audioEndMs).toBe(20_000);
   });
 
+  it('promptIsTranscript (fix-pass S-1): true only when the prompt slot text is the spoken dialogue', async () => {
+    // The four real corpus shapes plus the future-ingest one, in one paper:
+    //   #1 stem-only single question — the stem IS the dialogue → TRUE
+    //   #3 populated `prompt` column (a real printed question; 0 live rows
+    //      today, the future-ingest shape S-1 guards) → FALSE
+    //   #21/#22 paired: stem = the PRINTED question, dialogue in the shared
+    //      passage → FALSE (hiding it would make the item unanswerable)
+    //   #25 verbatim-dup paper: the shared dialogue duplicated into the stem
+    //      → prompt === passage → TRUE
+    await seedTopikItem(pg.pool, {
+      section: 'listening',
+      testNumber: 3107,
+      itemNumber: 1,
+      prompt: null,
+      stem: '남자: 학생이에요?\n여자: 네, 학생이에요.',
+    });
+    await seedTopikItem(pg.pool, {
+      section: 'listening',
+      testNumber: 3107,
+      itemNumber: 3,
+      prompt: '다음을 듣고 알맞은 그림을 고르십시오.',
+      stem: '여자: 어디로 갈까요?\n남자: 공원에 갑시다.',
+    });
+    await seedTopikItem(pg.pool, {
+      section: 'listening',
+      testNumber: 3107,
+      itemNumber: 21,
+      prompt: null,
+      stem: '남자는 누구인지 고르십시오.',
+    });
+    await seedTopikItem(pg.pool, {
+      section: 'listening',
+      testNumber: 3107,
+      itemNumber: 22,
+      prompt: null,
+      stem: '들은 내용과 같은 것을 고르십시오.',
+    });
+    const DUP_DIALOGUE =
+      '여자: 한지 공예를 시작하신 지 얼마나 되셨어요?\n남자: 삼십 년쯤 됐습니다.';
+    await seedTopikItem(pg.pool, {
+      section: 'listening',
+      testNumber: 3107,
+      itemNumber: 25,
+      prompt: null,
+      stem: DUP_DIALOGUE,
+    });
+    await pg.pool.query(
+      `UPDATE topik_tests SET passages = $1::jsonb
+        WHERE test_number = $2 AND section = 'listening'::topik_section`,
+      [
+        JSON.stringify({
+          '21-22': '여자: 회의가 언제예요?\n남자: 내일 오후 두 시입니다.',
+          '25-26': DUP_DIALOGUE,
+        }),
+        3107,
+      ],
+    );
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const mock = await agent
+      .post('/topik/mock')
+      .send({ sourceTest: 3107, section: 'listening' });
+    expect(mock.status).toBe(200);
+    const byNumber = new Map(
+      (mock.body.items as Array<{ number: number; promptIsTranscript: boolean }>).map(
+        (i) => [i.number, i.promptIsTranscript],
+      ),
+    );
+    expect(byNumber.get(1)).toBe(true); // stem-only single → transcript
+    expect(byNumber.get(3)).toBe(false); // printed `prompt` column → chrome
+    expect(byNumber.get(21)).toBe(false); // paired printed question → chrome
+    expect(byNumber.get(22)).toBe(false);
+    expect(byNumber.get(25)).toBe(true); // verbatim dup of the dialogue
+
+    // The flag rides the strip WITHOUT loosening it (question metadata, like
+    // hasImage) — never on the choice objects, never alongside answers.
+    for (const item of mock.body.items as Array<Record<string, unknown>>) {
+      expect(typeof item['promptIsTranscript']).toBe('boolean');
+      expect(item).not.toHaveProperty('explanation');
+      for (const opt of item['options'] as Array<Record<string, unknown>>) {
+        expect(Object.keys(opt).sort()).toEqual(['en', 'id', 'kr']);
+      }
+    }
+
+    // Study/browse DTO carries it too, and a READING item is always false —
+    // "transcript" is a listening concept.
+    await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 3108,
+      itemNumber: 1,
+      prompt: null,
+      stem: '이 글의 내용과 같은 것을 고르십시오.',
+    });
+    const browse = await agent.get('/topik/items').query({ source_test: 3108 });
+    expect(browse.status).toBe(200);
+    expect(browse.body.items[0].promptIsTranscript).toBe(false);
+
+  });
+
   it('audioUrl uses /1 for a TOPIK I paper and is null when the paper has no audio_path', async () => {
     await seedTopikItem(pg.pool, {
       section: 'listening',

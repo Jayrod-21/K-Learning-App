@@ -80,6 +80,39 @@
   line-height: 1.5;
 }
 
+/* ── F-119 per-question audio player (listening exam) ────────── */
+/* The blue CityCard hosting the persistent <audio> + the per-question
+   controls. The element itself has no `controls`, so it takes no layout —
+   only the button row / per-item note render visibly. */
+.km-mock__audio {
+  margin: 10px 0;
+}
+.km-mock__audio-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.km-mock__audio-hint {
+  color: var(--paper-mute);
+  font-size: 0.82rem;
+}
+/* Runtime stream failure (F-160) — visually distinct from the dashed
+   "not mapped" note: solid warning border, alert-toned text. */
+.km-mock__audio-error {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--danger);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+/* The per-item "no audio yet" note inside the player card needs no extra
+   outer margin — the card provides it. */
+.km-mock__audio .km-mock__audio-note {
+  margin: 0;
+}
+
 /* ── F-183 device #1/#2 — section-select cards ───────────────── */
 /* The CityCard host: zero its own padding/overflow so the borderless inner
    button (`.km-mock__section-btn`) is the full-bleed hit target, exactly

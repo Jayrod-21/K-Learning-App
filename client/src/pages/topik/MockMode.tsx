@@ -136,6 +136,10 @@ import {
   loadTopikMockTest,
   submitTopikMockTestMock,
 } from '../../data/mocks/topik';
+// F-119: the ONE strict audio-src allow-list the app has (services/ttmik.ts)
+// — reused, never duplicated, so the TOPIK exam audio URL passes through the
+// same anchored route-shape validation as every other playable path.
+import { buildAudioSrc } from '../../services/ttmik';
 import type {
   ChoiceId,
   MockResult,
@@ -1260,10 +1264,14 @@ function StartPage({
           />
         </p>
         {section === 'listening' ? (
+          // F-119: most papers now play their real per-question recordings
+          // (855/960 items mapped); which questions are covered is only known
+          // once the exam is fetched, so this pre-exam note describes both
+          // outcomes honestly instead of the retired blanket "no audio yet".
           <p className="km-mock__audio-note" role="note">
             <Bilingual
-              en="Audio isn't available yet — each question shows its transcript instead."
-              kr="아직 듣기 음원이 없어요 — 각 문제는 대본으로 표시돼요."
+              en="Questions with mapped audio play the real recording; any without it show their transcript instead."
+              kr="음원이 연결된 문제는 실제 녹음이 재생되고, 없는 문제는 대본으로 표시돼요."
             />
           </p>
         ) : null}
@@ -1472,6 +1480,26 @@ interface ExamRunnerProps {
  * 1 min 10 s and only changed once per minute — the timer looked frozen even
  * though the interval was ticking correctly.)
  */
+/**
+ * The current item's F-119 audio window, or `null` when the item has none.
+ * `fetchMockTest` already normalized the wire (both-or-neither, finite
+ * non-negative ints, end > start — `readAudioSpan` in services/topik.ts);
+ * this re-check is the render-time belt to that suspender, so a fixture or a
+ * future call path that skips the service normalization still can't seed the
+ * seek/clamp with a half or inverted window.
+ */
+function audioSpanOf(
+  item: TopikMockItem,
+): { startMs: number; endMs: number } | null {
+  const { audioStartMs, audioEndMs } = item;
+  if (audioStartMs === undefined || audioEndMs === undefined) return null;
+  if (!Number.isInteger(audioStartMs) || !Number.isInteger(audioEndMs)) {
+    return null;
+  }
+  if (audioStartMs < 0 || audioEndMs <= audioStartMs) return null;
+  return { startMs: audioStartMs, endMs: audioEndMs };
+}
+
 function formatClock(totalSeconds: number): string {
   const safe = Math.max(0, totalSeconds);
   const h = Math.floor(safe / 3600);
@@ -1755,6 +1783,106 @@ function ExamRunner({
     return '';
   }, [remaining]);
 
+  // ── F-119 per-question listening audio ─────────────────────────────────
+  // ONE persistent <audio> element serves the WHOLE exam: the server maps a
+  // single whole-section MP3 per paper (`test.audioUrl`) and each item
+  // carries a (startMs, endMs) window into it, so item navigation never
+  // swaps the src — the section file stays buffered and a palette jump is
+  // just a re-seek. `buildAudioSrc` runs the strict route-shape allow-list
+  // (services/ttmik.ts): a tampered envelope URL resolves to null and the
+  // exam degrades to the honest transcript-only rendering below.
+  // `test.audioUrl` is constant for the life of one exam, so this derives
+  // once per render with no memo ceremony.
+  const audioSrc = buildAudioSrc(test.audioUrl);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  // End bound (SECONDS) of the actively-playing question window; null = no
+  // clamp armed. A ref, not state — the ~4 Hz `timeupdate` handler reads it
+  // without a per-tick re-render on top of the countdown's own.
+  const clampEndSecRef = useRef<number | null>(null);
+  // Drives the Play ↔ Pause control label — written only by the element's
+  // own play/pause events, so it can never disagree with actual playback.
+  const [audioPlaying, setAudioPlaying] = useState(false);
+  // F-160 posture (mirrors Ttmik's DetailView): a RUNTIME stream failure
+  // (src resolved but the fetch/decode failed) renders a visible alert —
+  // distinct from, and never confused with, the expected "no audio mapped"
+  // states (`audioSrc === null` / a span-less item), which are role="note".
+  const [audioError, setAudioError] = useState(false);
+  const onAudioError = useCallback((): void => {
+    setAudioError(true);
+  }, []);
+  // Recovery (fix-pass S-2/rev1): a successful load AFTER a failure —
+  // `loadedmetadata`/`canplay` firing means the stream is fetchable again
+  // (e.g. a transient network blip on the metadata preload) — clears the
+  // error so the player comes back instead of staying dead for a 60-minute
+  // exam. Setting false when already false is a no-op render-wise.
+  const onAudioLoaded = useCallback((): void => {
+    setAudioError(false);
+  }, []);
+  const onAudioPlay = useCallback((): void => {
+    setAudioPlaying(true);
+  }, []);
+  const onAudioPause = useCallback((): void => {
+    setAudioPlaying(false);
+  }, []);
+
+  // Play the CURRENT question's window. Every press restarts the question
+  // from its own start (decision #3 — unlimited replay); the seek + the
+  // `timeupdate` clamp below bound playback to [startMs, endMs] with ~±250ms
+  // tolerance, which the real recordings absorb — each segment opens on the
+  // "N번" announcer and ends in silence (plan §3). NO autoplay anywhere:
+  // this handler is the only thing that ever starts playback.
+  const playQuestionAudio = useCallback((): void => {
+    const el = audioRef.current;
+    if (el === null || current === undefined) return;
+    const span = audioSpanOf(current);
+    if (span === null) return;
+    clampEndSecRef.current = span.endMs / 1000;
+    el.currentTime = span.startMs / 1000;
+    // play() rejections (AbortError from a rapid pause/navigation racing the
+    // start, or a decode failure) must never surface as an unhandled
+    // rejection mid-exam; a REAL stream failure reaches the user via the
+    // element's `error` event (onAudioError) instead.
+    void el.play().catch(() => {
+      /* swallowed — see comment above */
+    });
+  }, [current]);
+
+  const pauseQuestionAudio = useCallback((): void => {
+    audioRef.current?.pause();
+  }, []);
+
+  // The clamp: pause when playback crosses the armed question-end bound.
+  // `timeupdate` fires every ~250ms, so the overshoot is at most that —
+  // inside the trailing-silence padding. Cleared before pausing so the
+  // handler can't re-fire against a stale bound on the pause's own final
+  // timeupdate.
+  const onAudioTimeUpdate = useCallback((): void => {
+    const el = audioRef.current;
+    const end = clampEndSecRef.current;
+    if (el === null || end === null) return;
+    if (el.currentTime >= end) {
+      clampEndSecRef.current = null;
+      el.pause();
+    }
+  }, []);
+
+  // Leaving an item (Prev/Next, a palette jump) or unmounting the runner
+  // stops the outgoing question's playback: the next item starts silent (no
+  // autoplay), and a detached-but-referenced media element can't play on as
+  // ghost audio after the exam is left. The element is captured at effect
+  // time — its identity is stable for the runner's whole life (the
+  // persistent-element contract), so the capture is exact, and it satisfies
+  // the ref-in-cleanup lint. Nothing here touches the element's identity or
+  // src — pause only (the Ttmik abort-safety posture).
+  const currentIdForAudio = current !== undefined ? current.id : null;
+  useEffect(() => {
+    const el = audioRef.current;
+    return () => {
+      clampEndSecRef.current = null;
+      el?.pause();
+    };
+  }, [currentIdForAudio]);
+
   if (current === undefined) {
     // Defensive: an empty exam can't be taken. Offer a way out rather than
     // blanking. (The select path won't reach here for a non-empty section.)
@@ -1781,6 +1909,39 @@ function ExamRunner({
       ? splitImageItem(current.prompt, current.imageText)
       : null;
 
+  // ── F-119 / decision #2 — hide the spoken transcript while the audio is
+  // playable in the TIMED runner (it's a listening test; printing the words
+  // defeats it), but ONLY then: a still-unmapped item keeps its transcript
+  // (without it the item is unanswerable) plus the honest note below, and
+  // the results/review surface (`TopikResults`) is a separate component that
+  // always shows the transcript for studying misses.
+  //
+  // "Playable" requires `!audioError` (fix-pass B1): a RUNTIME stream failure
+  // is exam-global (one element, one whole-section file), so on error EVERY
+  // span-mapped item must fall back to its transcript — otherwise the timed
+  // exam shows neither audio nor text while the F-160 alert below claims
+  // "transcript shown instead". Errors are the worst direction to hide in.
+  //
+  // WHICH text is the transcript is the SERVER's call (fix-pass S-1):
+  // `promptIsTranscript` is decided in routes/topik.ts `mapRowToDTO`, where
+  // the prompt slot's column provenance is known — true only when the prompt
+  // is the spoken dialogue (stem-only single questions, and the 48 rows that
+  // duplicate the shared dialogue into the stem, plus the re-admitted
+  // `[듣기 지문 없음 …]` placeholder stems), false for every PRINTED question
+  // (the 375 paired items whose dialogue rides in the shared passage). The
+  // strict `=== true` fails SAFE: an absent/stripped flag (older server,
+  // malformed wire value) keeps the prompt visible — answerable beats pure.
+  // A listening `passage` is always the spoken dialogue — never show it
+  // while the audio is playable.
+  const questionAudioPlayable =
+    test.section === 'listening' &&
+    !audioError &&
+    audioSrc !== null &&
+    audioSpanOf(current) !== null;
+  const hideTranscriptPassage = questionAudioPlayable;
+  const hideTranscriptPrompt =
+    questionAudioPlayable && current.promptIsTranscript === true;
+
   return (
     <div className="km-mock__exam">
       {/* F-024: an explicit way out of a running exam. Leaving unmounts the
@@ -1794,19 +1955,102 @@ function ExamRunner({
       />
 
       {test.section === 'listening' ? (
-        // F-080 (honest stub): per-question audio is not servable today. The
-        // raw corpus DOES hold one whole-section MP3 per paper (e.g.
-        // `60th-TOPIK-II-Listening-Audio.mp3`), but nothing is ingested —
-        // there is no audio column/DTO field, no serving route, and no
-        // per-question timestamps to cut clips from. A play control per item
-        // needs that ingest + segmentation + route — data-gap ticket F-119.
-        // Until then, say so once, up front, instead of faking a player.
-        <p className="km-mock__audio-note" role="note">
-          <Bilingual
-            en="Audio isn't available yet — each question shows its transcript instead."
-            kr="아직 듣기 음원이 없어요 — 각 문제는 대본으로 표시돼요."
-          />
-        </p>
+        audioSrc !== null ? (
+          // F-119 — the real per-question player (replaces the F-080 honest
+          // stub for papers whose section MP3 is mapped). The blue CityCard
+          // mirrors Ttmik's player-card treatment AND the fixed Listening
+          // sectionTone above.
+          <CityCard tone="blue" className="km-mock__audio">
+            {/* PERSISTENT ELEMENT — rendered exactly once, FIRST inside this
+                card, unkeyed and unconditional for the exam's whole life, so
+                React reconciliation reuses this exact DOM node across every
+                item navigation (only the sibling controls below swap). The
+                whole-section file stays buffered; a palette jump is just a
+                re-seek. Do NOT key this on the item, move it into the
+                per-item branch below, or derive its src per item — that
+                would remount/refetch on every navigation (the Ttmik
+                DetailView contract). No `controls`: playback is driven only
+                by the per-question button (seek + timeupdate clamp) — a
+                native scrubber would play the whole section tape outside the
+                current question's window. No timed caption track exists for
+                the exam recordings (it IS the test), hence the a11y rule
+                exemption. No autoplay. */}
+            {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+            <audio
+              ref={audioRef}
+              preload="metadata"
+              src={audioSrc}
+              onTimeUpdate={onAudioTimeUpdate}
+              onPlay={onAudioPlay}
+              onPause={onAudioPause}
+              onError={onAudioError}
+              onLoadedMetadata={onAudioLoaded}
+              onCanPlay={onAudioLoaded}
+            />
+            {audioSpanOf(current) !== null ? (
+              audioError ? (
+                // F-160: RUNTIME stream failure — a visible, distinct alert,
+                // never conflated with the expected "not mapped" notes.
+                <p className="km-mock__audio-error" role="alert">
+                  <Bilingual
+                    en="Audio couldn't load — this question shows its transcript instead."
+                    kr="오디오를 불러올 수 없어요 — 이 문제는 대본으로 표시돼요."
+                  />
+                </p>
+              ) : (
+                <div className="km-mock__audio-controls">
+                  <Button
+                    variant="gold"
+                    size="sm"
+                    leadingIcon={
+                      <Icon name={audioPlaying ? 'pause' : 'play'} size={14} />
+                    }
+                    onClick={
+                      audioPlaying ? pauseQuestionAudio : playQuestionAudio
+                    }
+                  >
+                    {audioPlaying ? (
+                      <Bilingual en="Pause" kr="일시 정지" compact />
+                    ) : (
+                      <Bilingual
+                        en="Play question audio"
+                        kr="문제 음원 듣기"
+                        compact
+                      />
+                    )}
+                  </Button>
+                  <span className="km-mock__audio-hint">
+                    <Bilingual
+                      en="Replay as often as you like."
+                      kr="원하는 만큼 다시 들을 수 있어요."
+                      compact
+                    />
+                  </span>
+                </div>
+              )
+            ) : (
+              // Honest PER-ITEM fallback: this paper's audio is mapped, but
+              // THIS question has no aligned span yet — its transcript stays
+              // visible below (decision #2 hides it only when audio plays).
+              <p className="km-mock__audio-note" role="note">
+                <Bilingual
+                  en="No audio for this question yet — its transcript is shown instead."
+                  kr="이 문제는 아직 음원이 없어요 — 대본으로 표시돼요."
+                />
+              </p>
+            )}
+          </CityCard>
+        ) : (
+          // F-080 (honest whole-exam fallback): this paper has no mapped —
+          // or no allow-list-valid — audio at all, so no element and no fake
+          // player; every question keeps its transcript.
+          <p className="km-mock__audio-note" role="note">
+            <Bilingual
+              en="Audio isn't available yet — each question shows its transcript instead."
+              kr="아직 듣기 음원이 없어요 — 각 문제는 대본으로 표시돼요."
+            />
+          </p>
+        )
       ) : null}
 
       <div className="km-mock__exam-head">
@@ -1874,11 +2118,18 @@ function ExamRunner({
           <span className="km-topik__num">No. {String(current.number)}</span>
         </div>
 
+        {/* Decision #2: `hideTranscriptPrompt` suppresses a prompt that IS
+            the spoken dialogue while its audio is playable — a PRINTED
+            question prompt always renders (see the derivation above). The
+            image description block stays either way: it describes what the
+            learner must SEE (the picture choices), never what they hear. */}
         {imageSplit === null ? (
-          <p className="kr km-topik__prompt">{current.prompt}</p>
+          hideTranscriptPrompt ? null : (
+            <p className="kr km-topik__prompt">{current.prompt}</p>
+          )
         ) : (
           <>
-            {imageSplit.body !== '' ? (
+            {imageSplit.body !== '' && !hideTranscriptPrompt ? (
               <p className="kr km-topik__prompt">{imageSplit.body}</p>
             ) : null}
             <TopikImageNote description={imageSplit.description} />
@@ -1886,8 +2137,13 @@ function ExamRunner({
         )}
 
         {/* Shared reading passage (B-008): question content the server keeps on
-            the answer-stripped wire — without it the item is unanswerable. */}
-        {current.passage ? <TopikPassage text={current.passage} /> : null}
+            the answer-stripped wire — without it the item is unanswerable.
+            Decision #2: on a listening item the shared passage is the spoken
+            dialogue itself, so it hides while the question's audio is
+            playable (and ONLY then — an unmapped item still needs it). */}
+        {current.passage && !hideTranscriptPassage ? (
+          <TopikPassage text={current.passage} />
+        ) : null}
 
         <ChoiceGroup
           item={current}

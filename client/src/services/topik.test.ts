@@ -161,6 +161,7 @@ const MOCK_TEST: MockTest = {
   sourceTest: 7,
   topikLevel: 'TOPIK II',
   section: 'reading',
+  audioUrl: null,
   items: [
     {
       id: '1001',
@@ -246,6 +247,145 @@ describe('fetchMockTest', () => {
     await expect(fetchMockTest('reading')).rejects.toMatchObject({
       status: 500,
     });
+  });
+
+  // ── F-119 audio-field normalization ─────────────────────────────────────
+  // The audio fields steer a real <audio> element (seek + pause clamp), so
+  // fetchMockTest must degrade any malformed value to "no audio" instead of
+  // passing it through to the player.
+
+  it('carries a well-formed audioUrl + per-item span through verbatim', async () => {
+    vi.spyOn(api, 'post').mockResolvedValueOnce({
+      ...MOCK_TEST,
+      section: 'listening',
+      audioUrl: '/topik/audio/60/2',
+      items: [
+        { ...MOCK_TEST.items[0]!, audioStartMs: 12000, audioEndMs: 45000 },
+      ],
+    });
+
+    const res = await fetchMockTest('listening');
+
+    expect(res.audioUrl).toBe('/topik/audio/60/2');
+    expect(res.items[0]?.audioStartMs).toBe(12000);
+    expect(res.items[0]?.audioEndMs).toBe(45000);
+  });
+
+  it('normalizes a non-string audioUrl (tampered/malformed envelope) to null', async () => {
+    vi.spyOn(api, 'post').mockResolvedValueOnce({
+      ...MOCK_TEST,
+      audioUrl: 12345 as unknown as string,
+    });
+
+    const res = await fetchMockTest('reading');
+
+    expect(res.audioUrl).toBeNull();
+  });
+
+  it('drops a HALF span (only one bound present) entirely — both-or-neither', async () => {
+    vi.spyOn(api, 'post').mockResolvedValueOnce({
+      ...MOCK_TEST,
+      audioUrl: '/topik/audio/60/2',
+      items: [{ ...MOCK_TEST.items[0]!, audioStartMs: 12000 }],
+    });
+
+    const res = await fetchMockTest('listening');
+
+    // The lone bound is stripped, not carried as a dangling half window.
+    expect(res.items[0]?.audioStartMs).toBeUndefined();
+    expect(res.items[0]?.audioEndMs).toBeUndefined();
+  });
+
+  it.each([
+    ['negative start', { audioStartMs: -1, audioEndMs: 5000 }],
+    ['inverted range (end <= start)', { audioStartMs: 5000, audioEndMs: 5000 }],
+    ['fractional bounds', { audioStartMs: 1.5, audioEndMs: 5000.75 }],
+    ['non-finite bounds', { audioStartMs: 0, audioEndMs: Infinity }],
+    [
+      'non-numeric bounds',
+      { audioStartMs: '12000' as unknown as number, audioEndMs: 45000 },
+    ],
+  ])('drops an invalid span (%s) — the item plays nothing', async (_label, span) => {
+    vi.spyOn(api, 'post').mockResolvedValueOnce({
+      ...MOCK_TEST,
+      audioUrl: '/topik/audio/60/2',
+      items: [{ ...MOCK_TEST.items[0]!, ...span }],
+    });
+
+    const res = await fetchMockTest('listening');
+
+    expect(res.items[0]?.audioStartMs).toBeUndefined();
+    expect(res.items[0]?.audioEndMs).toBeUndefined();
+  });
+
+  // ── decision-#2 `promptIsTranscript` normalization (fix-pass S-1) ───────
+  // The flag drives transcript HIDING in the timed runner — the dangerous
+  // direction — so only a real boolean may pass; junk is stripped to
+  // `undefined`, which the runner treats as "keep the prompt visible".
+
+  it('passes a boolean promptIsTranscript through verbatim (both values)', async () => {
+    vi.spyOn(api, 'post').mockResolvedValueOnce({
+      ...MOCK_TEST,
+      section: 'listening',
+      items: [
+        { ...MOCK_TEST.items[0]!, promptIsTranscript: true },
+        { ...MOCK_TEST.items[0]!, id: '1002', promptIsTranscript: false },
+      ],
+    });
+
+    const res = await fetchMockTest('listening');
+
+    expect(res.items[0]?.promptIsTranscript).toBe(true);
+    expect(res.items[1]?.promptIsTranscript).toBe(false);
+  });
+
+  it.each([
+    ['a truthy string', 'true'],
+    ['a number', 1],
+    ['null', null],
+    ['an object', {}],
+  ])(
+    'strips a non-boolean promptIsTranscript (%s) — junk must never hide a prompt',
+    async (_label, junk) => {
+      vi.spyOn(api, 'post').mockResolvedValueOnce({
+        ...MOCK_TEST,
+        section: 'listening',
+        items: [
+          {
+            ...MOCK_TEST.items[0]!,
+            promptIsTranscript: junk as unknown as boolean,
+          },
+        ],
+      });
+
+      const res = await fetchMockTest('listening');
+
+      expect(res.items[0]?.promptIsTranscript).toBeUndefined();
+      expect(res.items[0]).not.toHaveProperty('promptIsTranscript');
+    },
+  );
+
+  it('leaves an absent promptIsTranscript absent (older server envelope)', async () => {
+    vi.spyOn(api, 'post').mockResolvedValueOnce({ ...MOCK_TEST });
+
+    const res = await fetchMockTest('reading');
+
+    expect(res.items[0]).not.toHaveProperty('promptIsTranscript');
+  });
+
+  it('normalization never weakens the answer strip (no correct/explanation reintroduced)', async () => {
+    vi.spyOn(api, 'post').mockResolvedValueOnce({
+      ...MOCK_TEST,
+      audioUrl: '/topik/audio/60/2',
+      items: [
+        { ...MOCK_TEST.items[0]!, audioStartMs: 12000, audioEndMs: 45000 },
+      ],
+    });
+
+    const res = await fetchMockTest('listening');
+
+    expect(res.items[0]?.options[0]).not.toHaveProperty('correct');
+    expect(res.items[0]).not.toHaveProperty('explanation');
   });
 });
 

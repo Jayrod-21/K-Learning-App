@@ -214,6 +214,20 @@ interface TopikItemDTO {
   readonly audioStartMs?: number;
   /** End (ms, exclusive) of the question's audio window — see `audioStartMs`. */
   readonly audioEndMs?: number;
+  /**
+   * F-119 decision #2 (fix-pass S-1) — the server-authoritative answer to "is
+   * this item's `prompt` text the SPOKEN transcript?". The prompt slot is
+   * decided right here in `mapRowToDTO` (`prompt` column when non-empty, else
+   * the stem), so only the server still knows the text's column provenance —
+   * the client previously reverse-engineered this fact from wire values
+   * (a trim-equality guess), which fails UNSAFE (a hidden printed question =
+   * an unanswerable timed item). TRUE only when the prompt slot fell back to
+   * a stem that actually carries the dialogue (see the derivation in
+   * `mapRowToDTO`); FALSE for every printed question and every reading item.
+   * QUESTION metadata (what kind of text the prompt is), never answer data —
+   * survives the mock answer-strip like `hasImage` (see `toMockItemDTO`).
+   */
+  readonly promptIsTranscript: boolean;
 }
 
 /** A topik_items row as selected for the DTO mapping. */
@@ -341,6 +355,30 @@ function mapRowToDTO(row: TopikItemRow): TopikItemDTO | null {
   const passage =
     shared !== '' ? shared : promptText !== '' && stemText !== '' ? stemText : '';
 
+  // F-119 decision #2 (fix-pass S-1): decide "is the prompt slot's text the
+  // spoken transcript?" at the SAME point the prompt/passage ternaries
+  // resolve, while the column provenance is still known. Traced against all
+  // 960 live listening rows (every one is stem-only, so the prompt slot takes
+  // the stem):
+  //   - single questions (the majority): stem = the dialogue, no shared
+  //     passage → passage === '' → TRUE (the runner hides it while the
+  //     audio is playable);
+  //   - paired/announced questions (375 rows): dialogue in the SHARED
+  //     passage, stem = the PRINTED question ("…고르십시오.") → the stem is
+  //     question chrome, not transcript → FALSE (the runner must keep it);
+  //   - verbatim-dup papers (48 rows): the shared dialogue is ALSO copied
+  //     into each item's stem → stemText === passage → TRUE;
+  //   - re-admitted `[듣기 지문 없음 …]` placeholder stems (decision #1): no
+  //     passage → TRUE (the stale curator note hides; the learner listens);
+  //   - a populated `prompt` column (none live today, future ingest): a real
+  //     printed question → FALSE, whatever the stem holds.
+  // Reading/writing rows are FALSE by definition — "transcript" is a
+  // listening concept.
+  const promptIsTranscript =
+    row.section === 'listening' &&
+    promptText === '' &&
+    (passage === '' || stemText === passage);
+
   return {
     id: row.id,
     section: SECTION_ENUM_TO_KR[row.section],
@@ -351,6 +389,7 @@ function mapRowToDTO(row: TopikItemRow): TopikItemDTO | null {
     options,
     explanation,
     hasImage: row.has_image,
+    promptIsTranscript,
     ...(imageText !== '' ? { imageText } : {}),
     // Audio window (F-119): emitted only when BOTH bounds are present. The DB
     // CHECK (ck_topik_items_audio_span, 078) already forbids a half-window at
@@ -382,8 +421,9 @@ function mapRows(rows: readonly TopikItemRow[]): TopikItemDTO[] {
 // mock item would fail to compile, so the answer cannot leak by accident — the
 // only field on a mock choice is `{ id, kr, en }`, and the only fields on a mock
 // item are id/section/number/level/prompt/passage/passageRef/options plus the
-// image metadata (`hasImage`/`imageText`) and the audio window
-// (`audioStartMs`/`audioEndMs` — F-119). `passage` is the shared reading text
+// image metadata (`hasImage`/`imageText`), the audio window
+// (`audioStartMs`/`audioEndMs` — F-119), and the prompt-provenance flag
+// (`promptIsTranscript` — F-119 decision #2 / fix-pass S-1). `passage` is the shared reading text
 // the QUESTION is about (B-008) — question content, not answer data, exactly
 // like the prompt itself; the audio window is WHERE in the exam recording the
 // question is spoken — timing, not answers. The `correct` flag + `explanation`
@@ -425,6 +465,13 @@ function toMockItemDTO(item: TopikItemDTO): TopikMockItemDTO {
     ...(item.passageRef !== undefined ? { passageRef: item.passageRef } : {}),
     options: item.options.map((o) => ({ id: o.id, kr: o.kr, en: o.en })),
     hasImage: item.hasImage,
+    // F-119 decision #2 (fix-pass S-1): question metadata — WHAT KIND of text
+    // the prompt slot holds (spoken transcript vs printed question), decided
+    // authoritatively in mapRowToDTO. Carries no answer information, and the
+    // timed exam needs it to hide only real transcripts (a hidden printed
+    // question would be unanswerable). Rides through the strip exactly like
+    // `hasImage`; the choice objects stay `{ id, kr, en }` only.
+    promptIsTranscript: item.promptIsTranscript,
     ...(item.imageText !== undefined ? { imageText: item.imageText } : {}),
     ...(item.audioStartMs !== undefined && item.audioEndMs !== undefined
       ? { audioStartMs: item.audioStartMs, audioEndMs: item.audioEndMs }
