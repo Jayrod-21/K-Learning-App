@@ -27,7 +27,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, within, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
+import type { JSX } from 'react';
 import { ToastProvider } from '../components/ToastProvider';
 import { ApiError } from '../services/api';
 import { lemmatize } from '../services/lemmatize';
@@ -41,11 +42,13 @@ import {
   logIyagiAttempt,
   logTtmikAttempt,
 } from '../services/ttmik';
-import { listMyAudio } from '../services/audio';
+import { getAudioTrack, getSharedAudio, listMyAudio } from '../services/audio';
 import { mineWord } from '../services/vocab';
 import type {
+  AudioTrackDetail,
   IyagiEpisode,
   IyagiEpisodeDetail,
+  SharedAudioSource,
   TtmikLesson,
   TtmikLessonDetail,
 } from '../types/domain';
@@ -76,6 +79,8 @@ vi.mock('../services/audio', async (importOriginal) => {
     uploadAudio: vi.fn(),
     listMyAudio: vi.fn(),
     getAudioTrack: vi.fn(),
+    // F-207: the landing + shared views fetch the curated corpus.
+    getSharedAudio: vi.fn(),
   };
 });
 
@@ -176,6 +181,69 @@ const EPISODE_DETAIL: IyagiEpisodeDetail = {
 };
 
 /**
+ * F-207 fixtures — the curated shared corpus as `getSharedAudio` returns
+ * it (domain shape; the service is mocked). Track ids are `id * 100 + n`
+ * so a set's first track is deterministic for the player tests.
+ */
+function makeSharedSet(
+  id: number,
+  slug: string,
+  title: string,
+  trackCount = 2,
+): SharedAudioSource {
+  return {
+    id,
+    slug,
+    title,
+    kind: 'standalone_listening',
+    createdAt: '2026-07-01T00:00:00Z',
+    tracks: Array.from({ length: trackCount }, (_, i) => ({
+      id: id * 100 + i + 1,
+      trackNumber: i + 1,
+      title: `${title} ${String(i + 1)}`,
+      byteSize: 1_000_000,
+      durationMs: 60_000,
+      transcriptStatus: 'done' as const,
+    })),
+  };
+}
+
+/** Every manifest slug present — all six curated tiles render. */
+const SHARED_SETS: SharedAudioSource[] = [
+  makeSharedSet(70, 'news-in-korean', '한국어 뉴스'),
+  makeSharedSet(71, 'jindo-dog', '파란 진돗개'),
+  makeSharedSet(72, 'korean-folktales', '전래 동화 모음'),
+  makeSharedSet(73, 'real-life-korean-conversations-intermediate', '실전 회화'),
+  makeSharedSet(74, 'easy-korean-reading-beginners', '쉬운 읽기'),
+  ...Array.from({ length: 10 }, (_, i) =>
+    makeSharedSet(80 + i, `ttmik-grammar-level-${String(i + 1)}`, `문법 레벨 ${String(i + 1)}`),
+  ),
+];
+
+/** Track detail for shared-track player tests (folktales track 7201). */
+const SHARED_TRACK_DETAIL: AudioTrackDetail = {
+  track: {
+    id: 7201,
+    title: '전래 동화 모음 1',
+    transcriptStatus: 'done',
+    durationMs: 60_000,
+    streamUrl: '/audio/tracks/7201/stream',
+  },
+  segments: [
+    { segmentNumber: 1, startMs: 0, endMs: 4000, body: '옛날 옛적에.' },
+  ],
+};
+
+/** F-207: surfaces the router location so Read-button navigation (into the
+ *  reading routes this page doesn't render) is assertable. */
+function LocationProbe(): JSX.Element {
+  const location = useLocation();
+  return (
+    <div data-testid="location">{location.pathname + location.search}</div>
+  );
+}
+
+/**
  * F-162: wraps the page in a `.km-shell__scroll` div — the real ancestor
  * `useListScrollRestore` looks for via `closest()` — so the hook has
  * something genuine to find in these tests, exactly as it would inside the
@@ -187,6 +255,7 @@ function renderPage(initialEntry = '/learn/listen'): void {
       <MemoryRouter initialEntries={[initialEntry]}>
         <ToastProvider>
           <Ttmik />
+          <LocationProbe />
         </ToastProvider>
       </MemoryRouter>
     </div>,
@@ -200,11 +269,25 @@ function getScroller(): HTMLElement {
   return el as HTMLElement;
 }
 
-/** Landing → TTMIK listing (tiles render synchronously — no fetch first). */
+/** Landing → TTMIK listing (static tiles render synchronously — the shared
+ *  fetch never gates them). */
 async function openTtmikListing(
   user: ReturnType<typeof userEvent.setup>,
 ): Promise<void> {
   await user.click(screen.getByRole('button', { name: /TTMIK Lessons/ }));
+}
+
+/** F-207: activate one landing carousel page via its dot (1-based) — the
+ *  Progress.test goToHistoryPage idiom. Off-page tiles are aria-hidden +
+ *  inert, so tests must surface a page before clicking its tiles. */
+async function goToLandingPage(
+  user: ReturnType<typeof userEvent.setup>,
+  page: number,
+): Promise<void> {
+  const region = screen.getByRole('region', { name: 'Listen collections' });
+  await user.click(
+    within(region).getByRole('tab', { name: `Page ${String(page)} of 3` }),
+  );
 }
 
 /** Landing → listing → lesson 1 detail, waiting for its header. */
@@ -232,35 +315,87 @@ beforeEach(() => {
   vi.mocked(logTtmikAttempt).mockReset();
   vi.mocked(logIyagiAttempt).mockReset();
   vi.mocked(listMyAudio).mockReset().mockResolvedValue([]);
+  vi.mocked(getSharedAudio).mockReset().mockResolvedValue(SHARED_SETS);
+  vi.mocked(getAudioTrack).mockReset().mockResolvedValue(SHARED_TRACK_DETAIL);
   // F-162: each test gets a clean scroll-restore slate — a saved position
   // from one test must never leak into the next.
   window.sessionStorage.clear();
 });
 
-describe('Ttmik page — landing (F-071)', () => {
-  it('renders the collection tile grid — one labelled tile per collection, no list fetch', () => {
+describe('Ttmik page — landing (F-071 / F-207 swipe pages)', () => {
+  it('renders the 3-page carousel with dots; page 1 carries the labelled Lessons grid', async () => {
     renderPage();
 
-    // The labelled grid list + its CSS hook (the 2-across layout keys on it).
-    const grid = screen.getByRole('list', { name: 'Audio collections' });
-    expect(grid).toHaveClass('km-ttmik__tiles');
-    expect(within(grid).getAllByRole('listitem')).toHaveLength(3);
+    // The carousel region + one dot per themed page (Lessons / Stories &
+    // News / Yours) — the phone-home-screen structure.
+    const region = screen.getByRole('region', { name: 'Listen collections' });
+    const dots = within(region).getAllByRole('tab');
+    expect(dots).toHaveLength(3);
 
-    // One keyboard-operable button per collection, named by its content.
+    // Page 1's labelled grid + its CSS hook (the 2-across layout keys on
+    // it) and the tour anchor.
+    const grid = await screen.findByRole('list', {
+      name: 'Lessons collections',
+    });
+    expect(grid).toHaveClass('km-ttmik__tiles');
+    expect(grid).toHaveAttribute('data-tour', 'listen-collections');
+
+    // Static tiles render immediately; curated ones once the shared fetch
+    // lands. Page 1 order: TTMIK · Grammar · Iyagi · Real-Life.
     expect(
       within(grid).getByRole('button', { name: /TTMIK Lessons/ }),
+    ).toBeInTheDocument();
+    expect(
+      await within(grid).findByRole('button', {
+        name: /TTMIK Grammar Textbook/,
+      }),
     ).toBeInTheDocument();
     expect(
       within(grid).getByRole('button', { name: /Iyagi Episodes/ }),
     ).toBeInTheDocument();
     expect(
-      within(grid).getByRole('button', { name: /My Audio/ }),
+      within(grid).getByRole('button', { name: /Real-Life Conversations/ }),
     ).toBeInTheDocument();
+    expect(within(grid).getAllByRole('listitem')).toHaveLength(4);
 
-    // The landing is pure navigation — no listing fetch fires.
+    // The landing fetches ONLY the shared corpus — never the listings.
+    expect(vi.mocked(getSharedAudio)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(getTtmikLessons)).not.toHaveBeenCalled();
     expect(vi.mocked(getIyagiEpisodes)).not.toHaveBeenCalled();
     expect(vi.mocked(listMyAudio)).not.toHaveBeenCalled();
+  });
+
+  it('F-207: dot navigation surfaces Stories & News (4 curated tiles) and Yours (My Audio)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByRole('button', { name: /TTMIK Grammar Textbook/ });
+
+    await goToLandingPage(user, 2);
+    const stories = screen.getByRole('list', {
+      name: 'Stories & News collections',
+    });
+    expect(
+      within(stories).getByRole('button', { name: /Korean Folktales/ }),
+    ).toBeInTheDocument();
+    expect(
+      within(stories).getByRole('button', { name: /Easy Korean Reading/ }),
+    ).toBeInTheDocument();
+    expect(
+      within(stories).getByRole('button', { name: /Blue Jindo Dog/ }),
+    ).toBeInTheDocument();
+    expect(
+      within(stories).getByRole('button', { name: /News in Korean/ }),
+    ).toBeInTheDocument();
+    expect(within(stories).getAllByRole('listitem')).toHaveLength(4);
+
+    await goToLandingPage(user, 3);
+    // The Yours grid carries an explicit aria-label override — the default
+    // `"${en} collections"` template would read "Yours collections".
+    const yours = screen.getByRole('list', { name: 'Your audio' });
+    expect(
+      within(yours).getByRole('button', { name: /My Audio/ }),
+    ).toBeInTheDocument();
+    expect(within(yours).getAllByRole('listitem')).toHaveLength(1);
   });
 
   it('a tile is keyboard-operable: Enter opens the TTMIK listing', async () => {
@@ -295,6 +430,9 @@ describe('Ttmik page — landing (F-071)', () => {
     const user = userEvent.setup();
     renderPage();
 
+    // F-207: My Audio lives on the "Yours" page now — surface it first
+    // (off-page tiles are aria-hidden + inert).
+    await goToLandingPage(user, 3);
     await user.click(screen.getByRole('button', { name: /My Audio/ }));
 
     // The mine listing rendered: its fetch fired and the upload control +
@@ -331,15 +469,16 @@ describe('Ttmik page — landing (F-071)', () => {
   it('F-128: the landing tiles render as toned CityCard signboards — TTMIK blue, Iyagi mint, My Audio violet', () => {
     renderPage();
 
-    const grid = screen.getByRole('list', { name: 'Audio collections' });
     const ttmikTile = screen
       .getByRole('button', { name: /TTMIK Lessons/ })
       .closest('.km-citycard');
     const iyagiTile = screen
       .getByRole('button', { name: /Iyagi Episodes/ })
       .closest('.km-citycard');
+    // F-207: the My Audio tile sits on the (aria-hidden) "Yours" page —
+    // still in the DOM with its fixed tone, just not on the active page.
     const mineTile = screen
-      .getByRole('button', { name: /My Audio/ })
+      .getByRole('button', { name: /My Audio/, hidden: true })
       .closest('.km-citycard');
 
     expect(ttmikTile).not.toBeNull();
@@ -348,9 +487,11 @@ describe('Ttmik page — landing (F-071)', () => {
     expect(ttmikTile).toHaveClass('km-tone--blue');
     expect(iyagiTile).toHaveClass('km-tone--mint');
     expect(mineTile).toHaveClass('km-tone--violet');
-    // All tiles still live inside the labelled grid — the CityCard wrapper
+    // The tiles still live inside a labelled grid — the CityCard wrapper
     // didn't replace the accessible list/listitem structure.
-    expect(within(grid).getAllByRole('listitem')).toHaveLength(3);
+    const grid = screen.getByRole('list', { name: 'Lessons collections' });
+    expect(within(grid).getByRole('button', { name: /TTMIK Lessons/ }))
+      .toBeInTheDocument();
   });
 });
 
@@ -489,7 +630,7 @@ describe('Ttmik page — TTMIK listing (F-072 window + F-024 back)', () => {
     await user.click(screen.getByRole('button', { name: 'Back to Listen' }));
 
     expect(
-      screen.getByRole('list', { name: 'Audio collections' }),
+      screen.getByRole('region', { name: 'Listen collections' }),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: /^Open lesson/ }),
@@ -510,14 +651,23 @@ describe('Ttmik page — URL addressing (untrusted search params)', () => {
     expect(vi.mocked(getTtmikLessons)).not.toHaveBeenCalled();
   });
 
-  it('an unknown corpus falls back to the landing (no fetches)', () => {
+  it('an unknown corpus falls back to the landing (no listing fetches)', () => {
     renderPage('/learn/listen?corpus=podcasts');
 
     expect(
-      screen.getByRole('list', { name: 'Audio collections' }),
+      screen.getByRole('region', { name: 'Listen collections' }),
     ).toBeInTheDocument();
     expect(vi.mocked(getTtmikLessons)).not.toHaveBeenCalled();
     expect(vi.mocked(getTtmikLesson)).not.toHaveBeenCalled();
+  });
+
+  it('F-207: an unknown ?set= slug falls back to the landing (closed-set narrowing, no track fetch)', () => {
+    renderPage('/learn/listen?corpus=shared&set=totally-unknown-slug&track=5');
+
+    expect(
+      screen.getByRole('region', { name: 'Listen collections' }),
+    ).toBeInTheDocument();
+    expect(vi.mocked(getAudioTrack)).not.toHaveBeenCalled();
   });
 
   it('malformed detail numbers fall back to the listing, never into a fetch', async () => {
@@ -1161,5 +1311,217 @@ describe('Ttmik page — F-162 scroll position preserved on back', () => {
     await screen.findByText('Showing 15 of 20');
 
     expect(scroller.scrollTop).toBe(88);
+  });
+});
+
+describe('Ttmik page — F-207 shared curated corpus', () => {
+  it('collapses the ten TTMIK Grammar sets to ONE tile that opens an ordered level list', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    // Exactly one Grammar tile across ALL carousel pages (hidden included) —
+    // never ten sibling tiles.
+    await screen.findByRole('button', { name: /TTMIK Grammar Textbook/ });
+    expect(
+      screen.getAllByRole('button', {
+        name: /TTMIK Grammar Textbook/,
+        hidden: true,
+      }),
+    ).toHaveLength(1);
+
+    await user.click(
+      screen.getByRole('button', { name: /TTMIK Grammar Textbook/ }),
+    );
+
+    // The level list: all ten sets, in manifest (level) order.
+    const list = await screen.findByRole('list', {
+      name: 'Sets in TTMIK Grammar Textbook',
+    });
+    const rows = within(list).getAllByRole('listitem');
+    expect(rows).toHaveLength(10);
+    expect(within(rows[0]!).getByText('문법 레벨 1')).toBeInTheDocument();
+    expect(within(rows[9]!).getByText('문법 레벨 10')).toBeInTheDocument();
+
+    // A level row opens that set's track list…
+    await user.click(
+      within(list).getByRole('button', {
+        name: 'Open set: 문법 레벨 3, 2 tracks (Ready)',
+      }),
+    );
+    expect(
+      await screen.findByRole('list', { name: 'Tracks in 문법 레벨 3' }),
+    ).toBeInTheDocument();
+    // …whose back control returns to the level list, not the landing.
+    expect(
+      screen.getByRole('button', { name: 'Back to TTMIK Grammar Textbook' }),
+    ).toBeInTheDocument();
+  });
+
+  it('a curated tile opens its set: track list → track player + transcript (the My Audio flow, shared-sourced)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByRole('button', { name: /TTMIK Grammar Textbook/ });
+
+    await goToLandingPage(user, 2);
+    await user.click(screen.getByRole('button', { name: /Korean Folktales/ }));
+
+    // The set view: eyebrow from the manifest, title from the shared set,
+    // numbered track rows with status pills.
+    expect(await screen.findByRole('heading', { name: '전래 동화 모음' }))
+      .toBeInTheDocument();
+    const tracks = screen.getByRole('list', { name: 'Tracks in 전래 동화 모음' });
+    expect(within(tracks).getAllByRole('listitem')).toHaveLength(2);
+
+    // Open track 1 → the real player + transcript, via GET /audio/tracks/:id.
+    await user.click(
+      within(tracks).getByRole('button', {
+        name: 'Open track 1: 전래 동화 모음 1 (Ready)',
+      }),
+    );
+    expect(
+      await screen.findByRole('heading', { name: '전래 동화 모음 1' }),
+    ).toBeInTheDocument();
+    expect(vi.mocked(getAudioTrack)).toHaveBeenCalledWith(
+      7201,
+      expect.any(AbortSignal),
+    );
+    const audio = document.querySelector('audio');
+    expect(audio).not.toBeNull();
+    expect(audio).toHaveAttribute('src', '/audio/tracks/7201/stream');
+    expect(screen.getByText('옛날 옛적에.')).toBeInTheDocument();
+    // The curated eyebrow (its Korean half is unique on this view) — not
+    // the "My Audio" default.
+    expect(screen.getByText('전래 동화')).toBeInTheDocument();
+    expect(screen.queryByText('내 오디오')).not.toBeInTheDocument();
+    // Back returns to the owning set's track list.
+    expect(
+      screen.getByRole('button', { name: 'Back to Korean Folktales' }),
+    ).toBeInTheDocument();
+  });
+
+  it('a titleless shared track heads "Track N" — never the "My audio" fallback', async () => {
+    vi.mocked(getAudioTrack).mockResolvedValue({
+      ...SHARED_TRACK_DETAIL,
+      track: { ...SHARED_TRACK_DETAIL.track, title: null },
+    });
+    // Deep link — the number must resolve from the shared listing (the
+    // track-detail wire carries none): folktales track 7201 is track 1.
+    renderPage('/learn/listen?corpus=shared&set=korean-folktales&track=7201');
+
+    expect(
+      await screen.findByRole('heading', { name: 'Track 1' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('My audio')).not.toBeInTheDocument();
+  });
+
+  it('deep-links straight into a shared set (?corpus=shared&set=…) without the landing fetch chain', async () => {
+    renderPage('/learn/listen?corpus=shared&set=news-in-korean');
+
+    expect(
+      await screen.findByRole('heading', { name: '한국어 뉴스' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('list', { name: 'Tracks in 한국어 뉴스' }),
+    ).toBeInTheDocument();
+    expect(vi.mocked(getTtmikLessons)).not.toHaveBeenCalled();
+    expect(vi.mocked(listMyAudio)).not.toHaveBeenCalled();
+  });
+
+  it('a manifest slug missing from the fetch renders NO tile for it (no dead tiles)', async () => {
+    vi.mocked(getSharedAudio).mockResolvedValue(
+      SHARED_SETS.filter((s) => s.slug !== 'jindo-dog'),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByRole('button', { name: /TTMIK Grammar Textbook/ });
+
+    await goToLandingPage(user, 2);
+    const stories = screen.getByRole('list', {
+      name: 'Stories & News collections',
+    });
+    // The other three story tiles render; Jindo Dog is simply absent.
+    expect(within(stories).getAllByRole('listitem')).toHaveLength(3);
+    expect(
+      screen.queryByRole('button', { name: /Blue Jindo Dog/, hidden: true }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('offers Read only where a reading version exists, navigating to the chapter reader', async () => {
+    const user = userEvent.setup();
+
+    // Folktales pairs book_uploads id 17 → the Read action renders.
+    renderPage('/learn/listen?corpus=shared&set=korean-folktales');
+    await screen.findByRole('heading', { name: '전래 동화 모음' });
+    await user.click(screen.getByRole('button', { name: /Read this book/ }));
+    expect(screen.getByTestId('location')).toHaveTextContent(
+      '/learn/reading?book=17',
+    );
+  });
+
+  it('an audio-only category (Blue Jindo Dog) renders NO Read action', async () => {
+    renderPage('/learn/listen?corpus=shared&set=jindo-dog');
+    await screen.findByRole('heading', { name: '파란 진돗개' });
+
+    expect(
+      screen.queryByRole('button', { name: /Read this book/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('an empty shared corpus shows the honest empty state on Stories & News — statics untouched', async () => {
+    vi.mocked(getSharedAudio).mockResolvedValue([]);
+    const user = userEvent.setup();
+    renderPage();
+
+    // Statics render regardless…
+    expect(
+      screen.getByRole('button', { name: /TTMIK Lessons/ }),
+    ).toBeInTheDocument();
+    // …no curated tile ever appears…
+    await waitFor(() => {
+      expect(vi.mocked(getSharedAudio)).toHaveBeenCalledTimes(1);
+    });
+    expect(
+      screen.queryByRole('button', {
+        name: /TTMIK Grammar Textbook/,
+        hidden: true,
+      }),
+    ).not.toBeInTheDocument();
+
+    // …and the curated-only page says so honestly.
+    await goToLandingPage(user, 2);
+    expect(
+      await screen.findByText('No shared audio yet.'),
+    ).toBeInTheDocument();
+  });
+
+  it('a shared-corpus fetch failure surfaces fixed-copy error + working retry on the curated page', async () => {
+    vi.mocked(getSharedAudio)
+      .mockRejectedValueOnce(
+        new ApiError('server error', { status: 500, code: 'server_error' }),
+      )
+      .mockResolvedValueOnce(SHARED_SETS);
+    const user = userEvent.setup();
+    renderPage();
+
+    await goToLandingPage(user, 2);
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/Could not load the audio library\./);
+    expect(alert).not.toHaveTextContent(/server error/);
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(
+      await screen.findByRole('button', { name: /Korean Folktales/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('a shared set the fetch no longer carries resolves to the uniform not-found state', async () => {
+    vi.mocked(getSharedAudio).mockResolvedValue(
+      SHARED_SETS.filter((s) => s.slug !== 'news-in-korean'),
+    );
+    renderPage('/learn/listen?corpus=shared&set=news-in-korean');
+
+    expect(
+      await screen.findByText("That audio set couldn't be found."),
+    ).toBeInTheDocument();
   });
 });
