@@ -12,19 +12,41 @@
  *                   (advisory-locked) → audio_sources row → blob write →
  *                   audio_tracks row → audio_transcription_jobs row. 201 with
  *                   { sourceId, trackId, jobId, transcriptStatus }.
- *   GET  /audio   → the caller's own audio sources (newest first, bounded to
- *                   the most recent 50 — the repo's GET-listing precedent;
- *                   A-4 can add real pagination), each with its tracks'
- *                   transcript_status (the progress-polling surface A-4's
- *                   Listen UI will read). The raw audio_sources.status column
+ *   GET  /audio   → the caller's own PRIVATE audio sources (newest first,
+ *                   bounded to the most recent 50 — the repo's GET-listing
+ *                   precedent; A-4 can add real pagination), each with its
+ *                   tracks' transcript_status (the progress-polling surface
+ *                   A-4's Listen UI will read). Shared sets are excluded
+ *                   (is_shared = false) — a set the operator has flagged into
+ *                   the curated corpus moves to GET /audio/shared, even for
+ *                   its owner (F-207 decision #2: "My Audio" = private
+ *                   uploads only). The raw audio_sources.status column
  *                   is deliberately NOT exposed: nothing settles it after
  *                   enqueue (the A-2 worker settles the JOB and the tracks'
  *                   transcript_status, never the source row), so it would pin
  *                   to 'processing' forever — per-track transcript_status is
  *                   the truthful progress signal.
  *
+ * F-207 phase 1 (shared curated corpus — READ access only):
+ *   GET /audio/shared → the curated shared sets (audio_sources.is_shared =
+ *                   true), NON-user-scoped by design: every authenticated
+ *                   account sees the same curated list (the Listen tiles'
+ *                   data source). Same DTO shape as GET /audio, and — load
+ *                   bearing — NO owner identity in it: no user_id, no email,
+ *                   nothing that says whose rows these are (they are served
+ *                   cross-account). is_shared is OPERATOR-SET ONLY (the
+ *                   phase-2 cutover script); no route writes it, so a user
+ *                   can neither share their own arbitrary content nor
+ *                   un-share/steal someone else's.
+ *                   The track read routes below widen the same way: a track
+ *                   is readable/streamable when the caller OWNS it OR its
+ *                   SOURCE is shared. Every MUTATION stays owner-only —
+ *                   sharing is a read-access flag, never a transfer of
+ *                   control.
+ *
  * A-4a (the Listen playback surface — server side only, client is A-4b):
- *   GET /audio/tracks/:id         → one owned track + its ORDERED transcript
+ *   GET /audio/tracks/:id         → one readable (owned or shared-source,
+ *                   F-207) track + its ORDERED transcript
  *                   segments: { track: { id, title, transcriptStatus,
  *                   durationMs, streamUrl }, segments: [{ segmentNumber,
  *                   startMs, endMs, body }] }. `streamUrl` is the
@@ -72,8 +94,12 @@
  *     BOOK_UPLOAD_DAILY_CAP posture). The ledger survives track deletion
  *     (076: track_id SET NULL, cap sums by user_id alone), so
  *     upload→delete→re-upload can never reset either budget.
- *   - IDOR: every read is scoped WHERE user_id = getUserId(req) — another
- *     user's rows are simply absent from GET /audio, never distinguishable.
+ *   - IDOR: every read is scoped WHERE user_id = getUserId(req), widened
+ *     ONLY by `OR audio_sources.is_shared = true` (F-207 — the operator-set
+ *     curated-corpus flag). A private row of another user is simply absent
+ *     from every response, never distinguishable from a nonexistent one; a
+ *     SHARED row is deliberately readable by every account and its reads
+ *     carry no owner identity. Every WRITE keeps the strict owner scope.
  *   - MASS ASSIGNMENT: `title` is the only writable body field, validated by
  *     a `.strict()` Zod schema — an extra field is REJECTED, not ignored.
  *     kind/status/slug/source_upload_id are server-assigned constants.
@@ -386,15 +412,80 @@ router.post(
 );
 
 // ---------------------------------------------------------------------------
-// GET /audio — the caller's own audio sources + per-track transcript status.
+// GET /audio — the caller's own PRIVATE audio sources + per-track transcript
+// status. GET /audio/shared — the curated shared sets (F-207).
 // ---------------------------------------------------------------------------
 
-/** Bound on GET /audio's source listing — the repo's GET-listing precedent
+/** Bound on the source listings — the repo's GET-listing precedent
  *  (GET /uploads/:id/extract caps at 50): the polling surface wants recent
  *  history, not an unbounded scroll, and without a bound a flood of uploads
  *  turns this join + in-memory grouping into an amplifier. A-4 can add real
- *  pagination (cursor/offset) when the Listen UI needs deeper history. */
+ *  pagination (cursor/offset) when the Listen UI needs deeper history. The
+ *  same bound caps /shared (the curated corpus is ~21 sets — the cap is
+ *  headroom, not a pagination stand-in). */
 const GET_SOURCES_LIMIT = 50;
+
+/** Group the flat (source × track) join into source DTOs. Rows MUST arrive
+ *  source-contiguous (the callers' ORDER BY leads with the source sort
+ *  keys). Shared by GET /audio and GET /audio/shared — one grouping, one
+ *  DTO shape, so the two listings cannot drift (and neither can leak a
+ *  column the projection doesn't carry: SourceTrackRow has no user_id/email,
+ *  so no owner identity can reach either response). */
+function groupSourceRows(rows: SourceTrackRow[]): AudioSourceDTO[] {
+  const sources: AudioSourceDTO[] = [];
+  let current: AudioSourceDTO | null = null;
+  for (const row of rows) {
+    if (current === null || current.id !== Number(row.source_id)) {
+      current = {
+        id: Number(row.source_id),
+        slug: row.slug,
+        title: row.title,
+        kind: row.kind,
+        created_at: row.source_created_at.toISOString(),
+        tracks: [],
+      };
+      sources.push(current);
+    }
+    if (row.track_id !== null) {
+      current.tracks.push({
+        id: Number(row.track_id),
+        track_number: row.track_number!,
+        title: row.track_title,
+        byte_size: Number(row.byte_size),
+        duration_ms: row.duration_ms,
+        transcript_status: row.transcript_status!,
+      });
+    }
+  }
+  return sources;
+}
+
+/** The shared shape of both listing queries — everything except the inner
+ *  subquery's WHERE + parameter slots, which is exactly where the two
+ *  listings differ (owner-private vs curated-shared). Both arguments are
+ *  SERVER-SIDE STRING CONSTANTS (see the two call sites) — no request data
+ *  ever reaches this interpolation; row values still bind via $n. */
+function sourceListingSql(where: string, limitPlaceholder: string): string {
+  return `
+  SELECT s.id          AS source_id,
+         s.slug,
+         s.title,
+         s.kind,
+         s.created_at  AS source_created_at,
+         t.id          AS track_id,
+         t.track_number,
+         t.title       AS track_title,
+         t.byte_size,
+         t.duration_ms,
+         t.transcript_status
+    FROM (SELECT id, slug, title, kind, created_at
+            FROM audio_sources
+           WHERE ${where}
+           ORDER BY created_at DESC, id DESC
+           LIMIT ${limitPlaceholder}) s
+    LEFT JOIN audio_tracks t ON t.source_id = s.id
+   ORDER BY s.created_at DESC, s.id DESC, t.track_number ASC`;
+}
 
 router.get('/', cheapLimiter(), async (req, res, next) => {
   try {
@@ -406,66 +497,46 @@ router.get('/', cheapLimiter(), async (req, res, next) => {
     // is on audio_sources.user_id — audio_tracks.user_id is pinned equal by
     // 074's composite FK, so no second predicate is needed; another user's
     // rows are simply absent (IDOR-safe: nothing here confirms existence).
+    // AND is_shared = false (F-207 decision #2): a set the operator flagged
+    // into the curated corpus leaves "My Audio" — even for its owner — and
+    // lists on /audio/shared instead; this listing is private uploads only.
     // audio_sources.status is deliberately not selected (see AudioSourceDTO).
     const { rows } = await query<SourceTrackRow>(
-      `SELECT s.id          AS source_id,
-              s.slug,
-              s.title,
-              s.kind,
-              s.created_at  AS source_created_at,
-              t.id          AS track_id,
-              t.track_number,
-              t.title       AS track_title,
-              t.byte_size,
-              t.duration_ms,
-              t.transcript_status
-         FROM (SELECT id, slug, title, kind, created_at
-                 FROM audio_sources
-                WHERE user_id = $1
-                ORDER BY created_at DESC, id DESC
-                LIMIT $2) s
-         LEFT JOIN audio_tracks t ON t.source_id = s.id
-        ORDER BY s.created_at DESC, s.id DESC, t.track_number ASC`,
+      sourceListingSql('user_id = $1 AND is_shared = false', '$2'),
       [userId, GET_SOURCES_LIMIT],
     );
+    res.status(200).json({ sources: groupSourceRows(rows) });
+  } catch (err) {
+    next(err);
+  }
+});
 
-    // Group the flat join into source DTOs (rows arrive source-contiguous
-    // because the ORDER BY leads with the source sort keys).
-    const sources: AudioSourceDTO[] = [];
-    let current: AudioSourceDTO | null = null;
-    for (const row of rows) {
-      if (current === null || current.id !== Number(row.source_id)) {
-        current = {
-          id: Number(row.source_id),
-          slug: row.slug,
-          title: row.title,
-          kind: row.kind,
-          created_at: row.source_created_at.toISOString(),
-          tracks: [],
-        };
-        sources.push(current);
-      }
-      if (row.track_id !== null) {
-        current.tracks.push({
-          id: Number(row.track_id),
-          track_number: row.track_number!,
-          title: row.track_title,
-          byte_size: Number(row.byte_size),
-          duration_ms: row.duration_ms,
-          transcript_status: row.transcript_status!,
-        });
-      }
-    }
-
-    res.status(200).json({ sources });
+// Registered as a LITERAL path. This router has no sibling `/:id` route
+// today, so nothing can shadow it — but keep it declared ABOVE the
+// `/tracks/:id*` routes (and above any future `/:id`) so Express's
+// first-match ordering can never turn "shared" into a param value.
+router.get('/shared', cheapLimiter(), async (_req, res, next) => {
+  try {
+    // F-207: the curated shared listing. DELIBERATELY NON-user-scoped —
+    // every authenticated account (router.use(requireAuth) above) gets the
+    // same curated sets; is_shared = true is the entire filter, so a private
+    // row (any owner's) can never appear here. The projection is the SAME
+    // SourceTrackRow as GET /audio: no user_id, no email — these are another
+    // account's rows served cross-account, and the owner's identity is not
+    // the client's business (no-owner-PII is asserted by the route tests).
+    const { rows } = await query<SourceTrackRow>(
+      sourceListingSql('is_shared = true', '$1'),
+      [GET_SOURCES_LIMIT],
+    );
+    res.status(200).json({ sources: groupSourceRows(rows) });
   } catch (err) {
     next(err);
   }
 });
 
 // ---------------------------------------------------------------------------
-// GET /audio/tracks/:id/stream — the track's audio bytes (user-scoped,
-// Range-capable). A-4b's <audio> element points here.
+// GET /audio/tracks/:id/stream — the track's audio bytes (owned or
+// shared-source per F-207, Range-capable). A-4b's <audio> element points here.
 // ---------------------------------------------------------------------------
 
 /**
@@ -497,12 +568,20 @@ router.get(
       const { id } = (req as Request & { validatedParams: z.infer<typeof TrackParamsSchema> })
         .validatedParams;
 
-      // IDOR guard: one no-join probe on (id, user_id) — migration 074's
-      // composite FK pins the denormalized user_id structurally, so this
-      // WHERE is sufficient. A miss (no such track OR another user's track)
-      // is a uniform 404: never confirm a foreign track exists.
+      // IDOR guard, widened for F-207: a track streams when the caller OWNS
+      // it OR its SOURCE is in the shared curated corpus. is_shared lives on
+      // audio_sources, so the probe joins the parent set (source_id is NOT
+      // NULL + composite-FK-pinned, 074 — the join can neither miss nor
+      // cross owners; the owner arm still rides the denormalized
+      // audio_tracks.user_id exactly as before). READ-ONLY widening: a miss
+      // (no such track OR another user's PRIVATE track) stays a uniform
+      // 404 — never confirm a foreign track exists.
       const { rows } = await query<{ blob_ref: string }>(
-        `SELECT blob_ref FROM audio_tracks WHERE id = $1 AND user_id = $2`,
+        `SELECT t.blob_ref
+           FROM audio_tracks t
+           JOIN audio_sources s ON s.id = t.source_id
+          WHERE t.id = $1
+            AND (t.user_id = $2 OR s.is_shared = true)`,
         [id, userId],
       );
       const row = rows[0];
@@ -552,9 +631,10 @@ router.get(
 );
 
 // ---------------------------------------------------------------------------
-// GET /audio/tracks/:id — one owned track + its ordered transcript segments
-// (the Listen UI's transcript render; mirrors reading.ts's
-// GET /reading/chapters/:chapterId detail-with-children shape).
+// GET /audio/tracks/:id — one readable (owned or shared-source, F-207) track
+// + its ordered transcript segments (the Listen UI's transcript render;
+// mirrors reading.ts's GET /reading/chapters/:chapterId
+// detail-with-children shape).
 // ---------------------------------------------------------------------------
 
 /** A transcript segment as served (BIGINT ids never leave the DB here — the
@@ -577,16 +657,19 @@ router.get(
       const { id } = (req as Request & { validatedParams: z.infer<typeof TrackParamsSchema> })
         .validatedParams;
 
-      // Ownership assert + the track's own fields, one probe (uniform 404 on
-      // any miss — same reasoning as the stream route above).
+      // Access assert + the track's own fields, one probe — owned OR
+      // shared-source, the same F-207 widening (and the same join
+      // reasoning + uniform 404 on any miss) as the stream route above.
       const trackRes = await query<{
         title: string | null;
         duration_ms: number | null;
         transcript_status: 'pending' | 'running' | 'done' | 'failed';
       }>(
-        `SELECT title, duration_ms, transcript_status
-           FROM audio_tracks
-          WHERE id = $1 AND user_id = $2`,
+        `SELECT t.title, t.duration_ms, t.transcript_status
+           FROM audio_tracks t
+           JOIN audio_sources s ON s.id = t.source_id
+          WHERE t.id = $1
+            AND (t.user_id = $2 OR s.is_shared = true)`,
         [id, userId],
       );
       const track = trackRes.rows[0];
@@ -594,9 +677,10 @@ router.get(
         throw new NotFoundError('track not found');
       }
 
-      // Ordered segments. Ownership was just confirmed and segments CASCADE
-      // from their track (075 — no user_id of their own, always reached
-      // THROUGH the track), so scoping on track_id alone is safe. A
+      // Ordered segments. READ access (owned or shared) was just confirmed
+      // and segments CASCADE from their track (075 — no user_id of their
+      // own, always reached THROUGH the track), so scoping on track_id
+      // alone is safe. A
       // not-yet-transcribed track simply has no rows → segments: [] — a
       // normal state the client polls through, never an error.
       const segRes = await query<{
