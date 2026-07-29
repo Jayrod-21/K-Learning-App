@@ -28,6 +28,18 @@
   padding: 0;
 }
 
+/* ── F-207 landing: one themed tile-page inside the SwipeCarousel ──
+ * The carousel page itself is `flex: 0 0 100%` (SwipeCarousel.css); this
+ * inner wrapper just stacks the page eyebrow over its tile grid and pads
+ * the sides so a mid-drag neighbor page never visually touches the active
+ * one. Bottom padding keeps the tiles' glow shadow clear of the dots. */
+.km-ttmik__tile-page {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 2px 4px 12px;
+}
+
 /* F-128 device #1 — CityCard supplies the signboard/hanji-paper chrome
  * (border/shadow/glow, tokenized both themes); zero its own padding
  * (the `CollapsibleTile` "surface=city" idiom) so the full-bleed button
