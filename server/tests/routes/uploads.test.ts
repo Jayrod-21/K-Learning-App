@@ -994,3 +994,230 @@ describe('DELETE /uploads/:id — removes row + every page blob (cascade)', () =
     expect(secondRes.status).toBe(404);
   });
 });
+
+// ---------------------------------------------------------------------------
+// F-207 phase 3a — shared curated books: the access-control threat-model
+// tests (mirrors audio.test.ts's F-207 phase-1 block; plan §5). The contract:
+// shared = READABLE (meta + page bytes) by every account, MUTABLE by no one
+// but the owner; a PRIVATE book of another user stays a uniform 404 on every
+// surface (no existence oracle); the owner's shared book leaves their own
+// "Books" list (decision #2). is_shared is OPERATOR-SET ONLY — no route
+// writes it — so tests flip it exactly the way the phase-2 cutover script
+// does: a keyed UPDATE on the row.
+// ---------------------------------------------------------------------------
+
+/** Flip one book into the shared curated corpus (the cutover script's shape). */
+async function shareBook(uploadId: number | string): Promise<void> {
+  await pg.pool.query(`UPDATE book_uploads SET is_shared = true WHERE id = $1`, [uploadId]);
+}
+
+/** Upload a real 2-page book as `agent` (route path — writes real page blobs,
+ *  so the page-stream tests exercise the full chain). */
+async function uploadTwoPageBook(agent: ReturnType<typeof request.agent>, title: string) {
+  const zip = buildStoredZip([
+    { name: '001.png', data: markedPng('shared-one') },
+    { name: '002.png', data: markedPng('shared-two') },
+  ]);
+  const res = await agent
+    .post('/uploads')
+    .field('title', title)
+    .field('type', 'literature')
+    .attach('file', zip, { filename: 'book.zip', contentType: 'application/zip' });
+  expect(res.status).toBe(201);
+  return res.body.upload.id as string;
+}
+
+describe('F-207 phase 3a — cross-account READ of a shared book (meta + pages)', () => {
+  it("a NON-owner reads a shared book's metadata: 200, exact DTO, and NO owner identity in the response", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const id = await seedBookUpload(pg.pool, a.userId, {
+      title: 'Shared Folktales',
+      type: 'literature',
+      status: 'ready',
+      pageCount: 2,
+    });
+    await shareBook(id);
+
+    const b = await registerUser(t.app, pg.pool);
+    const res = await b.agent.get(`/uploads/${id}`);
+    expect(res.status).toBe(200);
+    expect(Number(res.body.upload.id)).toBe(id);
+    expect(res.body.upload.title).toBe('Shared Folktales');
+    expect(res.body.upload.type).toBe('literature');
+    // No-owner-PII contract: the DTO is served cross-account, so it must
+    // carry NOTHING that says whose row this is — assert the exact key set,
+    // not just the absence of the two known-dangerous fields.
+    expect(Object.keys(res.body.upload).sort()).toEqual([
+      'byte_size',
+      'created_at',
+      'id',
+      'page_count',
+      'status',
+      'title',
+      'type',
+    ]);
+  });
+
+  it("a NON-owner streams a shared book's page bytes: 200 + the exact bytes + nosniff", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const id = await uploadTwoPageBook(a.agent, 'Shared Paged Book');
+    await shareBook(id);
+
+    const b = await registerUser(t.app, pg.pool);
+    const res = await getBinary(b.agent, `/uploads/${id}/page/1`);
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('image/png');
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(Buffer.compare(res.body as Buffer, markedPng('shared-one'))).toBe(0);
+  });
+
+  it("a NON-owner's probe of a PRIVATE book stays a uniform 404 on meta AND pages (no existence oracle)", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const privateId = await uploadTwoPageBook(a.agent, 'Private Book');
+    // NOT shared — is_shared stays the migration-079 default (false).
+
+    const b = await registerUser(t.app, pg.pool);
+    expect((await b.agent.get(`/uploads/${privateId}`)).status).toBe(404);
+    expect((await getBinary(b.agent, `/uploads/${privateId}/page/1`)).status).toBe(404);
+    // Same body/shape as a genuinely missing id — nothing distinguishes them.
+    expect((await b.agent.get('/uploads/99999999')).status).toBe(404);
+  });
+
+  it('the OWNER still reads their own shared book (meta + page 200) — sharing never locks the owner out of reads', async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const id = await uploadTwoPageBook(a.agent, 'Owner Shared Book');
+    await shareBook(id);
+
+    expect((await a.agent.get(`/uploads/${id}`)).status).toBe(200);
+    const page = await getBinary(a.agent, `/uploads/${id}/page/2`);
+    expect(page.status).toBe(200);
+    expect(Buffer.compare(page.body as Buffer, markedPng('shared-two'))).toBe(0);
+  });
+});
+
+describe("F-207 phase 3a — GET /uploads stays private-only (decision #2: shared books leave the owner's Books list)", () => {
+  it("the owner's SHARED book is excluded from their own GET /uploads; their private one still lists", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const privateId = await seedBookUpload(pg.pool, a.userId, { title: 'My Private Book' });
+    const sharedId = await seedBookUpload(pg.pool, a.userId, { title: 'My Curated Book' });
+    await shareBook(sharedId);
+
+    const res = await a.agent.get('/uploads');
+    expect(res.status).toBe(200);
+    const ids = res.body.uploads.map((u: { id: string }) => Number(u.id));
+    expect(ids).toEqual([privateId]);
+  });
+
+  it("a NON-owner's GET /uploads never lists anyone's shared book either — shared books surface only via the Listen tiles, not this list", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const sharedId = await seedBookUpload(pg.pool, a.userId, { title: 'Curated Book' });
+    await shareBook(sharedId);
+
+    const b = await registerUser(t.app, pg.pool);
+    const res = await b.agent.get('/uploads');
+    expect(res.status).toBe(200);
+    expect(res.body.uploads).toEqual([]);
+  });
+});
+
+describe('F-207 phase 3a — every book mutation (and owner-workflow read) stays owner-only on a SHARED book', () => {
+  it("a NON-owner cannot DELETE a shared book: uniform 404, row + pages + blobs survive", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const id = await uploadTwoPageBook(a.agent, 'Undeletable Shared Book');
+    await shareBook(id);
+
+    const b = await registerUser(t.app, pg.pool);
+    expect((await b.agent.delete(`/uploads/${id}`)).status).toBe(404);
+
+    const upload = await pg.pool.query<{ is_shared: boolean }>(
+      `SELECT is_shared FROM book_uploads WHERE id = $1`,
+      [id],
+    );
+    expect(upload.rows[0]?.is_shared).toBe(true); // still there, still shared
+    expect((await bookPageRows(id)).length).toBe(2); // pages intact
+  });
+
+  it('a NON-owner cannot REORDER a shared book: 404, page order untouched', async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const id = await uploadTwoPageBook(a.agent, 'Unreorderable Shared Book');
+    await shareBook(id);
+    const before = await bookPageRows(id);
+
+    const b = await registerUser(t.app, pg.pool);
+    const res = await b.agent
+      .patch(`/uploads/${id}/pages/order`)
+      .send({ page_ids: before.map((p) => Number(p.id)).reverse() });
+    expect(res.status).toBe(404);
+    expect(await bookPageRows(id)).toEqual(before); // untouched
+  });
+
+  it('a NON-owner cannot trigger or read OCR extraction on a shared book: POST + GET /extract both 404', async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const id = await seedBookUpload(pg.pool, a.userId, { status: 'ready', pageCount: 2 });
+    await shareBook(id);
+
+    const b = await registerUser(t.app, pg.pool);
+    // runExtraction's ownership gate (WHERE id AND user_id) 404s before any
+    // range logic, cap spend, or Vision call — extraction is the OWNER's
+    // costed workflow, never a shared-reader affordance.
+    expect((await b.agent.post(`/uploads/${id}/extract`).send({})).status).toBe(404);
+    expect((await b.agent.get(`/uploads/${id}/extract`)).status).toBe(404);
+  });
+
+  it('the /pages id-listing (the reorder tool feed) stays owner-only too: a NON-owner gets 404 even on a shared book', async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const id = await seedBookUpload(pg.pool, a.userId, { status: 'ready', pageCount: 1 });
+    await seedBookPage(pg.pool, id, 1);
+    await shareBook(id);
+
+    const b = await registerUser(t.app, pg.pool);
+    // Deliberate: /pages exists solely to feed the owner-only reorder PATCH
+    // (stable book_pages.id values). The shared Read surface paginates by
+    // page NUMBER via meta.page_count + /page/:n and never needs page ids.
+    expect((await b.agent.get(`/uploads/${id}/pages`)).status).toBe(404);
+  });
+
+  it('a shared-book upload replay cannot be hijacked: POSTing the same title as another user creates a NEW private book for the caller, never touching the shared row', async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const sharedId = await uploadTwoPageBook(a.agent, 'Collision Title');
+    await shareBook(sharedId);
+
+    // B uploads under the SAME title — the idempotent-replace key is
+    // (user_id, title), so this lands as B's OWN new private row; A's shared
+    // book is not replaced, and B's row is not shared.
+    const b = await registerUser(t.app, pg.pool);
+    const bId = await uploadTwoPageBook(b.agent, 'Collision Title');
+    expect(Number(bId)).not.toBe(Number(sharedId));
+
+    const rows = await pg.pool.query<{ id: string; is_shared: boolean }>(
+      `SELECT id, is_shared FROM book_uploads WHERE title = 'Collision Title' ORDER BY id`,
+      [],
+    );
+    expect(rows.rows).toHaveLength(2);
+    expect(rows.rows.find((r) => Number(r.id) === Number(sharedId))?.is_shared).toBe(true);
+    expect(rows.rows.find((r) => Number(r.id) === Number(bId))?.is_shared).toBe(false);
+  });
+
+  it('share-flag hijack via upload is impossible: an is_shared body field is REJECTED (.strict() → 400) and a clean upload lands private', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const smuggle = await agent
+      .post('/uploads')
+      .field('title', 'Smuggled Share')
+      .field('type', 'vocab')
+      .field('is_shared', 'true')
+      .attach('file', minimalZip(), { filename: 'book.zip', contentType: 'application/zip' });
+    expect(smuggle.status).toBe(400);
+
+    const clean = await agent
+      .post('/uploads')
+      .field('title', 'Clean Upload')
+      .field('type', 'vocab')
+      .attach('file', minimalZip(), { filename: 'book.zip', contentType: 'application/zip' });
+    expect(clean.status).toBe(201);
+    const { rows } = await pg.pool.query<{ is_shared: boolean }>(
+      `SELECT is_shared FROM book_uploads WHERE id = $1`,
+      [clean.body.upload.id],
+    );
+    expect(rows[0]?.is_shared).toBe(false); // 079's default — private
+  });
+});

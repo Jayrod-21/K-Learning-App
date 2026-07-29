@@ -51,10 +51,25 @@
  *     (including a zip entry's filename — used ONLY for sort order) ever
  *     enters a filesystem path. Every read/stream/delete resolves the stored
  *     relative path and asserts it stays under the configured root.
- *   - IDOR: every row/page/blob query is scoped to `getUserId(req)`. Another
- *     user's :id → 404 (not 403 — don't confirm existence), identical to a
- *     missing id so probing id-space reveals nothing. `GET .../page/:n` folds
- *     "not your upload" and "n out of range" into the SAME 404.
+ *   - IDOR: every row/page/blob query is scoped to `getUserId(req)`, widened
+ *     ONLY by `OR book_uploads.is_shared = true` on the two pure READ paths
+ *     (F-207 phase 3a — the operator-set curated-corpus flag, mirroring
+ *     routes/audio.ts's F-207 phase-1 widening exactly): GET /uploads/:id
+ *     (meta) and GET /uploads/:id/page/:n (page bytes). A private row of
+ *     another user's :id → 404 (not 403 — don't confirm existence), identical
+ *     to a missing id so probing id-space reveals nothing. `GET .../page/:n`
+ *     folds "not your upload" and "n out of range" into the SAME 404. A
+ *     SHARED book is deliberately readable by every account and its reads
+ *     carry no owner identity (UploadRow has no user_id/email). Every WRITE
+ *     — delete, reorder, extract — keeps the strict owner scope, as does the
+ *     /pages id-listing (it exists solely to feed the owner-only reorder
+ *     PATCH) and the extract-runs status read. is_shared is OPERATOR-SET
+ *     ONLY (the phase-2 cutover script); no route writes it, so a user can
+ *     neither share their own arbitrary content nor un-share/steal someone
+ *     else's. GET /uploads ("Books" list) stays private-only
+ *     (`AND is_shared = false`, F-207 decision #2): a book flagged into the
+ *     curated corpus leaves its owner's personal Books list — even for the
+ *     owner — and surfaces via the Listen tiles' "Read" button instead.
  *   - MASS ASSIGNMENT: `title`/`type` (POST) and `page_ids` (PATCH order) are
  *     the only writable body fields, all validated by a `.strict()` Zod
  *     schema — an extra field is REJECTED, not ignored.
@@ -241,16 +256,20 @@ router.post('/', expensiveLimiter(), multerBookUpload, validateBody(UploadBodySc
 });
 
 // ---------------------------------------------------------------------------
-// GET /uploads — this user's uploads, newest first.
+// GET /uploads — this user's PRIVATE uploads, newest first.
 // ---------------------------------------------------------------------------
 
 router.get('/', cheapLimiter(), async (req, res, next) => {
   try {
     const userId = getUserId(req);
+    // AND is_shared = false (F-207 decision #2, mirroring GET /audio): a book
+    // the operator flagged into the curated corpus leaves the personal
+    // "Books" list — even for its owner — and is reached via the Listen
+    // tiles' "Read" button instead; this listing is private uploads only.
     const { rows } = await query<UploadRow>(
       `SELECT id, title, type, status, page_count, byte_size, created_at
          FROM book_uploads
-        WHERE user_id = $1
+        WHERE user_id = $1 AND is_shared = false
         ORDER BY created_at DESC, id DESC`,
       [userId],
     );
@@ -261,7 +280,8 @@ router.get('/', cheapLimiter(), async (req, res, next) => {
 });
 
 // ---------------------------------------------------------------------------
-// GET /uploads/:id — one upload's metadata (user-scoped).
+// GET /uploads/:id — one readable (owned or shared, F-207 phase 3a) upload's
+// metadata.
 // ---------------------------------------------------------------------------
 
 router.get('/:id', cheapLimiter(), validateParams(IdParamsSchema), async (req, res, next) => {
@@ -270,10 +290,15 @@ router.get('/:id', cheapLimiter(), validateParams(IdParamsSchema), async (req, r
     const { id } = (req as Request & { validatedParams: z.infer<typeof IdParamsSchema> })
       .validatedParams;
 
+    // READ-ONLY widening (F-207 phase 3a, audio.ts's exact shape): a book is
+    // readable when the caller OWNS it OR it is in the shared curated corpus.
+    // A miss (missing OR another user's PRIVATE book) stays a uniform 404 —
+    // never confirm a foreign book exists. UploadRow carries no user_id/
+    // email, so a shared read leaks no owner identity.
     const { rows } = await query<UploadRow>(
       `SELECT id, title, type, status, page_count, byte_size, created_at
          FROM book_uploads
-        WHERE id = $1 AND user_id = $2`,
+        WHERE id = $1 AND (user_id = $2 OR is_shared = true)`,
       [id, userId],
     );
     const row = rows[0];
@@ -288,7 +313,8 @@ router.get('/:id', cheapLimiter(), validateParams(IdParamsSchema), async (req, r
 });
 
 // ---------------------------------------------------------------------------
-// GET /uploads/:id/page/:n — stream page n's image bytes (user-scoped).
+// GET /uploads/:id/page/:n — stream page n's image bytes (owned or shared,
+// F-207 phase 3a).
 // ---------------------------------------------------------------------------
 
 router.get(
@@ -301,15 +327,23 @@ router.get(
       const { id, n } = (req as Request & { validatedParams: z.infer<typeof PageParamsSchema> })
         .validatedParams;
 
-      // A single user-scoped join covers BOTH "not your upload" and "n out of
-      // range" with the same 404 — no row means neither reason is
+      // A single access-scoped join covers "not your (private) upload" and
+      // "n out of range" with the same 404 — no row means neither reason is
       // distinguishable to the caller (don't confirm the upload's existence
-      // to a non-owner probing page numbers).
+      // to a non-owner probing page numbers). Widened for F-207 phase 3a
+      // (audio.ts's stream-probe shape): a page streams when the caller OWNS
+      // the book OR the book is in the shared curated corpus. is_shared
+      // lives on book_uploads (the parent), so the existing join carries the
+      // check; the pages themselves have no owner column and are only ever
+      // reached THROUGH the book. READ-ONLY widening — a private book of
+      // another user still 404s uniformly.
       const { rows } = await query<{ blob_ref: string }>(
         `SELECT bp.blob_ref
            FROM book_pages bp
            JOIN book_uploads bu ON bu.id = bp.upload_id
-          WHERE bu.id = $1 AND bu.user_id = $2 AND bp.page_number = $3`,
+          WHERE bu.id = $1
+            AND (bu.user_id = $2 OR bu.is_shared = true)
+            AND bp.page_number = $3`,
         [id, userId, n],
       );
       const row = rows[0];

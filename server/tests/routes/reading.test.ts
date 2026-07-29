@@ -896,3 +896,167 @@ describe('GET /reading/attempts — the caller\'s reading-completion history (F-
     expect(page2.body.total).toBe(3);
   });
 });
+
+// ---------------------------------------------------------------------------
+// F-207 phase 3a — shared curated books: the chapter READ surface widens to
+// owned-OR-shared (mirrors audio.test.ts's F-207 phase-1 block; plan §5).
+// The contract: a chapter is readable by every account when its PARENT book
+// carries the operator-set book_uploads.is_shared flag; a PRIVATE book's
+// chapters stay a uniform 404 for non-owners; per-user state (resume
+// position, reading attempts) deliberately stays OWNER-ONLY in this phase
+// (migration 051's composite owner-guard FK structurally forbids a non-owner
+// position row — see FOLLOW_UPS.md). is_shared is OPERATOR-SET ONLY, so
+// tests flip it the way the phase-2 cutover script does: a keyed UPDATE.
+// ---------------------------------------------------------------------------
+
+/** Flip one book into the shared curated corpus (the cutover script's shape). */
+async function shareBook(uploadId: number): Promise<void> {
+  await pg.pool.query(`UPDATE book_uploads SET is_shared = true WHERE id = $1`, [uploadId]);
+}
+
+describe('F-207 phase 3a — cross-account READ of a shared book\'s chapters', () => {
+  it("a NON-owner lists a shared book's chapters (200, ordered) with no owner identity in the DTO", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, a.userId, {
+      type: 'literature',
+      status: 'ready',
+    });
+    await seedReadingChapter(pg.pool, a.userId, uploadId, { chapterNumber: 2, title: '둘째 장' });
+    await seedReadingChapter(pg.pool, a.userId, uploadId, { chapterNumber: 1, title: '첫째 장' });
+    await shareBook(uploadId);
+
+    const b = await registerUser(t.app, pg.pool);
+    const res = await b.agent.get(`/reading/chapters?source_upload_id=${uploadId}`);
+    expect(res.status).toBe(200);
+    const nums = (res.body.chapters as Array<{ chapter_number: number }>).map(
+      (c) => c.chapter_number,
+    );
+    expect(nums).toEqual([1, 2]);
+    expect(res.body.chapters[0].title).toBe('첫째 장');
+    // No-owner-PII contract: chapters are another account's rows served
+    // cross-account — assert the exact key set (no user_id, no email).
+    expect(Object.keys(res.body.chapters[0]).sort()).toEqual([
+      'chapter_number',
+      'end_page',
+      'id',
+      'start_page',
+      'title',
+    ]);
+  });
+
+  it("a NON-owner reads a shared book's chapter detail + passages (200)", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, a.userId, {
+      type: 'literature',
+      status: 'ready',
+    });
+    const chapterId = await seedReadingChapter(pg.pool, a.userId, uploadId, {
+      chapterNumber: 1,
+      title: '공유 장',
+    });
+    await seedReadingPassage(pg.pool, chapterId, { passageNumber: 1, body: '공유된 첫 문단.' });
+    await seedReadingPassage(pg.pool, chapterId, { passageNumber: 2, body: '공유된 둘째 문단.' });
+    await shareBook(uploadId);
+
+    const b = await registerUser(t.app, pg.pool);
+    const res = await b.agent.get(`/reading/chapters/${chapterId}`);
+    expect(res.status).toBe(200);
+    expect(res.body.chapter.id).toBe(chapterId);
+    expect(res.body.chapter.source_upload_id).toBe(uploadId);
+    const bodies = (res.body.passages as Array<{ body: string }>).map((p) => p.body);
+    expect(bodies).toEqual(['공유된 첫 문단.', '공유된 둘째 문단.']);
+    // No owner identity on the detail DTO either.
+    expect(res.body.chapter).not.toHaveProperty('user_id');
+  });
+
+  it("a PRIVATE book's chapters stay a uniform 404 for a NON-owner — sharing one book never widens a sibling", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    // Same owner, two books: one shared, one private — the differential
+    // proves the widening keys on THIS book's flag, not the owner.
+    const sharedUpload = await seedBookUpload(pg.pool, a.userId, {
+      title: 'shared-book',
+      type: 'literature',
+      status: 'ready',
+    });
+    const sharedChapter = await seedReadingChapter(pg.pool, a.userId, sharedUpload, {
+      chapterNumber: 1,
+    });
+    const privateUpload = await seedBookUpload(pg.pool, a.userId, {
+      title: 'private-book',
+      type: 'literature',
+      status: 'ready',
+    });
+    const privateChapter = await seedReadingChapter(pg.pool, a.userId, privateUpload, {
+      chapterNumber: 1,
+    });
+    await seedReadingPassage(pg.pool, privateChapter, { body: '비밀 내용' });
+    await shareBook(sharedUpload);
+
+    const b = await registerUser(t.app, pg.pool);
+    // Shared book reads fine…
+    expect((await b.agent.get(`/reading/chapters?source_upload_id=${sharedUpload}`)).status).toBe(200);
+    expect((await b.agent.get(`/reading/chapters/${sharedChapter}`)).status).toBe(200);
+    // …the private sibling stays a uniform 404 on both routes.
+    expect((await b.agent.get(`/reading/chapters?source_upload_id=${privateUpload}`)).status).toBe(404);
+    expect((await b.agent.get(`/reading/chapters/${privateChapter}`)).status).toBe(404);
+  });
+
+  it('the OWNER still lists + reads their own shared book\'s chapters (owner arm intact)', async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, a.userId, {
+      type: 'literature',
+      status: 'ready',
+    });
+    const chapterId = await seedReadingChapter(pg.pool, a.userId, uploadId, { chapterNumber: 1 });
+    await shareBook(uploadId);
+
+    expect((await a.agent.get(`/reading/chapters?source_upload_id=${uploadId}`)).status).toBe(200);
+    expect((await a.agent.get(`/reading/chapters/${chapterId}`)).status).toBe(200);
+  });
+});
+
+describe('F-207 phase 3a — per-user state on a shared book stays OWNER-ONLY (deferred widening, see FOLLOW_UPS.md)', () => {
+  it("a NON-owner cannot read or write a resume position on a shared book (uniform 404, no row written)", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, a.userId, {
+      type: 'literature',
+      status: 'ready',
+    });
+    await shareBook(uploadId);
+
+    const b = await registerUser(t.app, pg.pool);
+    expect((await b.agent.get(`/reading/position/${uploadId}`)).status).toBe(404);
+    expect(
+      (await b.agent.put(`/reading/position/${uploadId}`).send({ page_number: 3 })).status,
+    ).toBe(404);
+    // Nothing was written — neither under B's id nor the owner's.
+    const rows = await pg.pool.query(
+      `SELECT user_id FROM reading_positions WHERE source_upload_id = $1`,
+      [uploadId],
+    );
+    expect(rows.rows).toHaveLength(0);
+  });
+
+  it("a NON-owner cannot log a reading attempt against a shared book's chapter (uniform 404, no row written)", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, a.userId, {
+      type: 'literature',
+      status: 'ready',
+    });
+    const chapterId = await seedReadingChapter(pg.pool, a.userId, uploadId, {
+      chapterNumber: 1,
+      title: '공유 장',
+    });
+    await shareBook(uploadId);
+
+    const b = await registerUser(t.app, pg.pool);
+    const res = await b.agent
+      .post('/reading/attempts')
+      .send({ sourceKind: 'chapter', chapterId });
+    expect(res.status).toBe(404);
+    const rows = await pg.pool.query(`SELECT id FROM reading_attempts WHERE chapter_id = $1`, [
+      chapterId,
+    ]);
+    expect(rows.rows).toHaveLength(0);
+  });
+});
