@@ -30,6 +30,8 @@
  * SINGLE transaction with the enumeration; the actual rowcounts are reported
  * and cross-checked against the enumerated candidates (a mismatch — e.g. a
  * concurrent insert racing the cutover — rolls the whole transaction back).
+ * Accepted limitation: that audit invariant compares row COUNTS, not id-SETS,
+ * which is sufficient for this one-time single-operator cutover.
  *
  * Idempotent: re-running after apply finds nothing with is_shared = false →
  * "0 to share, K already shared", zero rows written, exit 0.
@@ -43,11 +45,14 @@
  *   - `is_shared` is operator-set only (no user endpoint writes it — plan §5
  *     "share-flag hijack"); this script is the single sanctioned writer.
  *
- * Exit codes (mirrors seed-user.ts): 0 ok · 1 failure · 2 bad input
- * (unknown/empty owner email).
+ * Exit codes: 0 ok · 1 failure · 2 bad input (unknown/empty owner email).
+ * 0/1 follow seed-user.ts; the exit-2 bad-input path is share-corpus's own
+ * contract — seed-user has no equivalent.
  *
  * Run inside the ACTIVE color's server container (it already holds
- * DATABASE_URL on km-internal — same posture as Deploy/seed-admin.sh):
+ * DATABASE_URL on km-internal — same posture as Deploy/seed-admin.sh).
+ * The active color is ACTIVE_ENVIRONMENT in Deploy/.env (or run
+ * Deploy/check-active-env.sh --get-active):
  *   dry-run: docker exec km-server-<active> node dist/scripts/share-corpus.js
  *   apply:   docker exec -e SHARE_CORPUS_APPLY=true km-server-<active> \
  *              node dist/scripts/share-corpus.js

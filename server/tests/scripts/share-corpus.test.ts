@@ -9,14 +9,17 @@
  *
  * Coverage:
  *   - DRY RUN writes NOTHING: owner A's 2 sets + 1 book and bystander B's
- *     set all stay is_shared = false; the summary still enumerates exactly
- *     A's 2 sets + 1 book (slug/title/id) with flipped counts of 0
+ *     set + book all stay is_shared = false; the summary still enumerates
+ *     exactly A's 2 sets + 1 book (slug/title/id) with flipped counts of 0
  *   - APPLY flips ONLY the owner's rows: A's 2 sets + 1 book become true,
- *     B's set stays false (owner scoping proven), rowcounts 2/1
+ *     B's set AND book stay false (owner scoping proven for BOTH tables),
+ *     rowcounts 2/1
  *   - IDEMPOTENT: a second apply flips 0, reports 2 sets + 1 book already
  *     shared, and resolves cleanly (the CLI's exit-0 path)
  *   - mixed prior state: a pre-shared set is excluded from the candidate
- *     list and counted as already-shared instead
+ *     list and counted as already-shared instead; APPLY over that mixed
+ *     state (audio and book variants) flips only the fresh rows without
+ *     tripping the audit invariant
  *   - unknown email → ShareCorpusInputError (bad input), DB untouched, and
  *     exitCodeFor maps it to 2 (vs 1 for any other failure)
  *   - email is trimmed + lowercased before resolution
@@ -118,8 +121,10 @@ beforeEach(async () => {
   await insertAudioSet(ownerId, 'korean-folktales', 'Korean Folktales');
   await insertAudioSet(ownerId, 'news-in-korean', 'News in Korean');
   await insertBook(ownerId, 'Korean Folktales (Book)');
-  // Bystander B: 1 audio set that must NEVER flip.
+  // Bystander B: 1 audio set + 1 book that must NEVER flip (owner scoping
+  // is proven per-table — books as well as audio).
   await insertAudioSet(bystanderId, 'b-private-set', 'B Private Set');
+  await insertBook(bystanderId, 'B Private Book');
 });
 
 describe('runShareCorpus — dry run (the default)', () => {
@@ -148,6 +153,11 @@ describe('runShareCorpus — dry run (the default)', () => {
     const flags = await sharedFlags();
     expect(flags.audio.every((r) => !r.is_shared)).toBe(true);
     expect(flags.books.every((r) => !r.is_shared)).toBe(true);
+    // And B's book specifically is present and still private (it must also
+    // never appear in the owner-scoped enumeration above).
+    const bBooks = flags.books.filter((r) => r.user_id === bystanderId);
+    expect(bBooks).toHaveLength(1);
+    expect(bBooks[0]!.is_shared).toBe(false);
   });
 
   it('excludes a pre-shared set from the candidates and counts it as already shared', async () => {
@@ -181,10 +191,13 @@ describe('runShareCorpus — apply', () => {
     expect(
       flags.books.filter((r) => r.user_id === ownerId).every((r) => r.is_shared),
     ).toBe(true);
-    // B's row: STILL false — owner scoping proven.
+    // B's rows: STILL false — owner scoping proven for BOTH tables.
     const bRows = flags.audio.filter((r) => r.user_id === bystanderId);
     expect(bRows).toHaveLength(1);
     expect(bRows[0]!.is_shared).toBe(false);
+    const bBooks = flags.books.filter((r) => r.user_id === bystanderId);
+    expect(bBooks).toHaveLength(1);
+    expect(bBooks[0]!.is_shared).toBe(false);
   });
 
   it('is idempotent: a second apply flips 0 and reports everything already shared', async () => {
@@ -199,9 +212,52 @@ describe('runShareCorpus — apply', () => {
     expect(second.audioAlreadyShared).toBe(2);
     expect(second.booksAlreadyShared).toBe(1);
 
-    // And B is still untouched after both runs.
+    // And B is still untouched after both runs — audio AND book.
     const flags = await sharedFlags();
     expect(flags.audio.find((r) => r.user_id === bystanderId)!.is_shared).toBe(false);
+    expect(flags.books.find((r) => r.user_id === bystanderId)!.is_shared).toBe(false);
+  });
+
+  it('over a mixed state, apply flips only the fresh audio set (partial re-run)', async () => {
+    // One of A's sets was already shared (e.g. a prior manual flip or a run
+    // that got that far) — the re-run must flip ONLY the fresh one, count the
+    // other as already-shared, and NOT trip the audit invariant.
+    await pg.pool.query(
+      `UPDATE audio_sources SET is_shared = true WHERE user_id = $1 AND slug = $2`,
+      [ownerId, 'korean-folktales'],
+    );
+
+    const summary = await runShareCorpus({ ownerEmail: OWNER_EMAIL, apply: true });
+    expect(summary.audioFlipped).toBe(1);
+    expect(summary.audioAlreadyShared).toBe(1);
+    expect(summary.audioToShare.map((s) => s.slug)).toEqual(['news-in-korean']);
+
+    const flags = await sharedFlags();
+    // The fresh row is now true (all of A's audio is), B is untouched.
+    expect(
+      flags.audio.filter((r) => r.user_id === ownerId).every((r) => r.is_shared),
+    ).toBe(true);
+    expect(flags.audio.find((r) => r.user_id === bystanderId)!.is_shared).toBe(false);
+  });
+
+  it('over a mixed state, apply flips only the fresh book', async () => {
+    await insertBook(ownerId, 'A Second Book');
+    await pg.pool.query(
+      `UPDATE book_uploads SET is_shared = true WHERE user_id = $1 AND title = $2`,
+      [ownerId, 'Korean Folktales (Book)'],
+    );
+
+    const summary = await runShareCorpus({ ownerEmail: OWNER_EMAIL, apply: true });
+    expect(summary.booksFlipped).toBe(1);
+    expect(summary.booksAlreadyShared).toBe(1);
+    expect(summary.booksToShare.map((b) => b.title)).toEqual(['A Second Book']);
+
+    const flags = await sharedFlags();
+    // The fresh book is now true (all of A's books are), B's book untouched.
+    expect(
+      flags.books.filter((r) => r.user_id === ownerId).every((r) => r.is_shared),
+    ).toBe(true);
+    expect(flags.books.find((r) => r.user_id === bystanderId)!.is_shared).toBe(false);
   });
 
   it('trims + lowercases the owner email before resolving', async () => {
@@ -250,5 +306,9 @@ describe('parseEnv (no DB)', () => {
     expect(parseEnv({ SHARE_CORPUS_APPLY: '1' }).apply).toBe(false);
     expect(parseEnv({ SHARE_CORPUS_APPLY: 'yes' }).apply).toBe(false);
     expect(parseEnv({ SHARE_CORPUS_APPLY: '' }).apply).toBe(false);
+  });
+
+  it('applies on the literal lowercase "true" (the documented apply value)', () => {
+    expect(parseEnv({ SHARE_CORPUS_APPLY: 'true' }).apply).toBe(true);
   });
 });
