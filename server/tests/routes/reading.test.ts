@@ -965,8 +965,16 @@ describe('F-207 phase 3a — cross-account READ of a shared book\'s chapters', (
     expect(res.body.chapter.source_upload_id).toBe(uploadId);
     const bodies = (res.body.passages as Array<{ body: string }>).map((p) => p.body);
     expect(bodies).toEqual(['공유된 첫 문단.', '공유된 둘째 문단.']);
-    // No owner identity on the detail DTO either.
-    expect(res.body.chapter).not.toHaveProperty('user_id');
+    // No-owner-PII contract on the detail DTO too: assert the exact key set
+    // (no user_id, no email), same as the list test above.
+    expect(Object.keys(res.body.chapter).sort()).toEqual([
+      'chapter_number',
+      'end_page',
+      'id',
+      'source_upload_id',
+      'start_page',
+      'title',
+    ]);
   });
 
   it("a PRIVATE book's chapters stay a uniform 404 for a NON-owner — sharing one book never widens a sibling", async () => {
@@ -996,9 +1004,22 @@ describe('F-207 phase 3a — cross-account READ of a shared book\'s chapters', (
     // Shared book reads fine…
     expect((await b.agent.get(`/reading/chapters?source_upload_id=${sharedUpload}`)).status).toBe(200);
     expect((await b.agent.get(`/reading/chapters/${sharedChapter}`)).status).toBe(200);
-    // …the private sibling stays a uniform 404 on both routes.
-    expect((await b.agent.get(`/reading/chapters?source_upload_id=${privateUpload}`)).status).toBe(404);
-    expect((await b.agent.get(`/reading/chapters/${privateChapter}`)).status).toBe(404);
+    // …the private sibling stays a uniform 404 on both routes, with an error
+    // body byte-identical to a genuinely-missing id — no existence oracle
+    // survives the widening (mirrors audio.test.ts's phase-1 body-equality pin).
+    const ghostList = await b.agent.get('/reading/chapters?source_upload_id=99999999');
+    const privList = await b.agent.get(`/reading/chapters?source_upload_id=${privateUpload}`);
+    expect(ghostList.status).toBe(404);
+    expect(privList.status).toBe(404);
+    expect(ghostList.body.error).toMatchObject({ code: 'not_found' }); // non-vacuous
+    expect(privList.body.error).toEqual(ghostList.body.error);
+
+    const ghostDetail = await b.agent.get('/reading/chapters/99999999');
+    const privDetail = await b.agent.get(`/reading/chapters/${privateChapter}`);
+    expect(ghostDetail.status).toBe(404);
+    expect(privDetail.status).toBe(404);
+    expect(ghostDetail.body.error).toMatchObject({ code: 'not_found' }); // non-vacuous
+    expect(privDetail.body.error).toEqual(ghostDetail.body.error);
   });
 
   it('the OWNER still lists + reads their own shared book\'s chapters (owner arm intact)', async () => {

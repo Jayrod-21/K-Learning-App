@@ -1077,10 +1077,24 @@ describe('F-207 phase 3a — cross-account READ of a shared book (meta + pages)'
     // NOT shared — is_shared stays the migration-079 default (false).
 
     const b = await registerUser(t.app, pg.pool);
-    expect((await b.agent.get(`/uploads/${privateId}`)).status).toBe(404);
-    expect((await getBinary(b.agent, `/uploads/${privateId}/page/1`)).status).toBe(404);
-    // Same body/shape as a genuinely missing id — nothing distinguishes them.
-    expect((await b.agent.get('/uploads/99999999')).status).toBe(404);
+    // Byte-identical error payload to a genuinely-missing id on BOTH read
+    // routes — nothing distinguishes "exists but private" from "does not
+    // exist" (mirrors audio.test.ts's phase-1 body-equality pin).
+    const ghostMeta = await b.agent.get('/uploads/99999999');
+    const privMeta = await b.agent.get(`/uploads/${privateId}`);
+    expect(ghostMeta.status).toBe(404);
+    expect(privMeta.status).toBe(404);
+    expect(ghostMeta.body.error).toMatchObject({ code: 'not_found' }); // non-vacuous
+    expect(privMeta.body.error).toEqual(ghostMeta.body.error);
+
+    // The page route 404s as JSON too (only its 200 is binary), so the same
+    // body-equality pin applies.
+    const ghostPage = await b.agent.get('/uploads/99999999/page/1');
+    const privPage = await b.agent.get(`/uploads/${privateId}/page/1`);
+    expect(ghostPage.status).toBe(404);
+    expect(privPage.status).toBe(404);
+    expect(ghostPage.body.error).toMatchObject({ code: 'not_found' }); // non-vacuous
+    expect(privPage.body.error).toEqual(ghostPage.body.error);
   });
 
   it('the OWNER still reads their own shared book (meta + page 200) — sharing never locks the owner out of reads', async () => {
@@ -1162,6 +1176,14 @@ describe('F-207 phase 3a — every book mutation (and owner-workflow read) stays
     // costed workflow, never a shared-reader affordance.
     expect((await b.agent.post(`/uploads/${id}/extract`).send({})).status).toBe(404);
     expect((await b.agent.get(`/uploads/${id}/extract`)).status).toBe(404);
+
+    // Side-effect guard (same shape as the delete/reorder tests): the 404'd
+    // POST claimed no run row — extraction state is untouched.
+    const runs = await pg.pool.query(
+      `SELECT id FROM upload_extractions WHERE upload_id = $1`,
+      [id],
+    );
+    expect(runs.rows).toHaveLength(0);
   });
 
   it('the /pages id-listing (the reorder tool feed) stays owner-only too: a NON-owner gets 404 even on a shared book', async () => {
