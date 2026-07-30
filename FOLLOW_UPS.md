@@ -423,6 +423,34 @@ pair (or one script with `down`/`up` args), e.g. `Deploy/stack-down.sh` /
 - Nice-to-have: a `status` arg that prints each container's running/health state
   (the manual `docker ps -a --filter name=km-` we keep running).
 
+## F-207 phase 3a — resume position + reading attempts on SHARED books deferred (owner-only for now, 2026-07-29)
+
+Phase 3a widened the pure READ paths for shared books (uploads meta/pages +
+reading chapter list/detail, mirroring audio phase 1). The per-user-state
+routes were deliberately NOT widened:
+
+- **Resume position (`GET/PUT /reading/position/:uploadId`) — structurally
+  blocked.** Migration 051's composite owner-guard FK
+  `(source_upload_id, user_id) → book_uploads(id, user_id)` pins a position
+  row's `user_id` to the book OWNER, so a non-owner saving their own position
+  on a shared book is impossible at the DB level — the route widening alone
+  would turn the PUT into an FK-violation 500. Widening needs a migration
+  first (re-key the guard: keep `source_upload_id → book_uploads(id)` +
+  `user_id → users(id)` and drop the composite owner pin, or add an
+  is_shared-aware variant), THEN widen the book-access precheck to
+  `(user_id = $me OR is_shared = true)` while the row stays keyed to the
+  CALLER (`user_id = $me`), plus tests (B saves/reads B's own position on A's
+  shared book; B still 404s on A's private book; B can never touch A's row).
+- **Reading attempts (`POST /reading/attempts` chapter arm) — deferred with
+  it.** No FK blocks it (060's `chapter_id` FK is single-column), but
+  shipping "B can log completing A's shared chapter" without "B can resume
+  it" is half the per-user-progress story; do both together after the 051
+  migration.
+
+Current tested contract: a non-owner on a shared book gets a uniform 404 from
+position GET/PUT and the chapter-attempt POST (asserted in
+`server/tests/routes/reading.test.ts`, F-207 phase-3a block).
+
 ## Diagnostic TOPIK draw missing the D-2 placeholder exclusion (pre-existing; noted in F-119 Phase-5 review, 2026-07-28)
 
 `server/src/routes/diagnostic.ts` `pickTopikRow` mirrors `ANSWERABLE_ITEM_SQL`'s

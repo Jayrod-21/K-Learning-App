@@ -9,9 +9,11 @@
  *
  * Flow:
  *   GET /reading/chapters?source_upload_id=  → the ordered chapter list for one
- *                                              owned literature book (the reader's
- *                                              chapter selector)
- *   GET /reading/chapters/:chapterId         → one chapter + its ordered passages
+ *                                              readable literature book — owned
+ *                                              or shared (F-207 phase 3a) — the
+ *                                              reader's chapter selector
+ *   GET /reading/chapters/:chapterId         → one readable (owned or shared)
+ *                                              chapter + its ordered passages
  *                                              (the reader body)
  *   GET /reading/position/:uploadId          → the user's saved resume position
  *                                              for one owned book, or null
@@ -46,20 +48,29 @@
  *
  * SECURITY:
  *   - IDOR: reading_chapters.user_id is the book owner (pinned to it by the
- *     migration-044 composite FK, so it can never drift), so every read scopes
- *     directly on `user_id = getUserId(req)`. The chapter-list endpoint first
- *     404s an upload the user doesn't own (or that isn't a real upload) —
- *     identical to a missing id, not 403, so probing id-space reveals nothing
- *     — so the client can tell "not your book" from "your book, no chapters
- *     yet" (an owned upload with zero chapters still 200s with an empty
- *     list). The chapter-detail endpoint folds "missing" and "not yours"
- *     into that same uniform 404 in a single scoped query. Neither route
- *     ever leaks another user's ids (both ownership checks are themselves
- *     user-scoped). The position routes reuse the same upload ownership
- *     gate, and the write path is DOUBLY guarded: even if the route-level
- *     user filter were bypassed, migration 051's composite owner-guard FK
+ *     migration-044 composite FK, so it can never drift). The two chapter
+ *     READ endpoints widen to owned-OR-shared (F-207 phase 3a, mirroring
+ *     routes/audio.ts's phase-1 track reads): a chapter is readable when its
+ *     PARENT book is the caller's own OR carries the operator-set
+ *     book_uploads.is_shared flag. The chapter-list endpoint first 404s an
+ *     upload the caller can't READ (not owned and not shared, or not a real
+ *     upload) — identical to a missing id, not 403, so probing id-space
+ *     reveals nothing — so the client can tell "not your book" from "your
+ *     book, no chapters yet" (a readable upload with zero chapters still
+ *     200s with an empty list). The chapter-detail endpoint folds "missing"
+ *     and "not readable" into that same uniform 404 in a single query that
+ *     joins the parent book for the is_shared arm. Passages are only ever
+ *     reached THROUGH an access-checked chapter (they CASCADE from it), so
+ *     their read stays scoped by chapter_id. Neither route ever leaks
+ *     another user's ids or identity (no user_id/email in any DTO). The
+ *     position routes remain STRICTLY owner-scoped — deliberately NOT
+ *     widened in phase 3a: migration 051's composite owner-guard FK
  *     ((source_upload_id, user_id) → book_uploads(id, user_id)) makes a
- *     cross-user position row impossible at the DB level.
+ *     non-owner position row structurally impossible at the DB level, so
+ *     widening resume (and, with it, attempts — the same per-user-state
+ *     story) needs a migration first; tracked in FOLLOW_UPS.md. That FK also
+ *     DOUBLY guards the write path: even if the route-level user filter were
+ *     bypassed, a cross-user position row cannot exist.
  *   - INJECTION: every id is a coerced, upper-bounded integer bound as a query
  *     parameter — never string-interpolated into SQL.
  *   - WRITES: the only mutating surface is the position upsert — a single
@@ -126,10 +137,14 @@ const MAX_ID = Number.MAX_SAFE_INTEGER;
 const MAX_INT4 = 2147483647;
 
 /**
- * Ownership gate shared by the chapter-list and position routes: the upload
- * must exist AND belong to the requester. A miss throws a 404 identical to a
- * non-existent id, so id-space probing reveals nothing about other users'
- * uploads (the query is user-scoped, so it never even confirms a foreign id).
+ * Ownership gate for the position routes (and any future per-user write
+ * surface): the upload must exist AND belong to the requester. A miss throws
+ * a 404 identical to a non-existent id, so id-space probing reveals nothing
+ * about other users' uploads (the query is user-scoped, so it never even
+ * confirms a foreign id). Positions stay on this STRICT gate in F-207 phase
+ * 3a — see the header's SECURITY note (migration 051's composite owner-guard
+ * FK forbids a non-owner position row at the DB level; widening is a
+ * follow-up that needs a migration).
  */
 async function assertOwnedUpload(uploadId: number, userId: number): Promise<void> {
   const owned = await query<{ id: string }>(
@@ -137,6 +152,27 @@ async function assertOwnedUpload(uploadId: number, userId: number): Promise<void
     [uploadId, userId],
   );
   if (owned.rows.length === 0) {
+    throw new NotFoundError('upload not found');
+  }
+}
+
+/**
+ * READ-access gate for the chapter routes (F-207 phase 3a, mirroring
+ * routes/audio.ts's owned-OR-shared probes): the upload must exist AND be
+ * either the requester's own or in the operator-curated shared corpus
+ * (book_uploads.is_shared). A miss — missing id OR another user's PRIVATE
+ * book — throws the SAME uniform 404 as assertOwnedUpload, so the widening
+ * never becomes an existence oracle for private rows. READ paths only; every
+ * mutation and per-user-state route keeps the strict owner gate above.
+ */
+async function assertReadableUpload(uploadId: number, userId: number): Promise<void> {
+  const readable = await query<{ id: string }>(
+    `SELECT id FROM book_uploads
+      WHERE id = $1 AND (user_id = $2 OR is_shared = true)
+      LIMIT 1`,
+    [uploadId, userId],
+  );
+  if (readable.rows.length === 0) {
     throw new NotFoundError('upload not found');
   }
 }
@@ -163,12 +199,18 @@ router.get(
         }
       ).validatedQuery;
 
-      // Ownership gate (shared helper): 404s a missing OR foreign upload
-      // uniformly, without confirming foreign ids.
-      await assertOwnedUpload(q.source_upload_id, userId);
+      // READ-access gate (F-207 phase 3a): 404s a missing OR foreign-private
+      // upload uniformly, without confirming foreign ids; a shared book is
+      // readable by every account.
+      await assertReadableUpload(q.source_upload_id, userId);
 
-      // reading_chapters.user_id is the owner (composite FK), so scoping by it
-      // is sufficient isolation; source_upload_id narrows to this one book.
+      // Access to the PARENT book was just confirmed (owned or shared), and
+      // chapters CASCADE from it with their user_id pinned to the book's
+      // owner by the 044 composite FK — so for a shared book the chapters'
+      // user_id is the OWNER's, not the caller's, and the correct scope here
+      // is the book itself (source_upload_id), not the session user. No
+      // cross-user reachability: a chapter of any OTHER book is excluded by
+      // this predicate, and this book's readability was already asserted.
       const { rows } = await query<{
         id: string;
         chapter_number: number;
@@ -178,10 +220,9 @@ router.get(
       }>(
         `SELECT id, chapter_number, title, start_page, end_page
            FROM reading_chapters
-          WHERE user_id = $1
-            AND source_upload_id = $2
+          WHERE source_upload_id = $1
           ORDER BY chapter_number`,
-        [userId, q.source_upload_id],
+        [q.source_upload_id],
       );
 
       // pg returns BIGINT (id) as a string; the DTO documents id as a JSON
@@ -213,8 +254,14 @@ router.get(
         }
       ).validatedParams.chapterId;
 
-      // Fetch the chapter, scoped to the requester. A miss (missing OR another
-      // user's) is a uniform 404.
+      // Fetch the chapter, readable when its PARENT book is owned by the
+      // caller OR shared (F-207 phase 3a — is_shared lives on book_uploads,
+      // so the shared arm joins the parent; the owner arm still rides the
+      // denormalized reading_chapters.user_id, which the 044 composite FK
+      // pins to the book's true owner, so the two arms can never disagree
+      // about whose book this is). A miss (missing OR another user's PRIVATE
+      // chapter) is a uniform 404 — the widening never confirms a private
+      // row's existence.
       const chapterRes = await query<{
         id: string;
         source_upload_id: string;
@@ -223,10 +270,12 @@ router.get(
         start_page: number | null;
         end_page: number | null;
       }>(
-        `SELECT id, source_upload_id, chapter_number, title, start_page, end_page
-           FROM reading_chapters
-          WHERE id = $1
-            AND user_id = $2
+        `SELECT rc.id, rc.source_upload_id, rc.chapter_number, rc.title,
+                rc.start_page, rc.end_page
+           FROM reading_chapters rc
+           JOIN book_uploads bu ON bu.id = rc.source_upload_id
+          WHERE rc.id = $1
+            AND (rc.user_id = $2 OR bu.is_shared = true)
           LIMIT 1`,
         [chapterId, userId],
       );
@@ -235,9 +284,10 @@ router.get(
       }
       const chapter = chapterRes.rows[0]!;
 
-      // Ordered passages for the chapter. The chapter's ownership was just
-      // confirmed, and passages CASCADE from it, so scoping the passage read on
-      // chapter_id alone is safe (no cross-user reachability).
+      // Ordered passages for the chapter. The chapter's readability (owned or
+      // shared-parent) was just confirmed, and passages CASCADE from it, so
+      // scoping the passage read on chapter_id alone is safe (no cross-user
+      // reachability — same reasoning as audio.ts's transcript segments).
       const passageRes = await query<{
         id: string;
         passage_number: number;
