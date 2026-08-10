@@ -307,8 +307,11 @@ describe('SwipeCarousel', () => {
 
     // Touch drag locks 'h' and travels 120px left (threshold floor is 48px),
     // then the browser claims the pointer for a vertical page scroll. The
-    // cancel event deliberately carries NO coordinates — the commit must use
-    // the last pointermove position, never the cancel's own (zeroed) coords.
+    // cancel event deliberately carries NO coordinates. Note this test alone
+    // does NOT prove the commit reads the stored last-move delta: a mutant
+    // that read the cancel's zeroed coords would get dx = 0 − 200 = −200 —
+    // the same (forward) direction — and still pass here. The rightward
+    // mirror test below is the discriminating one.
     fireEvent.pointerDown(viewport, {
       pointerId: 1, isPrimary: true, button: 0, pointerType: 'touch',
       clientX: 200, clientY: 50,
@@ -331,6 +334,46 @@ describe('SwipeCarousel', () => {
     // And the gesture state is clean — the next swipe still works.
     swipeLeft(viewport, 2);
     expectSelectedPage(3);
+  });
+
+  it('commits a RIGHTWARD h-locked drag on pointercancel using the stored last-move delta, not the cancel coords', () => {
+    // The discriminating mirror of the leftward cancel-commit test. Start on
+    // page 2 and drag RIGHT from x=80 to x=200 (locks 'h', lastDx ≈ +120,
+    // past the 48px floor), then cancel with NO coordinates. A correct commit
+    // reads the stored last-move delta (+120) and goes BACK to page 1. Under
+    // a "commit uses the cancel's coords" mutation, dx = 0 − 80 = −80 —
+    // past the threshold in the WRONG (forward) direction — so that mutant
+    // advances instead and THIS test fails, which the leftward test cannot
+    // detect (its mutant dx keeps the same sign). Also the only coverage of
+    // the rightward-cancel commit branch.
+    const onChange = vi.fn();
+    const { container } = renderCarousel({ onChange, initialIndex: 1 });
+    const viewport = viewportOf(container);
+
+    fireEvent.pointerDown(viewport, {
+      pointerId: 1, isPrimary: true, button: 0, pointerType: 'touch',
+      clientX: 80, clientY: 50,
+    });
+    fireEvent.pointerMove(viewport, {
+      pointerId: 1, isPrimary: true, pointerType: 'touch',
+      clientX: 140, clientY: 58,
+    });
+    fireEvent.pointerMove(viewport, {
+      pointerId: 1, isPrimary: true, pointerType: 'touch',
+      clientX: 200, clientY: 70,
+    });
+    fireEvent.pointerCancel(viewport, {
+      pointerId: 1, isPrimary: true, pointerType: 'touch',
+    });
+
+    // Committed BACKWARD off the stored +120 delta: page 1, announced once.
+    expectSelectedPage(1);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith(0);
+
+    // And the gesture state is clean — the next swipe still works.
+    swipeLeft(viewport, 2);
+    expectSelectedPage(2);
   });
 
   it('fires onChange when a cancel-committed swipe advances the page', () => {
