@@ -55,6 +55,9 @@
  */
 import { useState, type JSX } from 'react';
 import type { VocabExample } from '../types/domain';
+// Value import is cycle-safe: tapChain only imports a *type* from this file,
+// which is erased at compile time — no runtime circular dependency.
+import { GLOSS_UNAVAILABLE } from '../lib/tapChain';
 import { Icon } from './Icon';
 import { Pill } from './Pill';
 import { Sheet } from './Sheet';
@@ -123,6 +126,12 @@ export interface WordPopoverProps {
    * open "More examples" drawer echoes it so a reader browsing the drawer
    * knows more content may still land. Ignored while `isLoading` is true
    * (the base body isn't painted yet, so there's nothing to annotate).
+   *
+   * KRDICT-miss case: when the base render's gloss is the terminal
+   * 'Definition unavailable' sentinel AND this flag is true, the lede shows
+   * a pending "Looking it up…" headline instead of the sentinel (the
+   * enrichment backfills the real meaning on resolve), and the separate
+   * "adding nuance…" line is suppressed so only one status line announces.
    */
   isEnriching?: boolean;
 }
@@ -137,6 +146,17 @@ export function WordPopover({
   const [drawer, setDrawer] = useState(false);
   const [added, setAdded] = useState(false);
   const isGrammar = data.kind === 'grammar';
+
+  // F-209 KRDICT-miss flash fix: in the BASE phase, a lemma with no KRDICT
+  // entry paints the terminal 'Definition unavailable' sentinel while the
+  // Claude enrichment is still generating — which reads as a hard failure
+  // even though the real meaning lands ~1-2s later (enrichment backfills
+  // `nuance` into the lede on resolve). While that enrichment is in flight
+  // and the lede would be the sentinel, show a pending headline instead.
+  // Only the resolved-and-still-empty case shows the literal. Grammar
+  // popovers are exempt — their lede is title/desc, never this sentinel.
+  const glossPending =
+    !isGrammar && isEnriching && data.en === GLOSS_UNAVAILABLE;
 
   const handleAdd = (): void => {
     if (added) return;
@@ -212,9 +232,34 @@ export function WordPopover({
         </div>
       ) : (
         <>
-          <div className="km-popover__lede">
-            {isGrammar ? data.title ?? data.en : data.en}
-          </div>
+          {glossPending ? (
+            <div
+              className="km-popover__lede km-popover__lede--pending"
+              role="status"
+              aria-live="polite"
+              data-testid="word-popover-gloss-pending"
+              style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+            >
+              <span
+                className="km-popover__spinner"
+                aria-hidden="true"
+                style={{
+                  width: 14,
+                  height: 14,
+                  borderRadius: '50%',
+                  border: '2px solid currentColor',
+                  borderRightColor: 'transparent',
+                  animation: 'km-spin 0.8s linear infinite',
+                  opacity: 0.65,
+                }}
+              />
+              <span className="km-popover__loading-label">Looking it up…</span>
+            </div>
+          ) : (
+            <div className="km-popover__lede">
+              {isGrammar ? data.title ?? data.en : data.en}
+            </div>
+          )}
           {isGrammar && data.desc ? (
             <div className="km-popover__desc">{data.desc}</div>
           ) : null}
@@ -236,8 +281,10 @@ export function WordPopover({
           {/* F-209: subtle progressive-enrichment affordance — the KRDICT
               body above is fully usable; this only signals that Claude's
               contextual nuance / extra examples are still on their way.
-              Deliberately NOT the `word-popover-loading` blocker. */}
-          {isEnriching ? (
+              Deliberately NOT the `word-popover-loading` blocker. Suppressed
+              while the lede itself is the pending headline (KRDICT miss) —
+              one role="status" line, not two announcing the same wait. */}
+          {isEnriching && !glossPending ? (
             <div
               className="km-popover__enriching"
               role="status"

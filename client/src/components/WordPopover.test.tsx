@@ -14,6 +14,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { WordPopover, type WordPopoverData } from './WordPopover';
+import { GLOSS_UNAVAILABLE } from '../lib/tapChain';
 
 const VOCAB: WordPopoverData = {
   kr: '재택근무',
@@ -256,6 +257,66 @@ describe('WordPopover', () => {
     expect(
       screen.queryByTestId('word-popover-enriching'),
     ).not.toBeInTheDocument();
+  });
+
+  it('shows a pending "Looking it up…" headline — not "Definition unavailable" — while enriching a KRDICT miss (F-209 flash fix)', () => {
+    // Base phase of a KRDICT miss: no dictionary entry, so the gloss is the
+    // terminal sentinel, but the Claude enrichment is still generating and
+    // will backfill the real meaning. The lede must read as pending, not
+    // as a terminal failure.
+    const miss: WordPopoverData = {
+      kr: '갓생',
+      pos: 'word',
+      en: GLOSS_UNAVAILABLE,
+      ex_kr: '',
+      ex_en: '',
+    };
+    render(<WordPopover data={miss} onClose={() => undefined} isEnriching />);
+    const pending = screen.getByTestId('word-popover-gloss-pending');
+    expect(pending).toHaveTextContent('Looking it up…');
+    // Announced politely to AT as an in-progress status.
+    expect(pending).toHaveAttribute('role', 'status');
+    expect(pending).toHaveAttribute('aria-live', 'polite');
+    // The terminal literal must NOT flash while the answer is still coming.
+    expect(screen.queryByText(GLOSS_UNAVAILABLE)).not.toBeInTheDocument();
+    // One status line, not two — the separate "adding nuance…" affordance
+    // is suppressed while the lede itself is the pending headline.
+    expect(
+      screen.queryByTestId('word-popover-enriching'),
+    ).not.toBeInTheDocument();
+    // Still the progressive path, never the full-body blocking spinner.
+    expect(
+      screen.queryByTestId('word-popover-loading'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows the literal "Definition unavailable" once enrichment resolved and still produced nothing (terminal case)', () => {
+    const miss: WordPopoverData = {
+      kr: '갓생',
+      pos: 'word',
+      en: GLOSS_UNAVAILABLE,
+      ex_kr: '',
+      ex_en: '',
+    };
+    render(
+      <WordPopover data={miss} onClose={() => undefined} isEnriching={false} />,
+    );
+    // Both sources came back empty — the terminal literal is correct now.
+    expect(screen.getByText(GLOSS_UNAVAILABLE)).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('word-popover-gloss-pending'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('keeps a real gloss in the lede while enriching — the pending headline only replaces the sentinel', () => {
+    render(<WordPopover data={VOCAB} onClose={() => undefined} isEnriching />);
+    // KRDICT hit: the real gloss paints immediately, pending headline absent,
+    // and the normal "adding nuance…" affordance still shows.
+    expect(screen.getByText('remote work')).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('word-popover-gloss-pending'),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId('word-popover-enriching')).toBeInTheDocument();
   });
 
   it('omits the Example section entirely when the entry has no example', () => {
