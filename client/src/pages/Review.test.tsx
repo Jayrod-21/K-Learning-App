@@ -106,6 +106,7 @@ vi.mock('../services/vocab', () => ({
   removeCard: vi.fn(),
   clearDueCards: vi.fn(),
   submitReview: vi.fn(),
+  gradeCloze: vi.fn(),
   listLists: vi.fn(),
   getListDetail: vi.fn(),
   getListDueCards: vi.fn(),
@@ -128,10 +129,18 @@ vi.mock('../services/progress', () => ({
 
 vi.mock('../services/define', () => ({ defineEntry: vi.fn() }));
 
+// F-208 — the flashcard-vs-cloze coin flip is a module seam precisely so
+// tests can force each branch deterministically.
+vi.mock('../lib/clozePresentation', () => ({
+  pickPresentation: vi.fn(() => 'flashcard' as const),
+}));
+
 import { Review, type StudyCard } from './Review';
 import * as vocabService from '../services/vocab';
 import * as progressService from '../services/progress';
 import { defineEntry } from '../services/define';
+import { pickPresentation } from '../lib/clozePresentation';
+import { DUE_CLOZE_CARD_FIXTURE } from '../data/mocks/review';
 
 // ── Router probes ────────────────────────────────────────────────────
 
@@ -287,6 +296,20 @@ const LIST_DUE_INFLUENCE: DueCard = {
   vocabKorean: '영향',
   vocabEnglish: 'influence',
 };
+
+/** F-208 — a due-queue StudyCard whose snapshot carries the cloze object,
+ *  exactly as `dueRealFn` would produce it from the shared fixture. */
+const DUE_CLOZE_STUDY: StudyCard[] = [
+  {
+    key: 'due:501',
+    kr: '영향',
+    en: 'influence; effect',
+    exKr: '그 정책은 경제에 큰 영향을 미쳤다.',
+    exEn: 'That policy had a big effect on the economy.',
+    source: 'vocab-2000-int',
+    wire: { kind: 'due', snapshot: DUE_CLOZE_CARD_FIXTURE },
+  },
+];
 
 const GRAMMAR_DUE: DueCard[] = [
   {
@@ -1954,5 +1977,133 @@ describe('Review — clear the review queue (landing)', () => {
     expect(
       screen.getByRole('button', { name: 'Clear the review queue' }),
     ).toBeInTheDocument();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// F-208 — cloze presentation coin flip
+// ─────────────────────────────────────────────────────────────
+
+describe('Review — F-208 cloze presentation (coin flip)', () => {
+  it('coin flip = cloze: renders the typed ClozeCard, and neither the headword nor the example reaches the DOM (answer leak)', () => {
+    vi.mocked(pickPresentation).mockReturnValue('cloze');
+    settleLanding({ due: DUE_CLOZE_STUDY });
+    renderReview('/learn/vocab?study=due');
+
+    // The flip was consulted exactly once, with the card's due snapshot.
+    expect(pickPresentation).toHaveBeenCalledWith(DUE_CLOZE_CARD_FIXTURE);
+
+    // Cloze face: blanked sentence + typed input; NO flip card, NO ratings.
+    expect(
+      screen.getByRole('textbox', { name: 'Your answer' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/그 정책은 경제에 큰/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Flip card' })).toBeNull();
+    expect(screen.queryByRole('group', { name: 'FSRS rating' })).toBeNull();
+
+    // CRITICAL — the blanked sentence derives from the card's own example,
+    // so the answer ('영향') must be NOWHERE in the rendered page: not the
+    // headword, not the example pair, not the reveal.
+    expect(document.body.textContent).not.toContain('영향');
+    // …including accessible names: the remove control drops the headword.
+    expect(
+      screen.getByRole('button', { name: 'Remove this card from review' }),
+    ).toBeInTheDocument();
+  });
+
+  it('coin flip = flashcard: the normal Flashcard renders even though the card carries a cloze object', () => {
+    vi.mocked(pickPresentation).mockReturnValue('flashcard');
+    settleLanding({ due: DUE_CLOZE_STUDY });
+    renderReview('/learn/vocab?study=due');
+
+    expect(
+      screen.getByRole('button', { name: 'Flip card' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Your answer' })).toBeNull();
+  });
+
+  it('a card WITHOUT a cloze object never consults the coin flip and stays a flashcard', () => {
+    // Even a flip forced to 'cloze' can't reach a cloze-less card — the
+    // session guards on the snapshot's `cloze` before rolling.
+    vi.mocked(pickPresentation).mockReturnValue('cloze');
+    settleLanding({ due: DUE_STUDY });
+    renderReview('/learn/vocab?study=due');
+
+    expect(
+      screen.getByRole('button', { name: 'Flip card' }),
+    ).toBeInTheDocument();
+    expect(pickPresentation).not.toHaveBeenCalled();
+  });
+
+  it('a committed cloze grade advances the session WITHOUT a second submitReview (no FSRS double-write)', async () => {
+    vi.mocked(pickPresentation).mockReturnValue('cloze');
+    vi.mocked(vocabService.gradeCloze).mockResolvedValue({
+      correct: true,
+      answerSurface: '영향',
+      fullSentence: '그 정책은 경제에 큰 영향을 미쳤다.',
+      rating: 'good',
+      version: 4,
+      due_at: '2026-08-12T00:00:00Z',
+      scheduled_days: 1,
+    });
+    settleLanding({ due: DUE_CLOZE_STUDY });
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?study=due');
+
+    await user.type(
+      screen.getByRole('textbox', { name: 'Your answer' }),
+      '영향',
+    );
+    await user.click(screen.getByRole('button', { name: /Submit/ }));
+
+    // The grade went out against the card's own snapshot version…
+    expect(vocabService.gradeCloze).toHaveBeenCalledExactlyOnceWith(501, {
+      answer: '영향',
+      expected_version: 3,
+      attempt: 1,
+    });
+    // …the reveal shows, and Continue completes the one-card session.
+    await user.click(await screen.findByRole('button', { name: /Continue/ }));
+    expect(
+      await screen.findByRole('heading', { name: /Session complete/ }),
+    ).toBeInTheDocument();
+
+    // The committed grade ALREADY advanced FSRS server-side — the client
+    // must not follow it with a review write for the same card.
+    expect(vocabService.submitReview).not.toHaveBeenCalled();
+    // The completion stats counted the server-assigned rating ('good' → 1) —
+    // proof the client ADOPTED the committed grade instead of re-rating.
+    const breakdown = screen.getByLabelText('Rating breakdown');
+    const goodCell = within(breakdown)
+      .getByText(/Good/)
+      .closest('.km-review__break-cell') as HTMLElement;
+    expect(within(goodCell).getByText('1')).toBeInTheDocument();
+    const againCell = within(breakdown)
+      .getByText(/Again/)
+      .closest('.km-review__break-cell') as HTMLElement;
+    expect(within(againCell).getByText('0')).toBeInTheDocument();
+  });
+
+  it('falls back to the flashcard face for THIS card when the cloze grade 404s (no prompt)', async () => {
+    vi.mocked(pickPresentation).mockReturnValue('cloze');
+    vi.mocked(vocabService.gradeCloze).mockRejectedValue(
+      new ApiError('no cloze prompt for this card', {
+        status: 404,
+        code: 'not_found',
+      }),
+    );
+    settleLanding({ due: DUE_CLOZE_STUDY });
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?study=due');
+
+    await user.click(screen.getByRole('button', { name: /Show answer/ }));
+
+    // The same card re-presents as a normal flashcard (no skip, no crash) —
+    // and it stays pinned there (no re-roll back into cloze).
+    expect(
+      await screen.findByRole('button', { name: 'Flip card' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Your answer' })).toBeNull();
+    expect(vocabService.submitReview).not.toHaveBeenCalled();
   });
 });

@@ -7,8 +7,42 @@
  * Real wiring (Pass 3): `GET /vocab` (cards), `GET /vocab/bank` (user's list),
  * `GET /vocab/lists/*` (lists + sources).
  */
-import type { Vocab, VocabListBundle } from '../../types/domain';
+import type { DueCard, Vocab, VocabListBundle } from '../../types/domain';
 import { mockDelay } from './_delay';
+
+/**
+ * F-208 — a due card carrying the optional `cloze` presentation, exactly as
+ * `GET /vocab/cards/due` serves it post-normalization (the `cloze` object is
+ * already camelCase on the wire; `answer_surface` is never sent). The blanked
+ * sentence derives from the SAME example the entry fields carry — which is
+ * why the cloze face must never render `vocabExampleKorean`/`English`.
+ * Consumed by Review.test.tsx; the dev fixture pool above stays flashcard-
+ * only (local-wire cards have no server card to grade against).
+ */
+export const DUE_CLOZE_CARD_FIXTURE: DueCard = {
+  id: 501,
+  face: 'recognition',
+  due_at: '2026-08-11T00:00:00Z',
+  stability: '0',
+  difficulty: '0',
+  fsrs_state: 'new',
+  version: 3,
+  vocab_entry_id: 77,
+  grammar_entry_id: null,
+  source_sentence_id: null,
+  topik_item_id: null,
+  vocabKorean: '영향',
+  vocabEnglish: 'influence; effect',
+  vocabExampleKorean: '그 정책은 경제에 큰 영향을 미쳤다.',
+  vocabExampleEnglish: 'That policy had a big effect on the economy.',
+  vocabSourceBook: 'vocab-2000-int',
+  cloze: {
+    blanked: '그 정책은 경제에 큰 ______을 미쳤다.',
+    english: 'That policy had a big effect on the economy.',
+    blankStart: 11,
+    blankEnd: 13,
+  },
+};
 
 export const VOCAB_FIXTURE: Vocab[] = [
   {

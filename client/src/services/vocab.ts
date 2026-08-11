@@ -23,6 +23,8 @@ import type {
   AddListEntriesResult,
   BookLevel,
   ClearCardsResult,
+  ClozeGradeRequest,
+  ClozeGradeResponse,
   ContentDomain,
   CreateListBody,
   CreateListResponse,
@@ -280,6 +282,36 @@ function normalizeDueCard(row: DueCardWire): DueCard {
     ...(summary != null ? { grammarSummaryEn: summary } : {}),
     ...(patternKey != null ? { grammarPatternKey: patternKey } : {}),
   };
+}
+
+/**
+ * POST /vocab/cards/:cardId/cloze/grade — grade a TYPED cloze answer (F-208).
+ *
+ * Two-attempt, hint-then-reveal flow; the server is the sole grader (exact
+ * surface match, then Kiwi lemma tolerance) and — on a committing outcome —
+ * ADVANCES THE SAME CARD'S FSRS SCHEDULE ITSELF. Callers must NOT follow a
+ * committing response with `submitReview` (that would double-write FSRS);
+ * use the returned `version`/`due_at` as the card's fresh snapshot instead.
+ *
+ * Response union (discriminate on `'hint' in res`):
+ *   - `ClozeGradeHintResponse` — wrong on attempt 1 without giveUp.
+ *     NON-committing: no FSRS write, no version bump, no answer reveal.
+ *   - `ClozeGradeCommittedResponse` — correct (any attempt), wrong on
+ *     attempt 2, or giveUp. FSRS committed; carries the reveal.
+ *
+ * Errors (ApiError): 404 card-not-found / no-cloze-prompt (fall back to the
+ * flashcard presentation), 409 stale `expected_version` (same posture as
+ * `submitReview` conflicts), 400 validation, 502 Kiwi outage (retryable —
+ * the card is untouched, no half-state).
+ */
+export async function gradeCloze(
+  cardId: number,
+  body: ClozeGradeRequest,
+): Promise<ClozeGradeResponse> {
+  return api.post<ClozeGradeResponse>(
+    `/vocab/cards/${String(cardId)}/cloze/grade`,
+    stripUndef({ ...body }),
+  );
 }
 
 /** POST /vocab/cards/:cardId/reviews — record an FSRS review. */

@@ -71,6 +71,7 @@ import { Bilingual } from '../components/Bilingual';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 import { CityCard } from '../components/CityCard';
+import { ClozeCard } from '../components/ClozeCard';
 import { CollapsibleTile } from '../components/CollapsibleTile';
 import { ErrorCard } from '../components/ErrorCard';
 import { Eyebrow } from '../components/Eyebrow';
@@ -91,12 +92,15 @@ import * as progressService from '../services/progress';
 import { defineEntry } from '../services/define';
 import { ApiError } from '../services/api';
 import { buildReviewSubmission } from '../lib/reviewSubmission';
+import { pickPresentation } from '../lib/clozePresentation';
 import { errorMessageFor } from '../lib/errorCopy';
 import { isInteractiveElement } from '../lib/interactiveElement';
 import { navItem } from '../lib/nav';
 import type {
+  ClozeGradeCommittedResponse,
   DefineExample,
   DueCard,
+  DueCardCloze,
   FsrsRating,
   ListEntryItemType,
   ReviewResult,
@@ -1826,6 +1830,54 @@ function StudySession({
   const complete = idx >= liveDeck.length;
   const card = complete ? null : (liveDeck[idx] ?? null);
 
+  // ── F-208: flashcard-vs-cloze presentation ───────────────────
+  // A due card carrying a `cloze` object is randomly presented as EITHER the
+  // normal flashcard OR the typed cloze drill. The coin flip happens ONCE per
+  // appearance (cached by card key in a ref — re-rolling every render would
+  // flicker the face mid-card); cards without `cloze` never flip. A card
+  // whose cloze presentation proved unusable (404 no-prompt, 409 stale
+  // version, or the learner bailed from a Kiwi outage) is pinned back to the
+  // flashcard face via `clozeFallbackKeys`.
+  const presentationRef = useRef<{
+    key: string;
+    mode: 'flashcard' | 'cloze';
+  } | null>(null);
+  const [clozeFallbackKeys, setClozeFallbackKeys] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
+  // Fresh `version` snapshots from committing cloze grades AND saved reviews,
+  // keyed by card. A cloze grade bumps the server-side version; without this,
+  // a "Study again" restart (same deck prop, stale snapshots) would 409 every
+  // re-rated card. A ref (not state): versions are wire bookkeeping, never
+  // rendered.
+  const versionBumpsRef = useRef(new Map<string, number>());
+
+  let clozeView: {
+    cardId: number;
+    version: number;
+    cloze: DueCardCloze;
+  } | null = null;
+  if (card !== null && card.wire.kind === 'due') {
+    const snap = card.wire.snapshot;
+    if (snap.cloze !== undefined && !clozeFallbackKeys.has(card.key)) {
+      if (presentationRef.current?.key !== card.key) {
+        // First render of this card's appearance — flip the coin and pin it.
+        presentationRef.current = {
+          key: card.key,
+          mode: pickPresentation(snap),
+        };
+      }
+      if (presentationRef.current.mode === 'cloze') {
+        clozeView = {
+          cardId: snap.id,
+          version: versionBumpsRef.current.get(card.key) ?? snap.version,
+          cloze: snap.cloze,
+        };
+      }
+    }
+  }
+  const isCloze = clozeView !== null;
+
   // ── B-022: "More examples" tile state ────────────────────────
   // The tile expands UNDERNEATH the answer (the co-located CSS grid-stacks
   // the flip faces so growth pushes the rating row down instead of
@@ -1901,7 +1953,10 @@ function StudySession({
   // preventDefault() here used to eat the rating outright when a rating
   // button had focus.
   useEffect(() => {
-    if (complete || card === null) return;
+    // F-208: no spacebar flip on a cloze face — there is nothing to flip,
+    // and a stray Space outside the answer input must not mutate `flipped`
+    // (which would surface the rating row alongside the typed drill).
+    if (complete || card === null || isCloze) return;
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== ' ' && e.key !== 'Spacebar') return;
       if (isInteractiveElement(document.activeElement)) return;
@@ -1912,7 +1967,7 @@ function StudySession({
     return () => {
       window.removeEventListener('keydown', onKey);
     };
-  }, [complete, card, flip]);
+  }, [complete, card, flip, isCloze]);
 
   // Fire-and-forget study log on unmount, only when ≥1 card was rated.
   const [sessionStart] = useState<number>(() => Date.now());
@@ -1950,10 +2005,17 @@ function StudySession({
         // now carries its wire snapshot directly — the old list-only
         // bank-then-review path is gone (list study fetches the list's own
         // due-scoped queue, which already IS a real vocab_cards row).
+        // F-208: prefer the freshest version snapshot we hold — a committed
+        // cloze grade (or an earlier saved review) bumped the server-side
+        // version past the deck prop's original snapshot, and replaying the
+        // stale one (e.g. a "Study again" restart) would 409.
+        const version =
+          versionBumpsRef.current.get(target.key) ?? wire.snapshot.version;
         const result = await vocabService.submitReview(
           wire.snapshot.id,
-          buildReviewSubmission(wire.snapshot, rating),
+          buildReviewSubmission({ ...wire.snapshot, version }, rating),
         );
+        versionBumpsRef.current.set(target.key, result.version);
         setResults((prev) => [...prev, result]);
       } catch (err) {
         setFailedSaves((prev) => [...prev, { card: target, rating }]);
@@ -2000,6 +2062,42 @@ function StudySession({
     },
     [card, closeDrawer, persist, removingKey],
   );
+
+  /**
+   * F-208 — a committing cloze grade for the CURRENT card (the learner saw
+   * the reveal and tapped Continue). The grade route ALREADY advanced this
+   * card's FSRS schedule server-side, so this handler only mirrors the
+   * outcome locally — breakdown tally, completion stats, fresh version
+   * snapshot — and advances. Deliberately NO `persist()`/`submitReview`:
+   * that would double-write FSRS for the same review.
+   */
+  const clozeCommitted = useCallback(
+    (target: StudyCard, res: ClozeGradeCommittedResponse): void => {
+      versionBumpsRef.current.set(target.key, res.version);
+      setBreakdown((prev) => ({ ...prev, [res.rating]: prev[res.rating] + 1 }));
+      setResults((prev) => [
+        ...prev,
+        {
+          version: res.version,
+          due_at: res.due_at,
+          scheduled_days: res.scheduled_days,
+        },
+      ]);
+      setFlipped(false);
+      closeDrawer();
+      setIdx((i) => i + 1);
+      setRateError(null);
+      // Same SF-2 posture as `rate`: moving on retires a stale remove alert.
+      setRemoveError(null);
+    },
+    [closeDrawer],
+  );
+
+  /** F-208 — pin a card back to the flashcard face after its cloze
+   *  presentation proved unusable (404/409, or bail-out from a 502). */
+  const clozeFallback = useCallback((key: string): void => {
+    setClozeFallbackKeys((prev) => new Set(prev).add(key));
+  }, []);
 
   /** Remove the CURRENT card from the review queue (soft delete — the word
    *  stays saved; see services/vocab.removeCard). Fixture cards have no
@@ -2124,8 +2222,29 @@ function StudySession({
 
       {/* Flashcard — F-128 device #1: a CityCard-tone signboard/hanji-paper
           surface (Review.css overrides `.km-flashcard__face` under this
-          scope), flip interaction unchanged. */}
+          scope), flip interaction unchanged.
+          F-208: when the coin flip picked the cloze presentation, the typed
+          ClozeCard renders INSTEAD of the Flashcard — and none of the card's
+          own fields (headword, example pair) may reach the DOM, because the
+          blanked sentence is typically derived from that same example and
+          rendering it would leak the answer. ClozeCard receives ONLY the
+          `cloze` object + card identity. `key` resets its attempt state per
+          card. */}
       <div className="km-review__flashcard-wrap km-tone--accent">
+        {clozeView !== null ? (
+          <ClozeCard
+            key={card.key}
+            cardId={clozeView.cardId}
+            expectedVersion={clozeView.version}
+            cloze={clozeView.cloze}
+            onCommitted={(res) => {
+              clozeCommitted(card, res);
+            }}
+            onFallback={() => {
+              clozeFallback(card.key);
+            }}
+          />
+        ) : (
         <Flashcard
           flipped={flipped}
           onFlip={flip}
@@ -2260,12 +2379,16 @@ function StudySession({
             ) : null
           }
         />
+        )}
       </div>
 
       {/* FSRS rating buttons — disabled while a remove is in flight (SF-1):
           the `rate` guard is the real race fix; the disabled state makes the
-          frozen, pending card visible instead of silently eating taps. */}
-      {flipped ? (
+          frozen, pending card visible instead of silently eating taps.
+          F-208: a cloze face renders NEITHER the rating row NOR the tap-to-
+          reveal hint — grading comes from the typed answer, and the grade
+          route already assigns the FSRS rating server-side. */}
+      {isCloze ? null : flipped ? (
         <div className="km-review__ratings" role="group" aria-label="FSRS rating">
           {RATINGS.map((r) => (
             <button
@@ -2304,7 +2427,13 @@ function StudySession({
               removeCurrent();
             }}
             disabled={removingKey !== null}
-            aria-label={`Remove ${card.kr} from review`}
+            // F-208 leak guard: on a cloze face the headword IS the answer —
+            // it must not surface anywhere, including this accessible name.
+            aria-label={
+              isCloze
+                ? 'Remove this card from review'
+                : `Remove ${card.kr} from review`
+            }
           >
             {removingKey !== null ? (
               <Bilingual en="Removing…" kr="제거 중…" compact />
