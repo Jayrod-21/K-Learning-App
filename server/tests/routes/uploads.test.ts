@@ -1109,8 +1109,8 @@ describe('F-207 phase 3a — cross-account READ of a shared book (meta + pages)'
   });
 });
 
-describe("F-207 phase 3a — GET /uploads stays private-only (decision #2: shared books leave the owner's Books list)", () => {
-  it("the owner's SHARED book is excluded from their own GET /uploads; their private one still lists", async () => {
+describe('F-207 — GET /uploads lists the owner OWN books (shared or not); a non-owner still sees only their own', () => {
+  it("the owner sees BOTH their shared and private books in their own GET /uploads (sharing must not hide an owner's own library)", async () => {
     const a = await registerUser(t.app, pg.pool);
     const privateId = await seedBookUpload(pg.pool, a.userId, { title: 'My Private Book' });
     const sharedId = await seedBookUpload(pg.pool, a.userId, { title: 'My Curated Book' });
@@ -1119,7 +1119,10 @@ describe("F-207 phase 3a — GET /uploads stays private-only (decision #2: share
     const res = await a.agent.get('/uploads');
     expect(res.status).toBe(200);
     const ids = res.body.uploads.map((u: { id: string }) => Number(u.id));
-    expect(ids).toEqual([privateId]);
+    // Both listed — sharing is a read-access flag for OTHER accounts, it must
+    // never remove the owner's own book from their Reading page. Newest-first
+    // (created_at DESC, id DESC) → the later-seeded shared book leads.
+    expect(ids).toEqual([sharedId, privateId]);
   });
 
   it("a NON-owner's GET /uploads never lists anyone's shared book either — shared books surface only via the Listen tiles, not this list", async () => {

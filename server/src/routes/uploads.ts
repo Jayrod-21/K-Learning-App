@@ -256,20 +256,26 @@ router.post('/', expensiveLimiter(), multerBookUpload, validateBody(UploadBodySc
 });
 
 // ---------------------------------------------------------------------------
-// GET /uploads — this user's PRIVATE uploads, newest first.
+// GET /uploads — this user's OWN uploads (shared or not), newest first.
 // ---------------------------------------------------------------------------
 
 router.get('/', cheapLimiter(), async (req, res, next) => {
   try {
     const userId = getUserId(req);
-    // AND is_shared = false (F-207 decision #2, mirroring GET /audio): a book
-    // the operator flagged into the curated corpus leaves the personal
-    // "Books" list — even for its owner — and is reached via the Listen
-    // tiles' "Read" button instead; this listing is private uploads only.
+    // The owner ALWAYS sees their own books here, whether or not they are
+    // shared. (Reverses the earlier F-207 decision-#2 exclusion, which was
+    // wrong for books: unlike audio — whose curated sets all live on the
+    // Listen swipe tiles — most books have no other surface, so flagging
+    // them shared made the owner's entire scanned library vanish from the
+    // Reading page. Sharing is a READ-access flag for OTHER accounts; it must
+    // never hide an owner's own content from them.) Cross-account read of a
+    // shared book is handled by GET /uploads/:id + the reading routes;
+    // browsing the shared library as a NON-owner is a separate follow-up
+    // (no "shared library" list surface exists yet).
     const { rows } = await query<UploadRow>(
       `SELECT id, title, type, status, page_count, byte_size, created_at
          FROM book_uploads
-        WHERE user_id = $1 AND is_shared = false
+        WHERE user_id = $1
         ORDER BY created_at DESC, id DESC`,
       [userId],
     );
