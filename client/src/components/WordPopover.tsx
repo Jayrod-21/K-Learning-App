@@ -104,7 +104,8 @@ export interface WordPopoverProps {
   /**
    * Slow-path loading affordance. When true, the popover renders an inline
    * spinner placeholder in place of the gloss + example body while the
-   * tap-anything chain (lemmatize → define → enrich) is in flight. The
+   * FAST half of the tap-anything chain (lemmatize → define) is in flight
+   * (F-209: the slow enrich no longer holds this — see `isEnriching`). The
    * title row (KR headword + close button) stays visible so the dialog has
    * a stable accessible name; the action row is suppressed so the user
    * can't tap "Add to bank" against data that hasn't resolved yet.
@@ -114,6 +115,16 @@ export interface WordPopoverProps {
    * whether to swap the body for the spinner.
    */
   isLoading?: boolean;
+  /**
+   * Progressive-enrichment affordance (F-209 Phase 1). True while the
+   * background `/enrich` (Claude) call is still in flight AFTER the
+   * KRDICT-based body has painted. Renders a subtle inline "adding
+   * nuance…" line under the example — never a blocking spinner — and the
+   * open "More examples" drawer echoes it so a reader browsing the drawer
+   * knows more content may still land. Ignored while `isLoading` is true
+   * (the base body isn't painted yet, so there's nothing to annotate).
+   */
+  isEnriching?: boolean;
 }
 
 export function WordPopover({
@@ -121,6 +132,7 @@ export function WordPopover({
   onClose,
   onAdd,
   isLoading = false,
+  isEnriching = false,
 }: WordPopoverProps): JSX.Element {
   const [drawer, setDrawer] = useState(false);
   const [added, setAdded] = useState(false);
@@ -220,6 +232,41 @@ export function WordPopover({
               ) : null}
             </>
           ) : null}
+
+          {/* F-209: subtle progressive-enrichment affordance — the KRDICT
+              body above is fully usable; this only signals that Claude's
+              contextual nuance / extra examples are still on their way.
+              Deliberately NOT the `word-popover-loading` blocker. */}
+          {isEnriching ? (
+            <div
+              className="km-popover__enriching"
+              role="status"
+              aria-live="polite"
+              data-testid="word-popover-enriching"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                marginTop: 10,
+                fontSize: '0.8125rem',
+                opacity: 0.55,
+              }}
+            >
+              <span
+                className="km-popover__spinner"
+                aria-hidden="true"
+                style={{
+                  width: 10,
+                  height: 10,
+                  borderRadius: '50%',
+                  border: '2px solid currentColor',
+                  borderRightColor: 'transparent',
+                  animation: 'km-spin 0.8s linear infinite',
+                }}
+              />
+              <span className="km-popover__enriching-label">adding nuance…</span>
+            </div>
+          ) : null}
         </>
       )}
 
@@ -292,6 +339,20 @@ export function WordPopover({
                     </div>
                   ) : null}
                 </>
+              ) : null}
+              {/* F-209: drawer echo of the enrichment-pending state, so a
+                  reader already browsing the drawer knows more examples /
+                  usage notes may still land. aria-hidden — the body's
+                  role="status" line above already announces it once. */}
+              {isEnriching ? (
+                <div
+                  className="km-popover__enriching km-popover__enriching--drawer"
+                  aria-hidden="true"
+                  data-testid="word-popover-drawer-enriching"
+                  style={{ marginTop: 8, fontSize: '0.8125rem', opacity: 0.55 }}
+                >
+                  adding nuance…
+                </div>
               ) : null}
             </div>
           ) : null}

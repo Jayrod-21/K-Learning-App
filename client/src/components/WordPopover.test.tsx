@@ -192,6 +192,72 @@ describe('WordPopover', () => {
     expect(screen.queryByText('More examples')).not.toBeInTheDocument();
   });
 
+  it('renders the full KRDICT body with a subtle inline affordance while enriching — never the blocking spinner (F-209)', () => {
+    render(
+      <WordPopover data={VOCAB} onClose={() => undefined} isEnriching />,
+    );
+    // The body is fully painted and usable.
+    expect(screen.getByText('remote work')).toBeInTheDocument();
+    expect(screen.getByText('저는 재택근무를 합니다.')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /add to vocab/i }),
+    ).toBeInTheDocument();
+    // The subtle affordance is present; the full-screen blocker is not.
+    expect(screen.getByTestId('word-popover-enriching')).toBeInTheDocument();
+    expect(screen.getByText('adding nuance…')).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('word-popover-loading'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('drops the enriching affordance once enrichment has landed (F-209)', () => {
+    const { rerender } = render(
+      <WordPopover data={VOCAB} onClose={() => undefined} isEnriching />,
+    );
+    expect(screen.getByTestId('word-popover-enriching')).toBeInTheDocument();
+    rerender(
+      <WordPopover data={VOCAB} onClose={() => undefined} isEnriching={false} />,
+    );
+    expect(
+      screen.queryByTestId('word-popover-enriching'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('echoes enrichment-pending inside the open drawer, and the echo clears when loaded (F-209)', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <WordPopover data={VOCAB} onClose={() => undefined} isEnriching />,
+    );
+    await user.click(screen.getByRole('button', { name: 'More examples' }));
+    expect(
+      screen.getByTestId('word-popover-drawer-enriching'),
+    ).toBeInTheDocument();
+    rerender(
+      <WordPopover data={VOCAB} onClose={() => undefined} isEnriching={false} />,
+    );
+    expect(
+      screen.queryByTestId('word-popover-drawer-enriching'),
+    ).not.toBeInTheDocument();
+    // The drawer content itself remains.
+    expect(screen.getByText('재택근무 중')).toBeInTheDocument();
+  });
+
+  it('suppresses the enriching affordance while the base body is still loading (F-209)', () => {
+    render(
+      <WordPopover
+        data={{ kr: '먹다', en: '', ex_kr: '', ex_en: '' }}
+        onClose={() => undefined}
+        isLoading
+        isEnriching
+      />,
+    );
+    // The blocking state wins pre-define; no double affordance.
+    expect(screen.getByTestId('word-popover-loading')).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('word-popover-enriching'),
+    ).not.toBeInTheDocument();
+  });
+
   it('omits the Example section entirely when the entry has no example', () => {
     // ~4% of KRDICT entries (plus any enrichment miss) have no example. A bare
     // "Example" heading with nothing under it reads as broken — suppress it.
