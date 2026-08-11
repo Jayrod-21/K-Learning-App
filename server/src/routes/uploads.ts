@@ -66,10 +66,14 @@
  *     PATCH) and the extract-runs status read. is_shared is OPERATOR-SET
  *     ONLY (the phase-2 cutover script); no route writes it, so a user can
  *     neither share their own arbitrary content nor un-share/steal someone
- *     else's. GET /uploads ("Books" list) stays private-only
- *     (`AND is_shared = false`, F-207 decision #2): a book flagged into the
- *     curated corpus leaves its owner's personal Books list — even for the
- *     owner — and surfaces via the Listen tiles' "Read" button instead.
+ *     else's. GET /uploads ("Books" list) lists the caller's OWN books,
+ *     shared or not (`WHERE user_id = $1`): sharing is a read-access flag for
+ *     OTHER accounts and must never hide an owner's own library from them
+ *     (the F-207 cutover shared all of Jared's books, and an earlier
+ *     `AND is_shared = false` decision-#2 filter then made his whole Reading
+ *     page vanish — books, unlike audio, have no Listen-tile surface). A
+ *     NON-owner still sees only their own here; browsing the shared library
+ *     as a non-owner is a separate follow-up.
  *   - MASS ASSIGNMENT: `title`/`type` (POST) and `page_ids` (PATCH order) are
  *     the only writable body fields, all validated by a `.strict()` Zod
  *     schema — an extra field is REJECTED, not ignored.
