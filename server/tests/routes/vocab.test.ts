@@ -12,6 +12,7 @@
  *   POST /vocab/mine        (FU-NF-33: tap anything → bank it)
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { createServer, type Server } from 'node:http';
 import request from 'supertest';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
@@ -20,22 +21,56 @@ import {
   registerUser,
   seedBookUpload,
   seedHanjaCharacter,
+  seedKrdictEntry,
+  seedKrdictSense,
   seedTopikItem,
   seedVocabCard,
   seedVocabEntry,
 } from '../helpers/seed.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
+import { _setConfigForTesting } from '../../src/config/index.js';
 
 let pg: PgHandle;
 let t: TestApp;
 
+// F-208 (cloze): fake Kiwi upstream for the lemma-tolerance grade leg and the
+// seeder's span finding. Tests program `kiwiTokens` (returned for ANY input);
+// `kiwiCalls` lets a test assert the exact-match fast path skips Kiwi.
+interface FakeKiwiToken {
+  surface: string;
+  lemma: string;
+  pos: string;
+  start: number;
+  end: number;
+}
+let kiwiServer: Server;
+let kiwiUrl = '';
+let kiwiTokens: FakeKiwiToken[] = [];
+let kiwiCalls = 0;
+
 beforeAll(async () => {
   pg = await startPostgres();
-  t = buildTestApp({ connectionString: pg.connectionString });
+  kiwiServer = createServer((req, res) => {
+    req.on('data', () => {});
+    req.on('end', () => {
+      kiwiCalls += 1;
+      res.statusCode = 200;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ tokens: kiwiTokens }));
+    });
+  });
+  await new Promise<void>((resolve) => kiwiServer.listen(0, '127.0.0.1', resolve));
+  const kiwiPort = (kiwiServer.address() as { port: number }).port;
+  kiwiUrl = `http://127.0.0.1:${kiwiPort}`;
+  t = buildTestApp({
+    connectionString: pg.connectionString,
+    kiwiUrl,
+  });
 });
 
 afterAll(async () => {
   await teardownTestApp(t);
+  await new Promise<void>((resolve) => kiwiServer.close(() => resolve()));
   await stopPostgres(pg);
 });
 
@@ -44,6 +79,20 @@ beforeEach(async () => {
     'TRUNCATE TABLE card_reviews, vocab_cards, sessions, users RESTART IDENTITY CASCADE',
   );
   resetLimiters();
+  kiwiTokens = [];
+  kiwiCalls = 0;
+  // A mid-file ephemeral buildTestApp (e.g. the /vocab/series timezone test)
+  // rewrites process.env.KIWI_URL to the default 'kiwi.invalid' and re-caches
+  // the global config, which would silently break every later Kiwi-dependent
+  // cloze test. Re-pin the fake Kiwi URL and rebuild the config (same
+  // overrides the shared app `t` was built with) before EVERY test so
+  // ordering can never matter.
+  process.env.KIWI_URL = kiwiUrl;
+  _setConfigForTesting({
+    MFA_REQUIRED: false,
+    REGISTRATION_ENABLED: true,
+    EMAIL_VERIFICATION_REQUIRED: false,
+  });
 });
 
 describe('vocab — auth required', () => {
@@ -58,6 +107,8 @@ describe('vocab — auth required', () => {
     ['POST', '/vocab/cards/clear'],
     ['DELETE', '/vocab/cards/1'],
     ['POST', '/vocab/mine'],
+    ['POST', '/vocab/cloze/seed'],
+    ['POST', '/vocab/cards/1/cloze/grade'],
   ])('%s %s unauthenticated → 401', async (method, path) => {
     const r =
       method === 'GET' ? await request(t.app).get(path)
@@ -2313,5 +2364,362 @@ describe('GET /vocab/series — daily review-count time-series (F-017)', () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.get(`/vocab/series?${qs}`);
     expect(res.status).toBe(400);
+  });
+});
+
+/* ------------------------------------------------------------------------- */
+/* F-208 — cloze drill: due-queue presentation, grading, seeding             */
+/* ------------------------------------------------------------------------- */
+
+// Test sentence: '저는 매일 커피를 마셔요.' — 마셔요 (headword 마시다) occupies
+// UTF-16 span [10, 13).
+const CLOZE_SENTENCE = '저는 매일 커피를 마셔요.';
+const CLOZE_BLANKED = '저는 매일 커피를 ______.';
+const CLOZE_ANSWER = '마셔요';
+
+/** Seed an entry (headword 마시다 + example) with a live recognition card for
+ *  the user; returns both ids. */
+async function seedClozeCard(
+  userId: number,
+  opts: { withExample?: boolean } = {},
+): Promise<{ entryId: number; cardId: number }> {
+  const entryId = await seedVocabEntry(pg.pool, {
+    korean: '마시다',
+    english: 'to drink',
+    ...(opts.withExample === false
+      ? {}
+      : { exampleKorean: CLOZE_SENTENCE, exampleEnglish: 'I drink coffee every day.' }),
+  });
+  const { rows } = await pg.pool.query<{ id: string }>(
+    `INSERT INTO vocab_cards (user_id, face, vocab_entry_id, due_at)
+     VALUES ($1, 'recognition'::card_face, $2, now() - interval '1 minute')
+     RETURNING id`,
+    [userId, entryId],
+  );
+  return { entryId, cardId: Number(rows[0]!.id) };
+}
+
+/** Insert a cloze_prompts row directly (deterministic — no Kiwi involved). */
+async function seedClozePrompt(entryId: number): Promise<void> {
+  await pg.pool.query(
+    `INSERT INTO cloze_prompts
+        (vocab_entry_id, korean, english, blank_start, blank_end, answer_surface, source)
+     VALUES ($1, $2, $3, 10, 13, $4, 'vocab_example')`,
+    [entryId, CLOZE_SENTENCE, 'I drink coffee every day.', CLOZE_ANSWER],
+  );
+}
+
+/** The fake-Kiwi token list for CLOZE_SENTENCE (span-verified offsets). */
+const CLOZE_SENTENCE_TOKENS: FakeKiwiToken[] = [
+  { surface: '저', lemma: '저', pos: 'NP', start: 0, end: 1 },
+  { surface: '는', lemma: '는', pos: 'JX', start: 1, end: 2 },
+  { surface: '매일', lemma: '매일', pos: 'MAG', start: 3, end: 5 },
+  { surface: '커피', lemma: '커피', pos: 'NNG', start: 6, end: 8 },
+  { surface: '를', lemma: '를', pos: 'JKO', start: 8, end: 9 },
+  { surface: '마셔요', lemma: '마시다', pos: 'VV', start: 10, end: 13 },
+  { surface: '.', lemma: '.', pos: 'SF', start: 13, end: 14 },
+];
+
+describe('GET /vocab/cards/due — cloze presentation (F-208)', () => {
+  it('a card whose entry has a prompt carries `cloze` (blanked, NO answer leak)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const { entryId, cardId } = await seedClozeCard(userId);
+    await seedClozePrompt(entryId);
+
+    const res = await agent.get('/vocab/cards/due?limit=200').expect(200);
+    const card = (res.body.cards as Array<Record<string, unknown>>).find(
+      (c) => c.id === cardId,
+    );
+    expect(card).toBeDefined();
+    // The full flashcard fields stay intact (the client's fallback face).
+    expect(card!.vocab_korean).toBe('마시다');
+    expect(card!.cloze).toEqual({
+      blanked: CLOZE_BLANKED,
+      english: 'I drink coffee every day.',
+      blankStart: 10,
+      blankEnd: 13,
+    });
+    // ANSWER-STRIPPING: the answer surface must not appear ANYWHERE in the
+    // response — not as a field, not inside the blanked sentence. (The
+    // flashcard example fields would normally carry the sentence; this test's
+    // assertion is scoped to the cloze object + answer key.)
+    const bodyText = JSON.stringify(res.body);
+    expect(bodyText).not.toContain('answer_surface');
+    expect(bodyText).not.toContain('answerSurface');
+    expect((card!.cloze as { blanked: string }).blanked).not.toContain(CLOZE_ANSWER);
+  });
+
+  it('a card with no prompt omits `cloze` entirely (always-flashcard fallback)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const cardId = await seedVocabCard(pg.pool, userId);
+    const res = await agent.get('/vocab/cards/due?limit=200').expect(200);
+    const card = (res.body.cards as Array<Record<string, unknown>>).find(
+      (c) => c.id === cardId,
+    );
+    expect(card).toBeDefined();
+    expect(card).not.toHaveProperty('cloze');
+  });
+});
+
+describe('POST /vocab/cards/:cardId/cloze/grade (F-208)', () => {
+  it('exact surface match on attempt 1 → correct, rating good, FSRS advanced — Kiwi never called', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const { entryId, cardId } = await seedClozeCard(userId);
+    await seedClozePrompt(entryId);
+
+    const res = await agent
+      .post(`/vocab/cards/${cardId}/cloze/grade`)
+      .send({ answer: CLOZE_ANSWER, expected_version: 1, attempt: 1 });
+    expect(res.status).toBe(200);
+    expect(res.body.correct).toBe(true);
+    expect(res.body.rating).toBe('good');
+    expect(res.body.answerSurface).toBe(CLOZE_ANSWER);
+    expect(res.body.fullSentence).toBe(CLOZE_SENTENCE);
+    expect(res.body.version).toBe(2);
+    expect(typeof res.body.due_at).toBe('string');
+    expect(typeof res.body.scheduled_days).toBe('number');
+    expect(kiwiCalls).toBe(0); // exact-match fast path
+
+    // The SAME card's FSRS schedule advanced (one card, alternate face).
+    const log = await pg.pool.query<{ rating: string }>(
+      `SELECT rating FROM card_reviews WHERE card_id = $1`,
+      [cardId],
+    );
+    expect(log.rows).toEqual([{ rating: 'good' }]);
+  });
+
+  it('a DIFFERENT valid conjugation is accepted via lemma tolerance (Kiwi called once)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const { entryId, cardId } = await seedClozeCard(userId);
+    await seedClozePrompt(entryId);
+    // Learner typed 마신다 (plain-form conjugation of 마시다) — not the surface.
+    kiwiTokens = [{ surface: '마신다', lemma: '마시다', pos: 'VV', start: 0, end: 3 }];
+
+    const res = await agent
+      .post(`/vocab/cards/${cardId}/cloze/grade`)
+      .send({ answer: '마신다', expected_version: 1, attempt: 1 });
+    expect(res.status).toBe(200);
+    expect(res.body.correct).toBe(true);
+    expect(res.body.rating).toBe('good');
+    expect(kiwiCalls).toBe(1);
+  });
+
+  it('wrong on attempt 1 → hint only: no reveal, no FSRS write, no version enforcement', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const { entryId, cardId } = await seedClozeCard(userId);
+    await seedClozePrompt(entryId);
+    kiwiTokens = [{ surface: '먹어요', lemma: '먹다', pos: 'VV', start: 0, end: 3 }];
+
+    // expected_version is deliberately STALE — the non-committing branch is
+    // read-only and must not enforce it.
+    const res = await agent
+      .post(`/vocab/cards/${cardId}/cloze/grade`)
+      .send({ answer: '먹어요', expected_version: 999, attempt: 1 });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      correct: false,
+      hint: { firstChar: '마', length: 3 },
+    });
+    // NO answer leak in the hint response.
+    const bodyText = JSON.stringify(res.body);
+    expect(bodyText).not.toContain(CLOZE_ANSWER);
+    expect(bodyText).not.toContain('answerSurface');
+    expect(bodyText).not.toContain('fullSentence');
+    // NO FSRS write, NO version bump.
+    const card = await pg.pool.query<{ version: number }>(
+      `SELECT version FROM vocab_cards WHERE id = $1`,
+      [cardId],
+    );
+    expect(card.rows[0]!.version).toBe(1);
+    const log = await pg.pool.query(`SELECT 1 FROM card_reviews WHERE card_id = $1`, [cardId]);
+    expect(log.rowCount).toBe(0);
+  });
+
+  it('wrong on attempt 2 → commits again + reveals the answer', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const { entryId, cardId } = await seedClozeCard(userId);
+    await seedClozePrompt(entryId);
+    kiwiTokens = [{ surface: '먹어요', lemma: '먹다', pos: 'VV', start: 0, end: 3 }];
+
+    const res = await agent
+      .post(`/vocab/cards/${cardId}/cloze/grade`)
+      .send({ answer: '먹어요', expected_version: 1, attempt: 2 });
+    expect(res.status).toBe(200);
+    expect(res.body.correct).toBe(false);
+    expect(res.body.rating).toBe('again');
+    expect(res.body.answerSurface).toBe(CLOZE_ANSWER);
+    expect(res.body.fullSentence).toBe(CLOZE_SENTENCE);
+    expect(res.body.version).toBe(2);
+    const log = await pg.pool.query<{ rating: string }>(
+      `SELECT rating FROM card_reviews WHERE card_id = $1`,
+      [cardId],
+    );
+    expect(log.rows).toEqual([{ rating: 'again' }]);
+  });
+
+  it('correct on attempt 2 (after the hint) → rating hard', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const { entryId, cardId } = await seedClozeCard(userId);
+    await seedClozePrompt(entryId);
+
+    const res = await agent
+      .post(`/vocab/cards/${cardId}/cloze/grade`)
+      .send({ answer: CLOZE_ANSWER, expected_version: 1, attempt: 2 });
+    expect(res.status).toBe(200);
+    expect(res.body.correct).toBe(true);
+    expect(res.body.rating).toBe('hard');
+    expect(res.body.version).toBe(2);
+  });
+
+  it('giveUp → commits again + reveals, without grading (no answer needed, Kiwi never called)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const { entryId, cardId } = await seedClozeCard(userId);
+    await seedClozePrompt(entryId);
+
+    const res = await agent
+      .post(`/vocab/cards/${cardId}/cloze/grade`)
+      .send({ expected_version: 1, attempt: 1, giveUp: true });
+    expect(res.status).toBe(200);
+    expect(res.body.correct).toBe(false);
+    expect(res.body.rating).toBe('again');
+    expect(res.body.answerSurface).toBe(CLOZE_ANSWER);
+    expect(res.body.fullSentence).toBe(CLOZE_SENTENCE);
+    expect(res.body.version).toBe(2);
+    expect(kiwiCalls).toBe(0);
+  });
+
+  it('missing answer without giveUp → 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .post('/vocab/cards/1/cloze/grade')
+      .send({ expected_version: 1, attempt: 1 });
+    expect(res.status).toBe(400);
+  });
+
+  it("another user's card → 404 (IDOR: no existence leak)", async () => {
+    const { userId: ownerId } = await registerUser(t.app, pg.pool);
+    const { entryId, cardId } = await seedClozeCard(ownerId);
+    await seedClozePrompt(entryId);
+    const { agent: intruder } = await registerUser(t.app, pg.pool);
+
+    const res = await intruder
+      .post(`/vocab/cards/${cardId}/cloze/grade`)
+      .send({ answer: CLOZE_ANSWER, expected_version: 1, attempt: 1 });
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('not_found');
+    // The 404 must not leak the answer either.
+    expect(JSON.stringify(res.body)).not.toContain(CLOZE_ANSWER);
+  });
+
+  it('card without a cloze prompt → 404 (distinct message, same code)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const { cardId } = await seedClozeCard(userId); // entry, card — NO prompt
+    const res = await agent
+      .post(`/vocab/cards/${cardId}/cloze/grade`)
+      .send({ answer: CLOZE_ANSWER, expected_version: 1, attempt: 1 });
+    expect(res.status).toBe(404);
+    expect(res.body.error.message).toMatch(/no cloze prompt/i);
+  });
+
+  it('stale expected_version on a COMMITTING call → 409, nothing written', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const { entryId, cardId } = await seedClozeCard(userId);
+    await seedClozePrompt(entryId);
+
+    const res = await agent
+      .post(`/vocab/cards/${cardId}/cloze/grade`)
+      .send({ answer: CLOZE_ANSWER, expected_version: 999, attempt: 1 });
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('conflict');
+    const log = await pg.pool.query(`SELECT 1 FROM card_reviews WHERE card_id = $1`, [cardId]);
+    expect(log.rowCount).toBe(0);
+  });
+});
+
+describe('POST /vocab/cloze/seed (F-208)', () => {
+  it('seeds from the entry example (lemma → conjugated surface span) and is idempotent', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const { entryId } = await seedClozeCard(userId);
+    kiwiTokens = CLOZE_SENTENCE_TOKENS;
+
+    const res = await agent.post('/vocab/cloze/seed').send({});
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      eligible: 1,
+      examined: 1,
+      seeded: 1,
+      skipped_no_span: 0,
+      remaining: 0,
+      aborted_upstream: false,
+    });
+    const row = await pg.pool.query<{
+      korean: string;
+      blank_start: number;
+      blank_end: number;
+      answer_surface: string;
+      source: string;
+    }>(
+      `SELECT korean, blank_start, blank_end, answer_surface, source
+         FROM cloze_prompts WHERE vocab_entry_id = $1`,
+      [entryId],
+    );
+    expect(row.rows[0]).toEqual({
+      korean: CLOZE_SENTENCE,
+      blank_start: 10,
+      blank_end: 13,
+      answer_surface: CLOZE_ANSWER,
+      source: 'vocab_example',
+    });
+
+    // Idempotent: a second run finds nothing left to do.
+    const again = await agent.post('/vocab/cloze/seed').send({});
+    expect(again.status).toBe(200);
+    expect(again.body.eligible).toBe(0);
+    expect(again.body.seeded).toBe(0);
+  });
+
+  it('falls back to a KRDICT example when the entry has none', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const { entryId } = await seedClozeCard(userId, { withExample: false });
+    const krdictId = await seedKrdictEntry(pg.pool, { headword: '마시다' });
+    await seedKrdictSense(pg.pool, krdictId, {
+      examples: [{ korean: CLOZE_SENTENCE, english: 'I drink coffee every day.' }],
+    });
+    kiwiTokens = CLOZE_SENTENCE_TOKENS;
+
+    const res = await agent.post('/vocab/cloze/seed').send({});
+    expect(res.status).toBe(200);
+    expect(res.body.seeded).toBe(1);
+    const row = await pg.pool.query<{ source: string; answer_surface: string }>(
+      `SELECT source, answer_surface FROM cloze_prompts WHERE vocab_entry_id = $1`,
+      [entryId],
+    );
+    expect(row.rows[0]).toEqual({ source: 'krdict', answer_surface: CLOZE_ANSWER });
+  });
+
+  it('an entry whose sentences never contain the headword is counted skipped_no_span (never cloze-eligible)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // Headword 공부하다, but the example (and its tokens) carry only 마시다.
+    const entryId = await seedVocabEntry(pg.pool, {
+      korean: '공부하다',
+      english: 'to study',
+      exampleKorean: CLOZE_SENTENCE,
+    });
+    await pg.pool.query(
+      `INSERT INTO vocab_cards (user_id, face, vocab_entry_id, due_at)
+       VALUES ($1, 'recognition'::card_face, $2, now())`,
+      [userId, entryId],
+    );
+    kiwiTokens = CLOZE_SENTENCE_TOKENS;
+
+    const res = await agent.post('/vocab/cloze/seed').send({});
+    expect(res.status).toBe(200);
+    expect(res.body.seeded).toBe(0);
+    expect(res.body.skipped_no_span).toBe(1);
+    const row = await pg.pool.query(
+      `SELECT 1 FROM cloze_prompts WHERE vocab_entry_id = $1`,
+      [entryId],
+    );
+    expect(row.rowCount).toBe(0);
   });
 });

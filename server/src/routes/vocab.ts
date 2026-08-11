@@ -12,13 +12,24 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { getUserId, requireAuth } from '../middleware/auth.js';
-import { cheapLimiter } from '../middleware/rateLimits.js';
+import { cheapLimiter, expensiveLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateQuery, validateParams } from '../middleware/validate.js';
 import { query, withTransaction } from '../db/pool.js';
-import { NotFoundError } from '../middleware/errors.js';
+import { NotFoundError, UpstreamError, ValidationError } from '../middleware/errors.js';
 import { escapeLikePattern } from '../db/like.js';
 import { sourceUploadFenceSql } from '../db/corpusFences.js';
 import { applyCardReview } from '../services/cardReview.js';
+import { lemmatize } from '../services/kiwi.js';
+import {
+  answerMatchesLemma,
+  blankSentence,
+  buildClozePrompt,
+  clozeHint,
+  normalizeAnswer,
+  type ClozePromptDraft,
+} from '../services/cloze.js';
+import { isUndefinedTableError } from './define.js';
+import { getLogger } from '../logging.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -289,6 +300,14 @@ router.get(
       // one exact, unbounded total for "how many vocab cards are actually
       // due," computed by the identical predicate the visible page obeys, so
       // the two numbers can never independently drift again.
+      // F-208 (cloze): LEFT JOIN cloze_prompts so a vocab card whose entry has
+      // a pre-computed cloze carries the BLANKED presentation inline (the
+      // client's flashcard-vs-cloze coin flip needs no second round-trip).
+      // uq_cloze_prompts_vocab_entry guarantees at most one row per entry, so
+      // the join can never multiply cards (COUNT total unaffected). The
+      // answer_surface column is DELIBERATELY never selected — the served card
+      // must not contain the answer in any form (SECURITY.md §17 posture); it
+      // is revealed only by the grade route's response.
       const { rows } = await query<{
         id: number;
         face: string;
@@ -309,6 +328,10 @@ router.get(
         grammar_pattern_display: string | null;
         grammar_summary_en: string | null;
         grammar_pattern_key: string | null;
+        cloze_korean: string | null;
+        cloze_english: string | null;
+        cloze_blank_start: number | null;
+        cloze_blank_end: number | null;
         total: string;
       }>(
         // grammar_pattern_key is what a Review→Drill deep-link must hand back so
@@ -328,6 +351,10 @@ router.get(
                 ge.pattern_display AS grammar_pattern_display,
                 ge.summary_en      AS grammar_summary_en,
                 ge.pattern_key     AS grammar_pattern_key,
+                cp.korean          AS cloze_korean,
+                cp.english         AS cloze_english,
+                cp.blank_start     AS cloze_blank_start,
+                cp.blank_end       AS cloze_blank_end,
                 COUNT(*) OVER ()::text AS total
            FROM vocab_cards c
            LEFT JOIN vocab_entries ve
@@ -336,6 +363,8 @@ router.get(
                   ON ge.id = c.grammar_entry_id
                  AND ge.user_id = c.user_id
                  AND ge.deleted_at IS NULL
+           LEFT JOIN cloze_prompts cp
+                  ON cp.vocab_entry_id = c.vocab_entry_id
           WHERE c.user_id = $1
             AND c.deleted_at IS NULL
             AND c.suspended_at IS NULL
@@ -353,15 +382,34 @@ router.get(
       // due) yields no rows, so total is legitimately 0 there — mirrors the
       // idiom `GET /vocab/entries` already uses just above.
       const total = rows.length > 0 ? Number(rows[0]!.total) : 0;
-      const cards = rows.map(({ total: _total, ...c }) => ({
-        ...c,
-        id: Number(c.id),
-        vocab_entry_id: c.vocab_entry_id === null ? null : Number(c.vocab_entry_id),
-        grammar_entry_id: c.grammar_entry_id === null ? null : Number(c.grammar_entry_id),
-        source_sentence_id:
-          c.source_sentence_id === null ? null : Number(c.source_sentence_id),
-        topik_item_id: c.topik_item_id === null ? null : Number(c.topik_item_id),
-      }));
+      // F-208: the cloze_* columns are folded into an OPTIONAL `cloze` object
+      // (present ⇔ the entry has a cloze_prompts row — that presence IS the
+      // client's cloze-eligibility signal). `blanked` is built server-side by
+      // replacing [blank_start, blank_end) with the marker, so the sentence
+      // never ships with the answer in place; blankStart/blankEnd are offsets
+      // into the ORIGINAL sentence (in `blanked`, the marker occupies
+      // [blankStart, blankStart + marker.length)).
+      const cards = rows.map(
+        ({ total: _total, cloze_korean, cloze_english, cloze_blank_start, cloze_blank_end, ...c }) => ({
+          ...c,
+          id: Number(c.id),
+          vocab_entry_id: c.vocab_entry_id === null ? null : Number(c.vocab_entry_id),
+          grammar_entry_id: c.grammar_entry_id === null ? null : Number(c.grammar_entry_id),
+          source_sentence_id:
+            c.source_sentence_id === null ? null : Number(c.source_sentence_id),
+          topik_item_id: c.topik_item_id === null ? null : Number(c.topik_item_id),
+          ...(cloze_korean !== null && cloze_blank_start !== null && cloze_blank_end !== null
+            ? {
+                cloze: {
+                  blanked: blankSentence(cloze_korean, cloze_blank_start, cloze_blank_end),
+                  english: cloze_english,
+                  blankStart: cloze_blank_start,
+                  blankEnd: cloze_blank_end,
+                },
+              }
+            : {}),
+        }),
+      );
       res.status(200).json({ cards, total });
     } catch (err) {
       next(err);
@@ -435,6 +483,357 @@ router.post(
         due_at: out.dueAt,
         scheduled_days: out.scheduledDays,
       });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/* ---------- Cloze drill (F-208) ---------- */
+
+/**
+ * POST /vocab/cards/:cardId/cloze/grade — grade a TYPED cloze answer and (on a
+ * committing outcome) advance the SAME recognition card's FSRS schedule.
+ *
+ * Two-attempt, hint-then-reveal flow (client sends which attempt this is):
+ *   - CORRECT (any attempt)      → commit FSRS + reveal. Rating: attempt 1 →
+ *     'good'; attempt 2 (got it after the hint) → 'hard'.
+ *   - WRONG on attempt 1, no giveUp → NON-COMMITTING: no FSRS write, no
+ *     version change, NO answer reveal. Response carries only a partial hint
+ *     (first syllable + character count).
+ *   - WRONG on attempt 2, or giveUp === true (any attempt) → commit FSRS
+ *     'again' + reveal the answer.
+ *
+ * GRADING LADDER (deterministic, zero Claude — F-208 charter):
+ *   1. exact surface match (NFC + trim) against answer_surface;
+ *   2. else Kiwi-lemmatize the TYPED answer and accept any token whose lemma
+ *      equals the entry headword lemma — a valid DIFFERENT conjugation
+ *      (먹는다 for 먹었어요) counts;
+ *   3. else incorrect.
+ * The exact-match fast path skips the Kiwi call entirely. A Kiwi outage
+ * surfaces as 502 BEFORE any FSRS write (the card is untouched; the learner
+ * retries) — same no-half-state posture as the grammar drill.
+ *
+ * SECURITY / CONTRACT:
+ *   - IDOR: the card load is scoped (id, user_id, deleted_at IS NULL); a
+ *     foreign/missing/soft-deleted card id → 404 'vocab card not found'. The
+ *     INNER JOIN to vocab_entries makes non-vocab-entry cards (grammar/
+ *     sentence/topik/hanja) 404 identically — cloze exists only for vocab
+ *     recognition cards.
+ *   - No prompt for the entry → 404 'no cloze prompt for this card' (the
+ *     client should not have offered a cloze; distinct message, same code).
+ *   - Stale expected_version → 409 (applyCardReview, FU-NF-8) — enforced only
+ *     on COMMITTING calls; the non-committing wrong-attempt-1 path is
+ *     read-only and neither checks nor bumps the version.
+ *   - The answer (answer_surface / full sentence) is revealed ONLY in
+ *     committing responses — never in the hint response (SECURITY.md §17).
+ *   - expensiveLimiter: the lemma leg is a Kiwi upstream call.
+ */
+const ClozeGradeBodySchema = z
+  .object({
+    // The typed answer. Optional ONLY for a give-up (see superRefine): a
+    // learner who surrenders has nothing to type. Bounded well inside Kiwi's
+    // input cap (a cloze answer is a word, not a paragraph).
+    answer: z.string().trim().min(1).max(200).optional(),
+    expected_version: z.number().int().positive().max(INT4_MAX),
+    // Which attempt this submission is (drives the hint flow + rating).
+    attempt: z.union([z.literal(1), z.literal(2)]),
+    // Surrender: commit 'again' + reveal without grading.
+    giveUp: z.boolean().default(false),
+  })
+  .strict()
+  .superRefine((b, ctx) => {
+    if (!b.giveUp && b.answer === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['answer'],
+        message: 'answer is required unless giveUp is true',
+      });
+    }
+  });
+
+router.post(
+  '/cards/:cardId/cloze/grade',
+  expensiveLimiter(),
+  validateParams(CardIdParamsSchema),
+  validateBody(ClozeGradeBodySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const cardId = (req as typeof req & {
+        validatedParams: z.infer<typeof CardIdParamsSchema>;
+      }).validatedParams.cardId;
+      const body = req.body as z.infer<typeof ClozeGradeBodySchema>;
+
+      // 1. Load the card user-scoped, with its entry headword + cloze prompt.
+      //    One query answers all three questions: card exists & is mine &
+      //    is a vocab-entry card (404 otherwise), and has a prompt (404 with
+      //    a distinct message otherwise).
+      const { rows } = await query<{
+        headword: string | null;
+        sentence: string | null;
+        answer_surface: string | null;
+      }>(
+        `SELECT ve.korean AS headword, cp.korean AS sentence, cp.answer_surface
+           FROM vocab_cards c
+           JOIN vocab_entries ve ON ve.id = c.vocab_entry_id
+           LEFT JOIN cloze_prompts cp ON cp.vocab_entry_id = c.vocab_entry_id
+          WHERE c.id = $1
+            AND c.user_id = $2
+            AND c.deleted_at IS NULL`,
+        [cardId, userId],
+      );
+      const row = rows[0];
+      if (!row) throw new NotFoundError('vocab card not found');
+      if (row.sentence === null || row.answer_surface === null) {
+        throw new NotFoundError('no cloze prompt for this card');
+      }
+
+      // 2. Grade (skipped entirely on give-up — nothing to grade, and no Kiwi
+      //    call to pay for).
+      let correct = false;
+      if (!body.giveUp) {
+        // `?? ''` is unreachable — the schema's superRefine 400s a non-giveUp
+        // body with no answer — but keeps this free of a non-null assertion.
+        const typed = normalizeAnswer(body.answer ?? '');
+        correct = typed === normalizeAnswer(row.answer_surface);
+        if (!correct && row.headword !== null) {
+          // Lemma-tolerance leg. Throws UpstreamError (→ 502) on a Kiwi
+          // outage BEFORE any write — the card stays untouched.
+          const { tokens } = await lemmatize({ text: typed }, req.correlationId);
+          correct = answerMatchesLemma(tokens, row.headword);
+        }
+      }
+
+      // 3. NON-COMMITTING branch: wrong on attempt 1 without surrender. No
+      //    FSRS write, no version check/bump, no reveal — hint only.
+      if (!correct && body.attempt === 1 && !body.giveUp) {
+        res.status(200).json({ correct: false, hint: clozeHint(row.answer_surface) });
+        return;
+      }
+
+      // 4. COMMITTING branch: advance the SAME card via the shared review
+      //    write path (one transaction, optimistic version — 404/409 inside).
+      const rating = correct ? (body.attempt === 1 ? 'good' : 'hard') : 'again';
+      const out = await applyCardReview({
+        cardId,
+        userId,
+        rating,
+        expectedVersion: body.expected_version,
+        cardNoun: 'vocab card',
+      });
+      res.status(200).json({
+        correct,
+        answerSurface: row.answer_surface,
+        fullSentence: row.sentence,
+        rating,
+        version: out.version,
+        due_at: out.dueAt,
+        scheduled_days: out.scheduledDays,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/**
+ * KRDICT-example fallback for the cloze seeder: up to 3 example sentences for
+ * a headword, in KRDICT's own (homograph, sense, example) order. Degrades to
+ * an empty list when migration 003's tables are absent (same posture as
+ * routes/define.ts's fetchExamplesByEntry) — the fallback is additive
+ * enrichment, never a hard dependency.
+ */
+async function fetchKrdictClozeExamples(
+  headword: string,
+): Promise<Array<{ korean: string; english: string | null }>> {
+  try {
+    const { rows } = await query<{ korean: string; english: string | null }>(
+      `SELECT e.korean, e.english
+         FROM krdict_examples e
+         JOIN krdict_senses s ON s.id = e.krdict_sense_id
+         JOIN krdict_entries k ON k.id = s.krdict_entry_id
+        WHERE k.headword = $1
+        ORDER BY k.homograph_index, s.sense_index, e.example_index
+        LIMIT 3`,
+      [headword],
+    );
+    return rows;
+  } catch (err) {
+    if (isUndefinedTableError(err)) return [];
+    throw err;
+  }
+}
+
+/**
+ * POST /vocab/cloze/seed — compute + persist cloze prompts for the entries
+ * backing THIS user's live recognition cards. Idempotent operator endpoint:
+ * entries that already have a prompt are excluded from the candidate set, and
+ * the INSERT is ON CONFLICT DO NOTHING (a concurrent seeder run can't dup).
+ *
+ * Per entry, candidate sentences are tried in order until one yields a span:
+ * the entry's own example_korean first ('vocab_example'), then up to 3 KRDICT
+ * examples for the headword ('krdict'). An entry where NO sentence contains a
+ * token lemma-matching the headword is counted skipped_no_span and simply
+ * stays cloze-ineligible (it will be re-examined by a future run — cheap, and
+ * a corpus/KRDICT reload may make it eligible later).
+ *
+ * COST / ROBUSTNESS: each candidate sentence is one Kiwi call (≤4 per entry),
+ * bounded by `limit` (≤500) + expensiveLimiter. On a Kiwi OUTAGE
+ * (UpstreamError) the run stops early and reports aborted_upstream: true with
+ * honest partial counts — everything seeded so far is committed (per-row
+ * inserts), and a re-run resumes exactly where it left off (idempotency),
+ * instead of burning the remaining entries' timeouts against a dead upstream.
+ *
+ * Counts: eligible (total candidates matching the filter, not just this
+ * page), examined, seeded, skipped_no_span, remaining (eligible − examined),
+ * aborted_upstream. Also logged server-side.
+ */
+const ClozeSeedBodySchema = z
+  .object({
+    // Entries per run. 500 covers a full personal deck in one call; the
+    // default keeps a casual invocation's Kiwi bill small.
+    limit: z.number().int().min(1).max(500).default(100),
+  })
+  .strict();
+
+router.post(
+  '/cloze/seed',
+  expensiveLimiter(),
+  validateBody(ClozeSeedBodySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const { limit } = req.body as z.infer<typeof ClozeSeedBodySchema>;
+
+      // Candidates: entries with a headword, backing at least one of MY live
+      // recognition cards, with no prompt yet. COUNT(*) OVER () rides along
+      // for the unbounded eligible total (the /vocab/cards/due idiom).
+      const { rows: candidates } = await query<{
+        id: string;
+        korean: string;
+        example_korean: string | null;
+        example_english: string | null;
+        total: string;
+      }>(
+        `SELECT ve.id, ve.korean, ve.example_korean, ve.example_english,
+                COUNT(*) OVER ()::text AS total
+           FROM vocab_entries ve
+          WHERE ve.korean IS NOT NULL
+            AND EXISTS (
+                  SELECT 1 FROM vocab_cards c
+                   WHERE c.user_id = $1
+                     AND c.vocab_entry_id = ve.id
+                     AND c.face = 'recognition'
+                     AND c.deleted_at IS NULL
+                )
+            AND NOT EXISTS (
+                  SELECT 1 FROM cloze_prompts cp WHERE cp.vocab_entry_id = ve.id
+                )
+          ORDER BY ve.id
+          LIMIT $2`,
+        [userId, limit],
+      );
+      const eligible = Number(candidates[0]?.total ?? 0);
+
+      const lemmatizeFn = (text: string): ReturnType<typeof lemmatize> =>
+        lemmatize({ text }, req.correlationId);
+
+      let examined = 0;
+      let seeded = 0;
+      let skippedNoSpan = 0;
+      let abortedUpstream = false;
+
+      for (const cand of candidates) {
+        // Candidate sentences in preference order.
+        const sentences: Array<{
+          sentence: string;
+          english: string | null;
+          source: 'vocab_example' | 'krdict';
+        }> = [];
+        if (cand.example_korean !== null && cand.example_korean.trim().length > 0) {
+          sentences.push({
+            sentence: cand.example_korean,
+            english: cand.example_english,
+            source: 'vocab_example',
+          });
+        }
+        for (const ex of await fetchKrdictClozeExamples(cand.korean)) {
+          sentences.push({ sentence: ex.korean, english: ex.english, source: 'krdict' });
+        }
+
+        let draft: ClozePromptDraft | null = null;
+        let source: 'vocab_example' | 'krdict' = 'vocab_example';
+        try {
+          for (const s of sentences) {
+            let d: ClozePromptDraft | null = null;
+            try {
+              d = await buildClozePrompt(
+                { korean: cand.korean, sentence: s.sentence, english: s.english },
+                lemmatizeFn,
+              );
+            } catch (err) {
+              // Kiwi judged THIS sentence bad input (400) — try the next one.
+              // Outages (UpstreamError) abort the whole run below.
+              if (err instanceof ValidationError) continue;
+              throw err;
+            }
+            if (d !== null) {
+              draft = d;
+              source = s.source;
+              break;
+            }
+          }
+        } catch (err) {
+          if (err instanceof UpstreamError) {
+            // Kiwi is down/unreachable: stop burning timeouts. Everything
+            // seeded so far is committed; a re-run resumes (idempotent).
+            abortedUpstream = true;
+            break;
+          }
+          throw err;
+        }
+
+        examined += 1;
+        if (draft === null) {
+          skippedNoSpan += 1;
+          continue;
+        }
+        const ins = await query(
+          `INSERT INTO cloze_prompts
+              (vocab_entry_id, korean, english, blank_start, blank_end,
+               answer_surface, source)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (vocab_entry_id) DO NOTHING`,
+          [
+            Number(cand.id),
+            draft.korean,
+            draft.english,
+            draft.blankStart,
+            draft.blankEnd,
+            draft.answerSurface,
+            source,
+          ],
+        );
+        // rowCount 0 ⇒ a concurrent run won the upsert race — the prompt
+        // exists either way, so the entry is NOT "skipped"; just don't count
+        // it as OUR seed.
+        if (ins.rowCount === 1) seeded += 1;
+      }
+
+      const summary = {
+        eligible,
+        examined,
+        seeded,
+        skipped_no_span: skippedNoSpan,
+        remaining: eligible - examined,
+        aborted_upstream: abortedUpstream,
+      };
+      getLogger().info(
+        { correlationId: req.correlationId, userId, ...summary },
+        'cloze seed run complete',
+      );
+      res.status(200).json(summary);
     } catch (err) {
       next(err);
     }
