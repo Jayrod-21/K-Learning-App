@@ -460,3 +460,13 @@ can serve a span-less no-transcript placeholder item the learner must guess
 blind. Pre-existing (predates F-119; NOT introduced by the Phase-5 widening).
 Fix by sharing/duplicating the D-2 leg (with the audio-span re-admission `OR
 i.audio_end_ms IS NOT NULL`) into `pickTopikRow`'s WHERE. Own ticket.
+
+## UploadViewer hand-ported swipe copy still ABANDONS on pointercancel (from Listen-swipe /fixpass, 2026-08-10)
+
+`client/src/pages/UploadViewer.tsx` (~line 634+) carries a hand-ported copy of the
+`SwipeCarousel` gesture model with the OLD abandon-on-`pointercancel` behavior —
+the same latent nudge-then-snap bug `fix/listen-swipe-touch-commit` fixed in the
+shared component, if the viewer's surface is ever vertically scrollable under
+`touch-action: pan-y`. Fix = port the 'h'-locked cancel-commit (settle off the
+stored last-move delta), or better, dedupe the page onto the shared
+`SwipeCarousel`.

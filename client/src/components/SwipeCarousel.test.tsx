@@ -4,8 +4,10 @@
  * pointer-drag snap (happy-dom's PointerEvent carries the coordinates the
  * axis lock needs; capture APIs are feature-guarded in the component).
  * Failure/edge side: stuck-drag recovery (off-element release, vertical
- * surrender), pointercancel cleanup, edge overscroll, multi-touch and
- * non-primary/right-button rejection.
+ * surrender), pointercancel semantics (an 'h'-locked cancel COMMITS past the
+ * threshold off the last move — the mobile scroll-steal fix — and springs
+ * back under it; pre-lock or post-surrender cancels never snap), edge
+ * overscroll, multi-touch and non-primary/right-button rejection.
  * F-029 additions: `loop` wrap in both directions (swipe + dot state) with
  * the non-loop edge behavior preserved by default, and the `cornerSlot`
  * overlay (renders above the slides; absent when omitted).
@@ -290,22 +292,177 @@ describe('SwipeCarousel', () => {
     expectSelectedPage(2);
   });
 
-  it('cleans up on pointercancel and accepts the next gesture', () => {
+  // ── pointercancel with a locked 'h' axis (mobile scroll-steal) ──────
+  // With `touch-action: pan-y`, the browser may start a native vertical
+  // scroll mid-gesture: it fires pointercancel and stops delivering moves,
+  // even after OUR axis lock judged the drag horizontal. That cancel is the
+  // browser taking the pointer, not the user abandoning the swipe — so an
+  // 'h'-locked cancel must SETTLE with the same threshold as a release,
+  // decided off the last delivered move (a pointercancel's own coordinates
+  // are spec-unreliable, often zeroed).
+
+  it('commits the swipe when pointercancel interrupts an h-locked drag past the threshold', () => {
     const { container } = renderCarousel();
     const viewport = viewportOf(container);
 
-    // A live horizontal drag gets cancelled mid-flight (e.g. OS gesture).
+    // Touch drag locks 'h' and travels 120px left (threshold floor is 48px),
+    // then the browser claims the pointer for a vertical page scroll. The
+    // cancel event deliberately carries NO coordinates. Note this test alone
+    // does NOT prove the commit reads the stored last-move delta: a mutant
+    // that read the cancel's zeroed coords would get dx = 0 − 200 = −200 —
+    // the same (forward) direction — and still pass here. The rightward
+    // mirror test below is the discriminating one.
     fireEvent.pointerDown(viewport, {
-      pointerId: 1, isPrimary: true, clientX: 200, clientY: 50,
+      pointerId: 1, isPrimary: true, button: 0, pointerType: 'touch',
+      clientX: 200, clientY: 50,
     });
     fireEvent.pointerMove(viewport, {
-      pointerId: 1, isPrimary: true, clientX: 100, clientY: 52,
+      pointerId: 1, isPrimary: true, pointerType: 'touch',
+      clientX: 140, clientY: 58,
     });
-    fireEvent.pointerCancel(viewport, { pointerId: 1, isPrimary: true });
-    // The cancelled drag must not snap...
+    fireEvent.pointerMove(viewport, {
+      pointerId: 1, isPrimary: true, pointerType: 'touch',
+      clientX: 80, clientY: 70,
+    });
+    fireEvent.pointerCancel(viewport, {
+      pointerId: 1, isPrimary: true, pointerType: 'touch',
+    });
+
+    // The real horizontal intent is honored: the page advanced.
+    expectSelectedPage(2);
+
+    // And the gesture state is clean — the next swipe still works.
+    swipeLeft(viewport, 2);
+    expectSelectedPage(3);
+  });
+
+  it('commits a RIGHTWARD h-locked drag on pointercancel using the stored last-move delta, not the cancel coords', () => {
+    // The discriminating mirror of the leftward cancel-commit test. Start on
+    // page 2 and drag RIGHT from x=80 to x=200 (locks 'h', lastDx ≈ +120,
+    // past the 48px floor), then cancel with NO coordinates. A correct commit
+    // reads the stored last-move delta (+120) and goes BACK to page 1. Under
+    // a "commit uses the cancel's coords" mutation, dx = 0 − 80 = −80 —
+    // past the threshold in the WRONG (forward) direction — so that mutant
+    // advances instead and THIS test fails, which the leftward test cannot
+    // detect (its mutant dx keeps the same sign). Also the only coverage of
+    // the rightward-cancel commit branch.
+    const onChange = vi.fn();
+    const { container } = renderCarousel({ onChange, initialIndex: 1 });
+    const viewport = viewportOf(container);
+
+    fireEvent.pointerDown(viewport, {
+      pointerId: 1, isPrimary: true, button: 0, pointerType: 'touch',
+      clientX: 80, clientY: 50,
+    });
+    fireEvent.pointerMove(viewport, {
+      pointerId: 1, isPrimary: true, pointerType: 'touch',
+      clientX: 140, clientY: 58,
+    });
+    fireEvent.pointerMove(viewport, {
+      pointerId: 1, isPrimary: true, pointerType: 'touch',
+      clientX: 200, clientY: 70,
+    });
+    fireEvent.pointerCancel(viewport, {
+      pointerId: 1, isPrimary: true, pointerType: 'touch',
+    });
+
+    // Committed BACKWARD off the stored +120 delta: page 1, announced once.
+    expectSelectedPage(1);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith(0);
+
+    // And the gesture state is clean — the next swipe still works.
+    swipeLeft(viewport, 2);
+    expectSelectedPage(2);
+  });
+
+  it('fires onChange when a cancel-committed swipe advances the page', () => {
+    const onChange = vi.fn();
+    const { container } = renderCarousel({ onChange });
+    const viewport = viewportOf(container);
+
+    fireEvent.pointerDown(viewport, {
+      pointerId: 1, isPrimary: true, button: 0, pointerType: 'touch',
+      clientX: 200, clientY: 50,
+    });
+    fireEvent.pointerMove(viewport, {
+      pointerId: 1, isPrimary: true, pointerType: 'touch',
+      clientX: 80, clientY: 60,
+    });
+    fireEvent.pointerCancel(viewport, {
+      pointerId: 1, isPrimary: true, pointerType: 'touch',
+    });
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith(1);
+  });
+
+  it('springs back when pointercancel interrupts an h-locked drag under the threshold', () => {
+    const { container } = renderCarousel();
+    const viewport = viewportOf(container);
+
+    // 'h' locks at 20px — real horizontal, but nowhere near the 48px floor.
+    fireEvent.pointerDown(viewport, {
+      pointerId: 1, isPrimary: true, button: 0, pointerType: 'touch',
+      clientX: 200, clientY: 50,
+    });
+    fireEvent.pointerMove(viewport, {
+      pointerId: 1, isPrimary: true, pointerType: 'touch',
+      clientX: 180, clientY: 52,
+    });
+    fireEvent.pointerCancel(viewport, {
+      pointerId: 1, isPrimary: true, pointerType: 'touch',
+    });
+    // A short cancelled nudge springs back, exactly like a short release...
     expectSelectedPage(1);
 
     // ...and must not block the next gesture.
+    swipeLeft(viewport, 2);
+    expectSelectedPage(2);
+  });
+
+  it('does not snap on a pointercancel before the axis has locked', () => {
+    const { container } = renderCarousel();
+    const viewport = viewportOf(container);
+
+    // Cancelled inside the 8px axis-lock dead zone — no axis, no commit.
+    fireEvent.pointerDown(viewport, {
+      pointerId: 1, isPrimary: true, button: 0, clientX: 200, clientY: 50,
+    });
+    fireEvent.pointerMove(viewport, {
+      pointerId: 1, isPrimary: true, clientX: 196, clientY: 52,
+    });
+    fireEvent.pointerCancel(viewport, { pointerId: 1, isPrimary: true });
+    expectSelectedPage(1);
+
+    swipeLeft(viewport, 2);
+    expectSelectedPage(2);
+  });
+
+  it('does not snap on a pointercancel after a vertical surrender (genuine scroll)', () => {
+    const { container } = renderCarousel();
+    const viewport = viewportOf(container);
+
+    // Vertical-dominant → the gesture surrendered at axis lock; the
+    // browser's scroll then cancels the pointer. Even with plenty of
+    // incidental horizontal travel, nothing may commit.
+    fireEvent.pointerDown(viewport, {
+      pointerId: 1, isPrimary: true, button: 0, pointerType: 'touch',
+      clientX: 200, clientY: 50,
+    });
+    fireEvent.pointerMove(viewport, {
+      pointerId: 1, isPrimary: true, pointerType: 'touch',
+      clientX: 195, clientY: 120,
+    });
+    fireEvent.pointerMove(viewport, {
+      pointerId: 1, isPrimary: true, pointerType: 'touch',
+      clientX: 80, clientY: 300,
+    });
+    fireEvent.pointerCancel(viewport, {
+      pointerId: 1, isPrimary: true, pointerType: 'touch',
+    });
+    expectSelectedPage(1);
+
     swipeLeft(viewport, 2);
     expectSelectedPage(2);
   });

@@ -24,6 +24,20 @@
  *     (see `onPointerMove`). Releasing past the snap threshold (20% of the
  *     viewport, min 48px) advances one page; short drags spring back.
  *     Overscroll at either end is damped 3:1.
+ *   - **Cancel-commit (mobile).** `touch-action: pan-y` lets the browser
+ *     start a native vertical scroll at any point of a touch; when it does,
+ *     it fires `pointercancel` and stops delivering moves — even if OUR 8px
+ *     axis lock had already judged the gesture horizontal (the engine's slop
+ *     radius and direction heuristic are its own, and `preventDefault()` on
+ *     pointermove cannot veto a pan that touch-action permits). On a
+ *     vertically-scrollable page (Listen's tile grid) an arced thumb-swipe
+ *     therefore used to track a few dozen px and then snap back when the
+ *     browser claimed the pointer. A `pointercancel` that arrives while the
+ *     axis is locked 'h' now SETTLES the gesture with the same snap
+ *     threshold as a release, decided off the last delivered move (a
+ *     pointercancel's own coordinates are spec-unreliable). Genuine
+ *     vertical scrolls can't reach that commit — they surrender at axis
+ *     lock, before 'h' ever sets.
  *   - **Stuck-drag safety.** Mouse pointers have no implicit capture, and we
  *     deliberately defer `setPointerCapture` until the axis locks `'h'` (so
  *     `click` retargeting can't break interactive page content). That means
@@ -123,6 +137,15 @@ interface DragState {
   startY: number;
   /** 'none' until the axis lock decides; 'v' means we surrendered. */
   axis: 'none' | 'h' | 'v';
+  /**
+   * Raw (undamped) horizontal delta of the most recent 'h'-locked move.
+   * `pointerup` can decide off its own event coordinates, but `pointercancel`
+   * cannot: the Pointer Events spec zeroes most of a pointercancel's
+   * attributes and its coordinates are not required to be meaningful, so the
+   * commit-on-cancel path (see `onPointerCancel`) must decide off the last
+   * position the browser actually delivered.
+   */
+  lastDx: number;
 }
 
 export function SwipeCarousel({
@@ -186,7 +209,20 @@ export function SwipeCarousel({
       startX: e.clientX,
       startY: e.clientY,
       axis: 'none',
+      lastDx: 0,
     };
+  };
+
+  /**
+   * Shared snap decision for gesture end: past the threshold advances one
+   * page (direction by sign), under it does nothing (the caller's `endDrag`
+   * clears `dragX`, so the track springs back to the settled page).
+   */
+  const commitSwipe = (dx: number): void => {
+    const width = viewportRef.current?.offsetWidth ?? 0;
+    const threshold = Math.max(MIN_SNAP_PX, width * SNAP_FRACTION);
+    if (dx <= -threshold) goTo(index + 1);
+    else if (dx >= threshold) goTo(index - 1);
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>): void => {
@@ -246,6 +282,7 @@ export function SwipeCarousel({
     // would feel like it was fighting the user.
     const overscroll =
       !loop && ((index === 0 && dx > 0) || (index === maxIndex && dx < 0));
+    d.lastDx = dx;
     setDragX(overscroll ? dx / EDGE_DAMPING : dx);
   };
 
@@ -253,20 +290,34 @@ export function SwipeCarousel({
     const d = dragRef.current;
     if (d === null || d.pointerId !== e.pointerId) return;
 
-    if (d.axis === 'h') {
-      // Decide off the raw event delta, not the damped state — no staleness.
-      const dx = e.clientX - d.startX;
-      const width = viewportRef.current?.offsetWidth ?? 0;
-      const threshold = Math.max(MIN_SNAP_PX, width * SNAP_FRACTION);
-      if (dx <= -threshold) goTo(index + 1);
-      else if (dx >= threshold) goTo(index - 1);
-    }
+    // Decide off the raw event delta, not the damped state — no staleness.
+    if (d.axis === 'h') commitSwipe(e.clientX - d.startX);
     endDrag();
   };
 
   const onPointerCancel = (e: React.PointerEvent<HTMLDivElement>): void => {
     const d = dragRef.current;
     if (d === null || d.pointerId !== e.pointerId) return;
+    // A pointercancel during an 'h'-locked drag is the browser TAKING the
+    // pointer, not the user abandoning the swipe. `touch-action: pan-y`
+    // reserves the right to start a native vertical scroll at any time, and
+    // the engine's own gesture arbitration (its slop radius + direction
+    // heuristic) runs independently of our 8px JS axis lock — per the spec,
+    // `preventDefault()` on pointermove does NOT veto scrolling, only
+    // touch-action does. So on a page tall enough to scroll (Listen's tile
+    // grid), a slightly arced thumb-swipe can lock 'h' here, track for a few
+    // dozen px, then have the browser decide "vertical pan", fire
+    // pointercancel, and stop delivering moves. Abandoning the drag at that
+    // point threw away real, threshold-crossing horizontal intent — the
+    // "nudges but never swipes over" mobile bug. Instead, settle the gesture
+    // exactly as pointerup would, off the last delivered position
+    // (`lastDx` — a pointercancel's own coordinates are unreliable: the spec
+    // zeroes most of its attributes). A genuine vertical scroll can never
+    // reach this commit: its gesture surrendered at axis lock ('v' path
+    // calls endDrag, ref is already null) or never locked ('none' skips the
+    // commit below); and a short cancelled 'h' nudge stays under the
+    // threshold, so it springs back just like a short release.
+    if (d.axis === 'h') commitSwipe(d.lastDx);
     endDrag();
   };
 
