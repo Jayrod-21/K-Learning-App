@@ -17,6 +17,9 @@
  *      enrichment, `popEnriching` settles false).
  *   7. Both sources failing degrades to the fixed unavailable literal with
  *      every loading flag cleared.
+ *   8. The B-011 backfill: /define fails (base paints the unavailable
+ *      literal) but /enrich succeeds — the merge UPGRADES the visible
+ *      primary gloss to the enrichment's nuance line.
  *
  * Services are mocked (not tapChain) so the real staged chain logic runs —
  * the same integration surface the pre-F-209 behavior was defined by.
@@ -179,6 +182,46 @@ describe('useTapWord — progressive paint (F-209)', () => {
     expect(result.current.popData?.en).toBe('to 먹다');
     expect(result.current.popData?.ex_kr).toBe('먹다 예문');
     expect(result.current.popData?.notes).toBeUndefined();
+    expect(result.current.popLoading).toBe(false);
+  });
+
+  it('upgrades the unavailable gloss when define fails but enrich succeeds (B-011 backfill)', async () => {
+    mockIdentityLemmatize();
+    vi.mocked(defineEntry).mockRejectedValue(new Error('krdict 503'));
+    const slowEnrich = deferred<EnrichResult>();
+    vi.mocked(enrich).mockReturnValue(slowEnrich.promise);
+
+    const { result } = renderHook(() => useTapWord());
+    act(() => {
+      result.current.onTapWord('먹다', '먹다 좋아요.');
+    });
+
+    // Stage 1 lands with no dictionary entry: the base popover paints the
+    // fixed unavailable literal while enrich is still in flight.
+    await waitFor(() => {
+      expect(result.current.popLoading).toBe(false);
+    });
+    expect(result.current.popData?.kr).toBe('먹다');
+    expect(result.current.popData?.en).toBe(GLOSS_UNAVAILABLE);
+    expect(result.current.popData?.pos).toBe('word');
+    expect(result.current.popData?.ex_kr).toBe('');
+    expect(result.current.popEnriching).toBe(true);
+
+    // Stage 2 succeeds: with no KRDICT definition, the merge upgrades the
+    // visible primary gloss to the enrichment's nuance line, and the
+    // enrichment example — first in line with no dictionary examples —
+    // becomes the popover's primary example.
+    act(() => {
+      slowEnrich.resolve(ENRICH_먹다);
+    });
+    await waitFor(() => {
+      expect(result.current.popEnriching).toBe(false);
+    });
+    expect(result.current.popData?.en).toBe('Neutral everyday register.');
+    expect(result.current.popData?.ex_kr).toBe('같이 먹어요');
+    expect(result.current.popData?.ex_en).toBe('Let’s eat together');
+    expect(result.current.popData?.notes).toBe('드시다 is the honorific.');
+    expect(result.current.popData?.contrast).toBe('마시다 — to drink');
     expect(result.current.popLoading).toBe(false);
   });
 
