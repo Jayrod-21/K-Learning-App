@@ -278,8 +278,10 @@ async function openTtmikListing(
 }
 
 /** F-207: activate one landing carousel page via its dot (1-based) — the
- *  Progress.test goToHistoryPage idiom. Off-page tiles are aria-hidden +
- *  inert, so tests must surface a page before clicking its tiles. */
+ *  Progress.test goToHistoryPage idiom. The landing pager is now the
+ *  ScrollSnapCarousel (native scroll-snap): every page stays exposed in the
+ *  DOM (no aria-hidden/inert), so this isn't strictly required for queries
+ *  anymore — tests keep it to mirror the real dot → page user flow. */
 async function goToLandingPage(
   user: ReturnType<typeof userEvent.setup>,
   page: number,
@@ -331,6 +333,12 @@ describe('Ttmik page — landing (F-071 / F-207 swipe pages)', () => {
     const region = screen.getByRole('region', { name: 'Listen collections' });
     const dots = within(region).getAllByRole('tab');
     expect(dots).toHaveLength(3);
+
+    // The landing pager is the native scroll-snap track (the mobile
+    // swipe-steal fix) — NOT the pointer-drag SwipeCarousel, which loses
+    // the browser's touch arbitration on this vertically-scrolling page.
+    expect(region.querySelector('.km-snap-carousel__track')).not.toBeNull();
+    expect(region.querySelector('.km-carousel__viewport')).toBeNull();
 
     // Page 1's labelled grid + its CSS hook (the 2-across layout keys on
     // it) and the tour anchor.
@@ -431,7 +439,7 @@ describe('Ttmik page — landing (F-071 / F-207 swipe pages)', () => {
     renderPage();
 
     // F-207: My Audio lives on the "Yours" page now — surface it first
-    // (off-page tiles are aria-hidden + inert).
+    // (mirrors the real dot → tile flow; scroll-snap pages stay exposed).
     await goToLandingPage(user, 3);
     await user.click(screen.getByRole('button', { name: /My Audio/ }));
 
@@ -475,10 +483,11 @@ describe('Ttmik page — landing (F-071 / F-207 swipe pages)', () => {
     const iyagiTile = screen
       .getByRole('button', { name: /Iyagi Episodes/ })
       .closest('.km-citycard');
-    // F-207: the My Audio tile sits on the (aria-hidden) "Yours" page —
-    // still in the DOM with its fixed tone, just not on the active page.
+    // F-207: the My Audio tile sits on the off-screen "Yours" page — with
+    // the scroll-snap pager it stays fully exposed in the DOM (no
+    // aria-hidden), just scrolled out of view.
     const mineTile = screen
-      .getByRole('button', { name: /My Audio/, hidden: true })
+      .getByRole('button', { name: /My Audio/ })
       .closest('.km-citycard');
 
     expect(ttmikTile).not.toBeNull();
@@ -1319,14 +1328,11 @@ describe('Ttmik page — F-207 shared curated corpus', () => {
     const user = userEvent.setup();
     renderPage();
 
-    // Exactly one Grammar tile across ALL carousel pages (hidden included) —
-    // never ten sibling tiles.
+    // Exactly one Grammar tile across ALL carousel pages (every page is
+    // exposed in the scroll-snap DOM) — never ten sibling tiles.
     await screen.findByRole('button', { name: /TTMIK Grammar Textbook/ });
     expect(
-      screen.getAllByRole('button', {
-        name: /TTMIK Grammar Textbook/,
-        hidden: true,
-      }),
+      screen.getAllByRole('button', { name: /TTMIK Grammar Textbook/ }),
     ).toHaveLength(1);
 
     await user.click(
@@ -1442,7 +1448,7 @@ describe('Ttmik page — F-207 shared curated corpus', () => {
     // The other three story tiles render; Jindo Dog is simply absent.
     expect(within(stories).getAllByRole('listitem')).toHaveLength(3);
     expect(
-      screen.queryByRole('button', { name: /Blue Jindo Dog/, hidden: true }),
+      screen.queryByRole('button', { name: /Blue Jindo Dog/ }),
     ).not.toBeInTheDocument();
   });
 
@@ -1481,10 +1487,7 @@ describe('Ttmik page — F-207 shared curated corpus', () => {
       expect(vi.mocked(getSharedAudio)).toHaveBeenCalledTimes(1);
     });
     expect(
-      screen.queryByRole('button', {
-        name: /TTMIK Grammar Textbook/,
-        hidden: true,
-      }),
+      screen.queryByRole('button', { name: /TTMIK Grammar Textbook/ }),
     ).not.toBeInTheDocument();
 
     // …and the curated-only page says so honestly.

@@ -11,7 +11,10 @@
  *
  *   1. LANDING (`/learn/listen`) — F-071: responsive 2-across grids of
  *      SQUARE collection tiles, grouped since F-207 into swipeable themed
- *      pages (`SwipeCarousel` over `TILE_PAGES`). The original tiles
+ *      pages (`ScrollSnapCarousel` over `TILE_PAGES` — native scroll-snap,
+ *      because these tall tile pages scroll the document vertically and a
+ *      pointer-drag carousel loses the browser's touch arbitration there;
+ *      see components/ScrollSnapCarousel.tsx). The original tiles
  *      (TTMIK Lessons, Iyagi Episodes, My Audio) stay data-driven off
  *      `COLLECTIONS` and are pure navigation, but the landing now ALSO
  *      fetches `GET /audio/shared` to decide which curated tiles render —
@@ -167,8 +170,8 @@
  * restores to the top," never a crash.
  *
  * F-207 phase 3 (shared curated corpus) — the landing's flat tile grid
- * becomes a `SwipeCarousel` of themed tile-pages (phone-home-screen style,
- * page dots): Lessons / Stories & News / Yours. The original three tiles
+ * becomes a swipeable carousel of themed tile-pages (phone-home-screen
+ * style, page dots): Lessons / Stories & News / Yours. The original three tiles
  * keep their exact behavior; the six curated categories (TTMIK Grammar,
  * Real-Life Conversations, Folktales, Easy Reading, Blue Jindo Dog, News)
  * surface the operator-shared sets from `GET /audio/shared`. Presentation
@@ -208,7 +211,7 @@ import { Icon, type IconName } from '../components/Icon';
 import { PageHubHeader } from '../components/PageHubHeader';
 import { Pill, type PillTone } from '../components/Pill';
 import { ShowMore } from '../components/ShowMore';
-import { SwipeCarousel } from '../components/SwipeCarousel';
+import { ScrollSnapCarousel } from '../components/ScrollSnapCarousel';
 import { Tabs } from '../components/Tabs';
 import { Tapword } from '../components/Tapword';
 import { WordPopover } from '../components/WordPopover';
@@ -956,8 +959,11 @@ function TileButton({
 }
 
 /**
- * F-207 — the landing: a `SwipeCarousel` (dots + drag, the Today/Progress
- * primitive) of themed tile-pages per `TILE_PAGES`. The page COUNT is fixed
+ * F-207 — the landing: a `ScrollSnapCarousel` (dots + native scroll-snap
+ * swipe — NOT the pointer-drag `SwipeCarousel`: these tile pages are tall
+ * enough to scroll the document, where the browser's touch arbitration
+ * steals a pointer-drag mid-gesture) of themed tile-pages per `TILE_PAGES`.
+ * The page COUNT is fixed
  * at three regardless of fetch state, so the dots never jump while the
  * shared list loads. The original three tiles are static entries (pure
  * navigation, exactly as before); curated tiles render only for manifest
@@ -1098,7 +1104,11 @@ function CollectionTiles(): JSX.Element {
     );
   });
 
-  return <SwipeCarousel ariaLabel="Listen collections">{pages}</SwipeCarousel>;
+  return (
+    <ScrollSnapCarousel ariaLabel="Listen collections">
+      {pages}
+    </ScrollSnapCarousel>
+  );
 }
 
 // ─────────────────────────────────────────────────────────────

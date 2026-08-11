@@ -1,0 +1,90 @@
+/*
+ * ScrollSnapCarousel — component-scoped styles.
+ *
+ * The load-bearing idea: the track scrolls HORIZONTALLY under native CSS
+ * scroll-snap, and NOTHING here constrains the vertical axis — no
+ * `touch-action`, no `overflow-y`, no `overscroll-behavior-y`. The track has
+ * no vertical overflow of its own, so a vertical touch pan chains straight
+ * up to the document scroller (Shell's `.km-shell__scroll`); a horizontal
+ * pan is the track's own native scroll. The browser arbitrates the axis —
+ * which is exactly what a JS pointer-drag carousel could never make it stop
+ * doing (see ScrollSnapCarousel.tsx header).
+ *
+ * Dot styles duplicate SwipeCarousel.css's dots (same design tokens, same
+ * look) rather than importing them — the two components stay independently
+ * deletable, per the colocated-styles convention.
+ */
+
+.km-snap-carousel__track {
+  display: flex;
+  /* Horizontal native scroll ONLY — never set overflow-y here (it would
+     create a nested vertical scroller and break pan-through). */
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  /* Momentum scrolling on older iOS WebKit. */
+  -webkit-overflow-scrolling: touch;
+  /* A horizontal swipe at either end must not chain into the browser's own
+     edge gesture (back/forward navigation) or a parent scroller. Horizontal
+     axis only — the vertical axis stays untouched. */
+  overscroll-behavior-x: contain;
+  /* The dots are the position indicator — hide the scrollbar chrome. */
+  scrollbar-width: none;
+}
+
+.km-snap-carousel__track::-webkit-scrollbar {
+  display: none;
+}
+
+.km-snap-carousel__page {
+  flex: 0 0 100%;
+  min-width: 0;
+  scroll-snap-align: start;
+  /* Belt-and-braces against mid-page rests on browsers that support it:
+     a fling can never leave the track stopped between snap points. */
+  scroll-snap-stop: always;
+}
+
+/* Dot indicators (visual parity with SwipeCarousel) ───────── */
+
+.km-snap-carousel__dots {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+/* Each dot is a 24px hit target painting a small centered disc. */
+.km-snap-carousel__dot {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  border-radius: 50%;
+}
+
+.km-snap-carousel__dot::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+  border-radius: 50%;
+  background: var(--paper-faint);
+  transition: background 160ms ease, transform 160ms ease;
+}
+
+.km-snap-carousel__dot--active::after {
+  background: var(--vermilion);
+  transform: scale(1.25);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .km-snap-carousel__dot::after {
+    transition: none;
+  }
+}
