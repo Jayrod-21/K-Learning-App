@@ -1160,7 +1160,13 @@ function resolveModel(
   return cfg.modelDefaults[route];
 }
 
-function stringifySystem(
+// Exported for the F-209 pre-seed tool (scripts/preseed-definitions.ts): the
+// batch must compute the SAME `claude_cache.prompt_hash` this proxy computes
+// (route|model|systemText|userText — see runJsonRoute's cacheKey) to subtract
+// already-cached pairs without spending a call. Re-implementing this join in
+// the script would let the two silently drift and quietly zero the pre-seed's
+// value; exporting the single source of truth cannot.
+export function stringifySystem(
   system: import('./client').ContentBlock[] | undefined,
 ): string {
   if (!system) return '';
