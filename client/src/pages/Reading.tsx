@@ -719,7 +719,7 @@ function useMineable(): {
     (word: string) => minedIds.has(word),
     [minedIds],
   );
-  const { popData, popLoading, onTapWord, onClose } = useTapWord({
+  const { popData, popLoading, popEnriching, onTapWord, onClose } = useTapWord({
     isMined,
   });
 
@@ -786,6 +786,7 @@ function useMineable(): {
       onClose={handleClose}
       onAdd={handleAdd}
       isLoading={popLoading}
+      isEnriching={popEnriching}
     />
   ) : null;
 

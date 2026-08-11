@@ -1746,7 +1746,9 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
     (word: string) => minedIds.has(word),
     [minedIds],
   );
-  const { popData, popLoading, onTapWord, onClose } = useTapWord({ isMined });
+  const { popData, popLoading, popEnriching, onTapWord, onClose } = useTapWord({
+    isMined,
+  });
 
   // Add-to-bank request controller — page-local, mirroring `Reading.tsx`'s
   // `addCtrlRef` (`useTapWord` deliberately doesn't expose its internal
@@ -2069,6 +2071,7 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
           onClose={handleClose}
           onAdd={handleAdd}
           isLoading={popLoading}
+          isEnriching={popEnriching}
         />
       ) : null}
     </div>

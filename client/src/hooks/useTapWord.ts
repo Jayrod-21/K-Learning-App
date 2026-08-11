@@ -3,8 +3,9 @@
  *
  * Extracted (U3b) from `pages/Ttmik.tsx`'s `DetailView`, which had this
  * exact machine copy-pasted alongside `pages/Reading.tsx` (pre-U3b). Owns:
- * the open popover's data + loading flag, the abortable
- * lemmatize → define → enrich chain (`lib/tapChain.resolveWordPopover`),
+ * the open popover's data + loading flags, the abortable two-stage
+ * lemmatize → define (paint) → enrich (merge) chain (F-209 Phase 1:
+ * `lib/tapChain.resolveBasePopover` + `resolveEnrichment`),
  * and abort-on-unmount / abort-on-new-tap / abort-on-close discipline. Any
  * screen that renders tappable Korean text via `Tapword` + `WordPopover`
  * should consume this instead of re-copying the machine. Consumers today:
@@ -23,14 +24,32 @@
  * abortable chain to share; routing it through this hook would ADD network
  * calls, not remove duplication.
  *
+ * F-209 Phase 1 (progressive paint): the chain runs as two stages. Stage 1
+ * (lemmatize → `/define`, both fast local calls) resolves the KRDICT-based
+ * popover and paints it immediately — `popLoading` clears here, so the
+ * blocking spinner lives only for the brief pre-define moment. Stage 2
+ * (`/enrich` — live Claude, ~1–2s cold / near-instant on a cache hit) runs
+ * in the background under the SAME AbortController; while it's in flight
+ * `popEnriching` is true (the popover shows a subtle inline affordance, not
+ * a blocker), and when it lands the enrichment is folded in by re-running
+ * `buildWordPopover` with the stage-1 define result — so the merged popover
+ * is identical to what the old one-shot chain produced. A failed or aborted
+ * enrich merges nothing and surfaces no error (the KRDICT popover stands).
+ *
  * Threat model: identical to Ttmik's inline copy — every popover field
  * renders as React text children downstream (never HTML), the chain
  * degrades gracefully on any step's failure (see tapChain's own header),
- * and the whole chain is abortable so a stale response can never paint over
- * a newer tap, a closed popover, or an unmounted screen.
+ * and the whole chain is abortable so a stale response (base OR late
+ * enrichment) can never paint over a newer tap, a closed popover, or an
+ * unmounted screen.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { GLOSS_UNAVAILABLE, resolveWordPopover } from '../lib/tapChain';
+import {
+  GLOSS_UNAVAILABLE,
+  buildWordPopover,
+  resolveBasePopover,
+  resolveEnrichment,
+} from '../lib/tapChain';
 import type { WordPopoverData } from '../components/WordPopover';
 
 export interface UseTapWordOptions {
@@ -47,8 +66,19 @@ export interface UseTapWordOptions {
 export interface UseTapWordResult {
   /** The open popover's data, or null when no popover is open. */
   popData: WordPopoverData | null;
-  /** True while the lemmatize→define→enrich chain is still resolving. */
+  /**
+   * True only while stage 1 (lemmatize→define) is still resolving — i.e.
+   * before the popover has anything real to paint. Clears as soon as the
+   * KRDICT-based popover is set; the slow enrich no longer holds it.
+   */
   popLoading: boolean;
+  /**
+   * True while stage 2 (`/enrich`) is still in flight AFTER the base
+   * popover painted — drives the popover's subtle "adding nuance…" inline
+   * affordance (never a blocking spinner). False once enrichment merged,
+   * failed (silent degrade), or was aborted.
+   */
+  popEnriching: boolean;
   /** Tap handler — pass a token's surface form plus its source sentence. */
   onTapWord: (raw: string, sentenceText: string) => void;
   /** Close the open popover and abort any still-in-flight chain call. */
@@ -59,6 +89,7 @@ export interface UseTapWordResult {
 export function useTapWord(options: UseTapWordOptions = {}): UseTapWordResult {
   const [popData, setPopData] = useState<WordPopoverData | null>(null);
   const [popLoading, setPopLoading] = useState(false);
+  const [popEnriching, setPopEnriching] = useState(false);
 
   // Popover-scoped chain controller — aborted on close, new tap, unmount.
   const inFlightCtrlRef = useRef<AbortController | null>(null);
@@ -90,32 +121,63 @@ export function useTapWord(options: UseTapWordOptions = {}): UseTapWordResult {
 
     const mined = isMinedRef.current?.(raw) ?? false;
     setPopLoading(true);
+    setPopEnriching(false);
     setPopData({ kr: raw, en: '', pos: 'word', ex_kr: '', ex_en: '', mined });
 
-    void resolveWordPopover(raw, sentenceText, ctrl.signal).then(
-      (popover) => {
-        // null = aborted (closed / newer tap) — paint nothing stale.
-        if (popover === null || ctrl.signal.aborted) return;
-        popover.mined = isMinedRef.current?.(popover.kr) ?? false;
-        setPopData(popover);
-        setPopLoading(false);
-      },
-      () => {
-        // The chain catches its own step failures, so a rejection here is a
-        // defect belt-and-braces path — still resolve the popover to the
-        // fixed fallback rather than stranding the spinner.
+    const run = async (): Promise<void> => {
+      // Stage 1 — lemmatize → define (fast): paint the KRDICT popover the
+      // moment it resolves; do NOT wait for the slow Claude enrich.
+      const base = await resolveBasePopover(raw, ctrl.signal);
+      // null = aborted (closed / newer tap) — paint nothing stale.
+      if (base === null || ctrl.signal.aborted) return;
+      const basePopover = base.popover;
+      basePopover.mined = isMinedRef.current?.(basePopover.kr) ?? false;
+      setPopData(basePopover);
+      setPopLoading(false);
+      setPopEnriching(true);
+
+      // Stage 2 — enrich (slow, background): fold the nuance/usage/extra
+      // examples in when they land. `resolveEnrichment` never rejects
+      // (failure → null → silent degrade: the KRDICT popover stands), but
+      // a defect here must not fall through to the stage-1 fallback below
+      // and wipe an already-painted popover — hence its own try/catch.
+      try {
+        const enrichment = await resolveEnrichment(
+          base.lemma,
+          sentenceText,
+          ctrl.signal,
+        );
         if (ctrl.signal.aborted) return;
-        setPopData({
-          kr: raw,
-          en: GLOSS_UNAVAILABLE,
-          pos: 'word',
-          ex_kr: '',
-          ex_en: '',
-          mined: isMinedRef.current?.(raw) ?? false,
-        });
-        setPopLoading(false);
-      },
-    );
+        if (enrichment !== null) {
+          // Rebuild through the same fold the one-shot chain used, so the
+          // merged popover is identical to the pre-F-209 final content.
+          const merged = buildWordPopover(base.lemma, base.defineResult, enrichment);
+          merged.mined = isMinedRef.current?.(merged.kr) ?? false;
+          setPopData(merged);
+        }
+      } catch {
+        // Defect belt-and-braces — keep the painted KRDICT popover.
+      }
+      if (!ctrl.signal.aborted) setPopEnriching(false);
+    };
+
+    run().catch(() => {
+      // Stage 1 catches its own step failures, so a rejection here is a
+      // defect belt-and-braces path — still resolve the popover to the
+      // fixed fallback rather than stranding the spinner. (Stage 2 defects
+      // are contained above and never reach this handler.)
+      if (ctrl.signal.aborted) return;
+      setPopData({
+        kr: raw,
+        en: GLOSS_UNAVAILABLE,
+        pos: 'word',
+        ex_kr: '',
+        ex_en: '',
+        mined: isMinedRef.current?.(raw) ?? false,
+      });
+      setPopLoading(false);
+      setPopEnriching(false);
+    });
   }, []);
 
   const onClose = useCallback((): void => {
@@ -123,7 +185,8 @@ export function useTapWord(options: UseTapWordOptions = {}): UseTapWordResult {
     inFlightCtrlRef.current = null;
     setPopData(null);
     setPopLoading(false);
+    setPopEnriching(false);
   }, []);
 
-  return { popData, popLoading, onTapWord, onClose };
+  return { popData, popLoading, popEnriching, onTapWord, onClose };
 }

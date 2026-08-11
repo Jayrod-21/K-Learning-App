@@ -11,7 +11,14 @@
  *   - `isPlaceholderGloss` — the fast-path/slow-path discriminator.
  *   - `buildWordPopover`   — folds a `/define` result + `/enrich` envelope
  *                            into the `WordPopoverData` the popover renders.
- *   - `resolveWordPopover` — the abortable slow-path chain itself.
+ *   - `resolveBasePopover` — stage 1 (F-209): lemmatize → define → the
+ *                            KRDICT-only popover. Fast (no Claude call), so
+ *                            the popover can paint immediately.
+ *   - `resolveEnrichment`  — stage 2 (F-209): the `/enrich` (Claude) call,
+ *                            degraded to `null` on failure/abort so callers
+ *                            can merge it progressively without error paths.
+ *   - `resolveWordPopover` — the full chain (stage 1 + stage 2 composed);
+ *                            kept for callers that want the one-shot resolve.
  *
  * Threat model (carried over from Reading's Pass 3 header):
  *   - Every string that reaches the popover renders as React text children —
@@ -218,26 +225,44 @@ export function buildWordPopover(
 }
 
 /**
- * The abortable slow-path chain: lemmatize → define → enrich → popover data.
+ * Stage 1 of the tap chain (F-209): everything the popover needs to paint,
+ * resolved WITHOUT the slow Claude enrich call. The resolution carries the
+ * lemma + raw define result alongside the built popover so stage 2
+ * (`resolveEnrichment`) can be folded in later via `buildWordPopover` —
+ * guaranteeing the merged popover is byte-identical to what the one-shot
+ * `resolveWordPopover` would have produced.
+ */
+export interface BasePopoverResolution {
+  /** The lemma the chain settled on (Kiwi's, or the raw surface form). */
+  lemma: string;
+  /** The `/define` result — kept raw so enrichment can be folded in later. */
+  defineResult: DefineResult | null;
+  /** The KRDICT-only popover (enrichment fields absent, gloss/POS/example present). */
+  popover: WordPopoverData;
+}
+
+/**
+ * The fast half of the abortable slow-path chain: lemmatize → define →
+ * KRDICT-only popover data. No Claude call — resolves in the time of two
+ * fast local requests, so the caller can paint the popover immediately and
+ * fold enrichment in progressively (F-209 Phase 1).
  *
  * Resolves `null` when the signal aborts mid-chain — the caller must treat
  * `null` as "paint nothing" (the user closed the popover or tapped a newer
  * word). Each step degrades gracefully on its own failure:
  *   - lemmatize fails → continue with the raw surface form (KRDICT often
  *     matches the conjugated form anyway);
- *   - define fails    → popover falls back to enrichment (or the fixed
- *     'Definition unavailable' literal);
- *   - enrich fails    → popover opens on the dictionary entry alone.
+ *   - define fails    → popover falls back to the fixed
+ *     'Definition unavailable' literal (enrichment may later backfill it).
  *
  * The signal threads into every service call so an abort cancels the
  * in-flight HTTP request itself (freeing the server's per-route bucket),
  * not merely ignores the response.
  */
-export async function resolveWordPopover(
+export async function resolveBasePopover(
   raw: string,
-  sourceSentence: string,
   signal: AbortSignal,
-): Promise<WordPopoverData | null> {
+): Promise<BasePopoverResolution | null> {
   let lemma = raw;
   try {
     const tokens = await lemmatize(raw, signal);
@@ -256,13 +281,58 @@ export async function resolveWordPopover(
   }
   if (signal.aborted) return null;
 
+  return { lemma, defineResult, popover: buildWordPopover(lemma, defineResult, null) };
+}
+
+/**
+ * Stage 2 of the tap chain (F-209): the `/enrich` (Claude) call alone.
+ * Runs after the base popover has already painted. Degrades to `null` on
+ * ANY failure or abort — never rejects — so the caller's merge step is a
+ * simple `null` check with no error path: a failed/aborted enrich leaves
+ * the KRDICT popover exactly as painted (today's degrade contract).
+ *
+ * A cache-hit enrich (30-day write-through `claude_cache`) resolves
+ * near-instantly through this same path and merges seamlessly.
+ */
+export async function resolveEnrichment(
+  lemma: string,
+  sourceSentence: string,
+  signal: AbortSignal,
+): Promise<EnrichResult | null> {
+  if (signal.aborted) return null;
   let enrichResult: EnrichResult | null = null;
   try {
     enrichResult = await enrich({ lemma, sourceSentence }, signal);
   } catch {
-    // Enrich failure is non-fatal — popover opens on the entry alone.
+    // Enrich failure is non-fatal — popover stays on the entry alone.
   }
   if (signal.aborted) return null;
+  return enrichResult;
+}
 
-  return buildWordPopover(lemma, defineResult, enrichResult);
+/**
+ * The full abortable chain: lemmatize → define → enrich → popover data —
+ * stage 1 (`resolveBasePopover`) and stage 2 (`resolveEnrichment`) composed
+ * for callers that want the one-shot resolve. `useTapWord` no longer uses
+ * this (it stages the two halves so the popover paints off KRDICT first);
+ * the composition is kept so the chain's end-to-end contract stays
+ * expressible (and testable) in one place.
+ *
+ * Same abort/degrade contract as the two stages: resolves `null` when the
+ * signal aborts mid-chain; enrich failure is non-fatal (popover opens on
+ * the dictionary entry alone); both sources failing falls back to the fixed
+ * 'Definition unavailable' literal.
+ */
+export async function resolveWordPopover(
+  raw: string,
+  sourceSentence: string,
+  signal: AbortSignal,
+): Promise<WordPopoverData | null> {
+  const base = await resolveBasePopover(raw, signal);
+  if (base === null) return null;
+
+  const enrichResult = await resolveEnrichment(base.lemma, sourceSentence, signal);
+  if (signal.aborted) return null;
+
+  return buildWordPopover(base.lemma, base.defineResult, enrichResult);
 }
