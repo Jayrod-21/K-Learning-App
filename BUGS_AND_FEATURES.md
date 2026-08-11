@@ -11,7 +11,7 @@ cause + a **category label** so work can be batched into focused coding sessions
   `CONFIG` (env/deploy). Many items are cross-cutting — the **primary** tag is
   where the bulk of the fix lives; secondary tags in parentheses.
 
-## Status snapshot (2026-07-29 — reconciled against `origin/rebuild` @ 86a809e)
+## Status snapshot (2026-08-11 — reconciled against `origin/rebuild` @ 874427c; prior 2026-07-29 @ 86a809e)
 
 **This is the single source of truth. Update it as part of each ship (flip the row + the
 per-item status line in the same PR that lands the work).** Reconciliation trail below.
@@ -38,9 +38,10 @@ per-item status line in the same PR that lands the work).** Reconciliation trail
 - 🔴 **F-204** P4 — shared `coerceId()` helper across services.
 - 🔴 **F-205** P3 — reading comprehension questions from exercise-bearing books (post-beta epic; OCR/classifier foundation shipped #141–145).
 - 🔴 **F-206** P3 (NEW 2026-07-29) — study-mode listening audio (F-119 deferred decision #4: mock-only in v1; extend the player to the non-mock study view).
-- 🔴 **F-207** P2 (NEW 2026-07-29) — Listen page: swipeable themed content tiles with page-dots (reuse `SwipeCarousel`). **All 6 target categories NOW EXIST as ingested Track-A audio** (news-in-korean, jindo-dog, ttmik-grammar-level-1..10, korean-folktales, real-life-conversations, easy-korean-reading — see F-197). So it's a UI + surfacing job (tiles → `GET /audio` sets), NOT content-blocked. Caveat: those sets are `standalone_listening` and user-scoped (Jared's), so a tile targeting them is per-user like uploads; a shared-corpus surfacing decision is the only open design question.
-- 🔴 **F-208** P2 (NEW 2026-07-29, transcript) — cloze vocab drill: sentence with a blanked word, as a mode ALONGSIDE flashcards (explicitly not a replacement).
-- 🔴 **F-209** P2 (NEW 2026-07-29, transcript) — pre-seeded in-context definitions so tap-to-define is instant; today every lookup is a live `POST /enrich` Claude round-trip (seconds of latency + per-lookup cost).
+- 🔴 **F-208** P2 (NEW 2026-07-29, transcript) — cloze vocab drill: sentence with a blanked word, as a mode ALONGSIDE flashcards (explicitly not a replacement). **← NEXT UP (starting 2026-08-11).**
+- 🟡 **F-209** P2 — pre-seeded in-context definitions so tap-to-define is instant. **Phase 1 (progressive tap-to-define render) SHIPPED + merged (PR #172).** Phase 2 subscription pre-seed tooling in review (PR #173 kiwi fix + PR #174 tool); **first weekly reading batch live in prod** (150 defs, reading order, 365-day cache); ~83,830 reading pairs remain, pre-seeded weekly on the Claude subscription ($0 API). See the 2026-08-11 reconciliation trail.
+- 🔴 **F-217** P3 (NEW 2026-08-11) — Shared Library browse surface: non-owner read-access to shared BOOKS. The F-207 cutover shared 18 books + 21 audio sets `is_shared=true`; audio surfaces via the Listen tiles, but shared books have no browse surface for non-owner accounts yet (split out of F-207).
+- 🔴 **F-218** P4 (NEW 2026-08-11) — real-km-kiwi integration smoke test: B-039 (KiwiTokenSchema drift) passed every unit test because they mocked kiwi; add a test that hits the REAL km-kiwi service so service↔schema drift fails CI.
 - 🔴 **F-210** P2 (NEW 2026-07-29, transcript) — multi-voice TTS audio for generated stories (ElevenLabs). **Story TEXT generation already ships** (`generated_stories`, migration 054) — this is the audio half, and it's the copyright-clean answer to the B-025/B-026 listening-corpus problem.
 - 🔴 **F-211** P3 (NEW 2026-07-29, transcript) — AI-generated illustrations paired with generated stories (story + pictures + voiced audio). Depends on F-210.
 - 🔴 **F-212** P2 EPIC (NEW 2026-07-29, transcript) — the adaptive "brain": infer the user's level against TOPIK 1–6/native from real in-app behavior and recommend the next best exercise. Jared's stated biggest worry; picks up F-011's deliberately-deferred IRT/adaptive half.
@@ -48,6 +49,14 @@ per-item status line in the same PR that lands the work).** Reconciliation trail
 - 🔴 **F-216** P2 EPIC (NEW 2026-07-29, transcript) — generative story experience: one story delivered as **text + illustrations + multi-voice audio**. Text ships (F-068); the umbrella tracks the multimodal package, with F-210 (audio) + F-211 (images) as its halves.
 - ⚪ **F-214** P3 EPIC (NEW 2026-07-29, transcript) — language-agnostic core → Japanese + Chinese. **DEFERRED LAST (decided 2026-07-29): do not start until the Korean side is finished.** Korean is "pretty much done"; content foundation reuses the copyright-clean recipe (own definitions/examples over uncopyrightable grammar forms + vocab).
 - ⚪ **F-215** P4 DECISION (NEW 2026-07-29, transcript) — premium packaging + pricing. **DEFERRED LAST (decided 2026-07-29), same tier as F-214.** Flags a scope reversal (private single-user → commercial product). Consequence to note: F-213 (i18n) was gated on this decision, so it inherits the same late tier unless it's justified on Korean-only grounds.
+
+### Flipped to DONE / updated this reconciliation (2026-08-11)
+- **F-207** 🔴→🟢 — Listen shared-corpus swipeable tiles, shipped end-to-end (PRs #163 `is_shared` flag + migration 079, #165 Listen tiles, #166 cross-account book read, #168 share-corpus cutover). Cutover flipped **21 audio sets + 18 books** to `is_shared=true` (owner id=1). Blue/green deployed. The hand-rolled `SwipeCarousel` broke on touch → replaced with a native CSS scroll-snap carousel (B-040). Non-owner shared-BOOK browse surface split out as **F-217**.
+- **F-209** 🔴→🟡 — Phase 1 (progressive tap-to-define render) shipped + merged (PR #172). Phase 2 subscription pre-seed tooling: PRs #173 (kiwi fix) + #174 (pre-seed tool) open; **first weekly reading batch live in prod** (150 defs, 지구에서 한아뿐 ch.1, reading order, 365-day cache rows), 0 skipped, verified; ~83,830 reading pairs remain, seeded weekly on the Claude subscription ($0 API). Ongoing.
+- **B-039** 🟢 (NEW 2026-08-11) — app-wide lemmatize silently broken: `KiwiTokenSchema` expected `{form,tag,length}` but km-kiwi returns `{surface,pos,end}`, so every `/lemmatize` failed Zod validation and tap-to-define fell back to the raw surface form corpus-wide. Fixed (prod-deployed; PR #173, which also reconciles the stale mocks PR #172 merged). Follow-up integration test = **F-218**.
+- **B-040** 🟢 (NEW 2026-08-11) — Listen swipe broken on touch (Samsung/Brave, incl. private tab): the pointer-drag `SwipeCarousel` lost the gesture to the browser's scroll arbitration on the scrollable Listen page (`pointercancel` fired early). Fixed with a native CSS `scroll-snap` carousel on Listen only (PR #171).
+- **B-041** 🟢 (NEW 2026-08-11) — reading materials vanished after the F-207 cutover: `GET /uploads` filtered `is_shared=false`, hiding the owner's own now-shared books. Fixed — owner always sees own books; sharing is a read flag for OTHERS (PR #170).
+- **B-042** 🟢 (NEW 2026-08-11) — "Definition unavailable" flashed on a KRDICT-miss word while the enrichment was still generating (reads as a terminal failure). Fixed — show "Looking it up…" until enrichment resolves, only fall back to the literal when it genuinely returns nothing (PR #175).
 
 ### Flipped to DONE this reconciliation (2026-07-29)
 - **F-119** 🔴→🟢 — TOPIK listening audio, ingest + serve per-question. Shipped end-to-end this session (PRs #155–161, migration 078, 855 spans, blue/green deployed, verified in prod).
@@ -137,6 +146,10 @@ Launch one focused session per group; cross-cutting items noted.
 | B-036 | Bug | ✅ | P2 | bug · regression | Settings → Appearance text-size (S / M / L) does nothing |
 | B-037 | Bug | 🟡 | P2 | DATA (CONFIG) | 96 TOPIK section MP3s decode-corrupt → their papers stay transcript-only (blocked on user re-download, then re-run F-119 segmenter+loader) |
 | B-038 | Bug | 🔴 | P4 | BACKEND | `diagnostic.ts` `pickTopikRow` lacks the D-2 `[듣기 지문 없음]` exclusion → can serve span-less placeholder items |
+| B-039 | Bug | 🟢 | P1 | BACKEND (API) | App-wide lemmatize broken — `KiwiTokenSchema` `{form,tag,length}` vs km-kiwi `{surface,pos,end}` → tap-to-define fell back to raw surface form corpuswide (fixed, PR #173) |
+| B-040 | Bug | 🟢 | P2 | UI | Listen swipe broken on touch (Samsung/Brave) — pointer-drag carousel lost the gesture to page scroll; fixed with native CSS scroll-snap (PR #171) |
+| B-041 | Bug | 🟢 | P1 | BACKEND | Reading materials vanished after F-207 cutover — `GET /uploads` hid owner's own shared books; owner now always sees own (PR #170) |
+| B-042 | Bug | 🟢 | P3 | UI | "Definition unavailable" flashed on KRDICT-miss words mid-enrich; show "Looking it up…" until enrichment resolves (PR #175) |
 | F-001 | Feature | 🟢 | P2 | UI (BACKEND) | Make "Writing" a real writing feature (backend already exists) |
 | F-002 | Feature | 🟢 | P3 | DATABASE (DATA, BACKEND) | Add TOPIK Level 1 & 2 to the diagnostic |
 | F-003 | Feature | 🟢 | P3 | BACKEND (UI) | Vocabulary: genre + difficulty filters |
@@ -282,9 +295,9 @@ Launch one focused session per group; cross-cutting items noted.
 | F-204 | Feature | 🔴 | P4 | wire-boundary hardening · follow-up (`REVIEW_ticket-id-fix.md` NIT-1) | Shared `coerceId()` helper — guard every service's bare `Number(id)` wire coercion |
 | F-205 | Feature | 🔴 | P3 | DATABASE (BACKEND, UI, ingest) · post-beta epic | Reading comprehension questions from exercise-bearing books (Folktales/conversations/graded readers) |
 | F-206 | Feature | 🔴 | P3 | UI (BACKEND) | Study-mode listening audio — extend the F-119 player to the non-mock TOPIK study view (deferred decision #4) |
-| F-207 | Feature | 🔴 | P2 | UI (BACKEND) | Listen page swipeable themed content tiles + page-dots (reuse `SwipeCarousel`); all 6 categories exist as Track-A audio (F-197) — UI/surfacing job, not content-blocked |
+| F-207 | Feature | 🟢 | P2 | UI (BACKEND) | Listen page swipeable themed content tiles + shared corpus (PRs #163/165/166/168, migration 079); native scroll-snap after touch-swipe fix (B-040); non-owner shared-book browse = F-217 |
 | F-208 | Feature | 🔴 | P2 | UI (BACKEND, DATABASE) | Cloze vocab drill — sentence with a blanked word, as a mode alongside flashcards |
-| F-209 | Feature | 🔴 | P2 | DATABASE (BACKEND, API) | Pre-seeded in-context definitions — instant tap-to-define instead of a live `POST /enrich` round-trip |
+| F-209 | Feature | 🟡 | P2 | DATABASE (BACKEND, API) | Pre-seeded in-context definitions — instant tap-to-define. P1 progressive render shipped (#172); P2 pre-seed tool in review (#173/#174); first weekly reading batch live; ~83,830 reading pairs remain (subscription, weekly) |
 | F-210 | Feature | 🔴 | P2 | API (BACKEND, DATABASE, UI) | Multi-voice TTS audio for generated stories (ElevenLabs) — copyright-clean listening material |
 | F-211 | Feature | 🔴 | P3 | API (BACKEND, UI) | AI-generated illustrations for generated stories (story + pictures + voiced audio) |
 | F-212 | Feature | 🔴 | P2 | BACKEND (DATABASE, UI) · epic | EPIC · Adaptive learning engine — infer level vs TOPIK from real usage + recommend the next exercise |
@@ -292,6 +305,8 @@ Launch one focused session per group; cross-cutting items noted.
 | F-214 | Feature | ⚪ | P3 | DATABASE (BACKEND, UI, ingest) · epic · **deferred last** | EPIC · Language-agnostic core → Japanese + Chinese (**not before the Korean side is finished**) |
 | F-215 | Feature | ⚪ | P4 | product · decision (no code) · **deferred last** | Premium packaging + pricing — flags the private→commercial scope reversal (**same tier as F-214**) |
 | F-216 | Feature | 🔴 | P2 | API (BACKEND, DATABASE, UI) · epic | EPIC · Generative story experience — story text (F-068 ✅) + illustrations (F-211) + multi-voice audio (F-210) as one package |
+| F-217 | Feature | 🔴 | P3 | UI (BACKEND) | Shared Library browse surface — non-owner read-access to shared BOOKS (F-207 shared 18 books; audio surfaces via Listen tiles, books don't yet) |
+| F-218 | Feature | 🔴 | P4 | BACKEND (CI) | Real-km-kiwi integration smoke test — B-039 slipped because unit tests mocked kiwi; hit the real service so schema drift fails CI |
 
 ---
 
