@@ -81,7 +81,7 @@ const ENRICH_먹다: EnrichResult = {
 /** Identity lemmatizer — every surface form is its own lemma. */
 function mockIdentityLemmatize(): void {
   vi.mocked(lemmatize).mockImplementation(async (raw: string) => [
-    { form: raw, lemma: raw, tag: 'VV', start: 0, length: raw.length },
+    { surface: raw, lemma: raw, pos: 'VV', start: 0, end: raw.length },
   ]);
 }
 

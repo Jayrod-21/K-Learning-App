@@ -25,8 +25,9 @@ beforeAll(async () => {
       res.setHeader('content-type', 'application/json');
       res.end(
         JSON.stringify({
+          // Real km-kiwi shape (services/kiwi/src/kiwi_service/models.py Token).
           tokens: [
-            { form: '먹었어요', lemma: '먹다', tag: 'VV', start: 0, length: 4 },
+            { surface: '먹었어요', lemma: '먹다', pos: 'VV', start: 0, end: 4 },
           ],
         }),
       );

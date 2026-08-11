@@ -221,7 +221,7 @@ async function openChapterOne(
 /** Standard happy-path tap-chain mocks for '소년은' → '소년' → "boy". */
 function mockTapChain(): void {
   tapSvc.lemmatize.mockResolvedValue([
-    { form: '소년은', lemma: '소년', tag: 'NNG', start: 0, length: 3 },
+    { surface: '소년은', lemma: '소년', pos: 'NNG', start: 0, end: 3 },
   ]);
   tapSvc.defineEntry.mockResolvedValue({
     word: '소년',
