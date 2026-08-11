@@ -33,13 +33,28 @@ export const LemmatizeRequestSchema = z.object({
 });
 export type LemmatizeRequest = z.infer<typeof LemmatizeRequestSchema>;
 
-const KiwiTokenSchema = z.object({
-  form: z.string(),
-  lemma: z.string(),
-  tag: z.string(),
-  start: z.number().int().nonnegative(),
-  length: z.number().int().nonnegative(),
-});
+/**
+ * Contract mirror of the km-kiwi service's `Token` Pydantic model
+ * (`services/kiwi/src/kiwi_service/models.py`). That file is the source of
+ * truth for the wire shape: `{surface, lemma, pos, start, end}` where
+ * `start`/`end` are UTF-16 code-unit offsets and `end` is exclusive with
+ * `end >= start` (mirrored below, matching the Pydantic field validator).
+ * Any change on the Python side is a breaking API change — update this
+ * schema and the drift-guard contract test in tests/services/kiwi.test.ts
+ * together.
+ */
+const KiwiTokenSchema = z
+  .object({
+    surface: z.string(),
+    lemma: z.string(),
+    pos: z.string(),
+    start: z.number().int().nonnegative(),
+    end: z.number().int().nonnegative(),
+  })
+  .refine((t) => t.end >= t.start, {
+    message: 'end must be >= start',
+    path: ['end'],
+  });
 
 const KiwiResponseSchema = z.object({
   tokens: z.array(KiwiTokenSchema),

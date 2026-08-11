@@ -871,7 +871,7 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
 
   it('tapping a Korean word runs the abortable tap chain and opens the word popover', async () => {
     vi.mocked(lemmatize).mockResolvedValue([
-      { form: '안녕하세요.', lemma: '안녕하세요', tag: 'IC', start: 0, length: 6 },
+      { surface: '안녕하세요.', lemma: '안녕하세요', pos: 'IC', start: 0, end: 6 },
     ]);
     vi.mocked(defineEntry).mockResolvedValue({
       word: '안녕하세요',
@@ -939,7 +939,7 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
   // the inline machine: closing the popover aborts an in-flight mine POST.
   it('closing the popover aborts an in-flight "Add to bank" request', async () => {
     vi.mocked(lemmatize).mockResolvedValue([
-      { form: '안녕하세요.', lemma: '안녕하세요', tag: 'IC', start: 0, length: 6 },
+      { surface: '안녕하세요.', lemma: '안녕하세요', pos: 'IC', start: 0, end: 6 },
     ]);
     vi.mocked(defineEntry).mockResolvedValue({
       word: '안녕하세요',

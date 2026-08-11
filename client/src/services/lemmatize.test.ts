@@ -12,7 +12,7 @@ afterEach(() => {
 describe('lemmatize', () => {
   it('POSTs /lemmatize with { text } and returns the tokens array', async () => {
     const tokens = [
-      { form: '안녕', lemma: '안녕', tag: 'NNG', start: 0, length: 2 },
+      { surface: '안녕', lemma: '안녕', pos: 'NNG', start: 0, end: 2 },
     ];
     const spy = vi
       .spyOn(api, 'post')

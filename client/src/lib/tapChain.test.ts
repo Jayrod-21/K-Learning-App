@@ -83,7 +83,7 @@ describe('resolveBasePopover — stage 1 (F-209)', () => {
   it('resolves the KRDICT popover without ever calling enrich', async () => {
     const ctrl = new AbortController();
     vi.mocked(lemmatize).mockResolvedValue([
-      { form: '먹어요', lemma: '먹다', tag: 'VV', start: 0, length: 3 },
+      { surface: '먹어요', lemma: '먹다', pos: 'VV', start: 0, end: 3 },
     ]);
     vi.mocked(defineEntry).mockResolvedValue(DEFINE_먹다);
 
@@ -108,7 +108,7 @@ describe('resolveBasePopover — stage 1 (F-209)', () => {
     const ctrl = new AbortController();
     vi.mocked(lemmatize).mockImplementation(async () => {
       ctrl.abort();
-      return [{ form: '먹다', lemma: '먹다', tag: 'VV', start: 0, length: 2 }];
+      return [{ surface: '먹다', lemma: '먹다', pos: 'VV', start: 0, end: 2 }];
     });
 
     const base = await resolveBasePopover('먹다', ctrl.signal);
@@ -168,7 +168,7 @@ describe('staged merge parity (F-209)', () => {
   it('base popover + late enrichment folds to the same popover the one-shot chain produces', async () => {
     const ctrl = new AbortController();
     vi.mocked(lemmatize).mockResolvedValue([
-      { form: '먹다', lemma: '먹다', tag: 'VV', start: 0, length: 2 },
+      { surface: '먹다', lemma: '먹다', pos: 'VV', start: 0, end: 2 },
     ]);
     vi.mocked(defineEntry).mockResolvedValue(DEFINE_먹다);
     vi.mocked(enrich).mockResolvedValue(ENRICH_먹다);
@@ -192,7 +192,7 @@ describe('resolveWordPopover — abort contract', () => {
     // lemmatize resolves, but the user closed the popover while it ran.
     vi.mocked(lemmatize).mockImplementation(async () => {
       ctrl.abort();
-      return [{ form: '먹다', lemma: '먹다', tag: 'VV', start: 0, length: 2 }];
+      return [{ surface: '먹다', lemma: '먹다', pos: 'VV', start: 0, end: 2 }];
     });
 
     const result = await resolveWordPopover('먹다', '먹다 좋아요.', ctrl.signal);
@@ -205,7 +205,7 @@ describe('resolveWordPopover — abort contract', () => {
   it('threads the signal into every service call', async () => {
     const ctrl = new AbortController();
     vi.mocked(lemmatize).mockResolvedValue([
-      { form: '먹다', lemma: '먹다', tag: 'VV', start: 0, length: 2 },
+      { surface: '먹다', lemma: '먹다', pos: 'VV', start: 0, end: 2 },
     ]);
     vi.mocked(defineEntry).mockResolvedValue({ word: '먹다', entries: [] });
     vi.mocked(enrich).mockRejectedValue(new Error('claude timeout'));

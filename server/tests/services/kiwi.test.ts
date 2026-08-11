@@ -25,8 +25,14 @@ let requestCount = 0;
 /** Per-test script: each entry handles one request in order; last repeats. */
 let responses: Array<{ status: number; body: string }> = [];
 
+// Byte-shaped like the real km-kiwi service output for「먹었다」— the contract
+// is services/kiwi/src/kiwi_service/models.py (Token: surface/lemma/pos/start/end).
 const OK_BODY = JSON.stringify({
-  tokens: [{ form: '먹었어요', lemma: '먹다', tag: 'VV', start: 0, length: 4 }],
+  tokens: [
+    { surface: '먹', lemma: '먹다', pos: 'VV', start: 0, end: 1 },
+    { surface: '었', lemma: '었', pos: 'EP', start: 1, end: 2 },
+    { surface: '다', lemma: '다', pos: 'EF', start: 2, end: 3 },
+  ],
 });
 
 beforeAll(async () => {
@@ -88,6 +94,76 @@ describe('lemmatize — upstream error labeling', () => {
     const err = await lemmatize({ text: '안녕' }, 'cid-3').catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ValidationError);
     expect(requestCount).toBe(1);
+  });
+});
+
+describe('lemmatize — km-kiwi contract (drift guard)', () => {
+  // Regression guard for the schema-drift prod bug: KiwiTokenSchema once
+  // expected `{form, lemma, tag, start, length}` while the real km-kiwi
+  // service (services/kiwi/src/kiwi_service/models.py, `Token`) emits
+  // `{surface, lemma, pos, start, end}`. Every valid response was rejected as
+  // malformed, /lemmatize 502'd, and tap-to-define silently fell back to the
+  // raw tapped form. The drift survived because tests mocked Kiwi with the
+  // WRONG shape — these tests pin the schema to the real contract instead.
+
+  it('accepts a payload byte-shaped like the real service output and returns the lemma', async () => {
+    // Exactly what the live service returns for 「먹었다」.
+    responses = [
+      {
+        status: 200,
+        body: JSON.stringify({
+          tokens: [
+            { surface: '먹', lemma: '먹다', pos: 'VV', start: 0, end: 1 },
+            { surface: '었', lemma: '었', pos: 'EP', start: 1, end: 2 },
+            { surface: '다', lemma: '다', pos: 'EF', start: 2, end: 3 },
+          ],
+        }),
+      },
+    ];
+    const out = await lemmatize({ text: '먹었다' }, 'cid-contract-1');
+    expect(out.tokens).toHaveLength(3);
+    expect(out.tokens[0]).toEqual({
+      surface: '먹',
+      lemma: '먹다',
+      pos: 'VV',
+      start: 0,
+      end: 1,
+    });
+  });
+
+  it('rejects the pre-fix {form, tag, length} shape as malformed', async () => {
+    // The OLD (wrong) TS-side shape. It lacks surface/pos/end, so the schema
+    // must refuse it — if this test starts passing a payload through, the
+    // schema has drifted away from models.py again.
+    responses = [
+      {
+        status: 200,
+        body: JSON.stringify({
+          tokens: [{ form: '먹었다', lemma: '먹다', tag: 'VV', start: 0, length: 3 }],
+        }),
+      },
+    ];
+    const err = await lemmatize({ text: '먹었다' }, 'cid-contract-2').catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(UpstreamError);
+    expect((err as Error).message).toBe('kiwi returned malformed payload');
+  });
+
+  it('rejects inverted offsets (end < start), mirroring the Pydantic validator', async () => {
+    responses = [
+      {
+        status: 200,
+        body: JSON.stringify({
+          tokens: [{ surface: '먹', lemma: '먹다', pos: 'VV', start: 2, end: 1 }],
+        }),
+      },
+    ];
+    const err = await lemmatize({ text: '먹었다' }, 'cid-contract-3').catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(UpstreamError);
+    expect((err as Error).message).toBe('kiwi returned malformed payload');
   });
 });
 

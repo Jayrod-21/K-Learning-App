@@ -783,13 +783,16 @@ export interface LanguageDisplayPrefs {
 // compiling. The service modules in `src/services/*` translate at the
 // boundary where the in-app shape and the wire shape differ.
 
-/** One token in a `/lemmatize` response — mirrors Kiwi's output schema. */
+/** One token in a `/lemmatize` response — mirrors the km-kiwi service's
+ *  `Token` model (`services/kiwi/src/kiwi_service/models.py`), passed through
+ *  the server unchanged. `start`/`end` are UTF-16 code-unit offsets into the
+ *  input (matching JS string indices); `end` is exclusive. */
 export interface LemmaToken {
-  form: string;
+  surface: string;
   lemma: string;
-  tag: string;
+  pos: string;
   start: number;
-  length: number;
+  end: number;
 }
 
 /** Envelope returned by `POST /lemmatize`. */
