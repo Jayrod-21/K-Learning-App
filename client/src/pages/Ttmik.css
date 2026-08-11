@@ -28,11 +28,12 @@
   padding: 0;
 }
 
-/* ── F-207 landing: one themed tile-page inside the SwipeCarousel ──
- * The carousel page itself is `flex: 0 0 100%` (SwipeCarousel.css); this
- * inner wrapper just stacks the page eyebrow over its tile grid and pads
- * the sides so a mid-drag neighbor page never visually touches the active
- * one. Bottom padding keeps the tiles' glow shadow clear of the dots. */
+/* ── F-207 landing: one themed tile-page inside the ScrollSnapCarousel ──
+ * The carousel page itself is `flex: 0 0 100%` (ScrollSnapCarousel.css);
+ * this inner wrapper just stacks the page eyebrow over its tile grid and
+ * pads the sides so a mid-swipe neighbor page never visually touches the
+ * active one. Bottom padding keeps the tiles' glow shadow clear of the
+ * dots. */
 .km-ttmik__tile-page {
   display: flex;
   flex-direction: column;
