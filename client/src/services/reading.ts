@@ -11,6 +11,9 @@
  *     `GET /reading/generated/:id`.
  *   - Reading-completion attempts (F-172; `reading_attempts`, migration 060):
  *     `POST /reading/attempts`, `GET /reading/attempts`.
+ *   - Story TTS audio (F-210; `story_audio_jobs` + audio tables, migration
+ *     081): `POST`/`GET /reading/generated/:id/audio` — request narration,
+ *     then poll the status envelope until done/failed.
  *
  * Threat model:
  *   - Auth + session: every route is `requireAuth` server-side; the session
@@ -294,10 +297,26 @@ export interface GeneratedStorySummary {
   createdAt: string;
 }
 
+/**
+ * One narrated/dialogue line of a story's multi-voice split (F-210
+ * groundwork — `generated_stories.turns`, migration 081). `speaker` is
+ * `"narrator"` or a character label the model chose; `text` is that turn's
+ * verbatim slice of the story. LATENT on this client: the wire carries it,
+ * but every reader surface renders from `bodyKo` — do NOT build UI on
+ * `turns` until the multi-voice phase lands.
+ */
+export interface StoryTurn {
+  speaker: string;
+  text: string;
+}
+
 /** One full generated story (`POST /reading/generate`,
- *  `GET /reading/generated/:id`). */
+ *  `GET /reading/generated/:id`). `turns` is null for stories generated
+ *  before migration 081 or when the model emitted no split; optional so
+ *  pre-F-210 fixtures/consumers stay valid (the wire always carries it). */
 export interface GeneratedStory extends GeneratedStorySummary {
   bodyKo: string;
+  turns?: StoryTurn[] | null;
 }
 
 interface StoryEnvelope {
@@ -359,6 +378,108 @@ export async function getGeneratedStory(
     signal !== undefined ? { signal } : undefined,
   );
   return res.story;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Story TTS audio (F-210 — story_audio_jobs + audio_* tables,
+// migration 081)
+// ─────────────────────────────────────────────────────────────
+
+/** Lifecycle of a story's TTS narration (`story_audio_jobs` + the voiced
+ *  `audio_sources` set — see routes/reading.ts's StoryAudioDto). */
+export type StoryAudioStatus = 'none' | 'pending' | 'running' | 'failed' | 'done';
+
+/**
+ * One read-along unit: `body` is the sentence text, `[startMs, endMs)` its
+ * window in the track. Ordered by `segmentNumber` (1-based). A track voiced
+ * without usable timing carries all-zero windows — the reader plays audio
+ * but skips highlighting in that case.
+ */
+export interface StoryAudioSegment {
+  segmentNumber: number;
+  startMs: number;
+  endMs: number;
+  body: string;
+}
+
+/** The playable artifact once a story is voiced. `streamUrl` is the
+ *  app-relative byte route (`/audio/tracks/:id/stream` — Range-enabled,
+ *  same-origin cookie); resolve it through `buildAudioSrc`
+ *  (services/ttmik.ts) before handing it to an `<audio>` element. */
+export interface StoryAudioTrack {
+  id: number;
+  streamUrl: string;
+  durationMs: number | null;
+}
+
+/**
+ * The story-audio status envelope both F-210 routes return (already
+ * camelCase on the wire — no mapping needed).
+ *   - `none`            — never voiced; the UI offers "Generate audio".
+ *   - `pending`/`running` — a job is in flight; poll the GET every ~2s.
+ *   - `failed`          — `error` carries server-authored WHITELISTED copy
+ *                         (services/tts.ts / storyAudio.ts — never raw
+ *                         upstream prose), sanctioned for verbatim display;
+ *                         a new POST retries.
+ *   - `done`            — `track` + ordered `segments` are populated.
+ */
+export interface StoryAudio {
+  status: StoryAudioStatus;
+  jobId: number | null;
+  error: string | null;
+  track: StoryAudioTrack | null;
+  segments: StoryAudioSegment[];
+}
+
+interface StoryAudioEnvelope {
+  audio: StoryAudio;
+}
+
+/**
+ * POST /reading/generated/:id/audio — request TTS narration of an owned
+ * story (no body; F-210 v1 is a single narrator voice over `bodyKo`).
+ * Idempotent + voice-once server-side: 200 with a `done` envelope when the
+ * story is already voiced, 202 with the live/new job's envelope otherwise —
+ * both resolve here; callers branch on `status` alone.
+ *
+ * Failure paths (all `ApiError`):
+ *   - 429 `rate_limited` with NO `retryAfter` — the per-user DAILY TTS cap
+ *     (a cost control): `message` is server-authored whitelisted copy
+ *     ("try again tomorrow") sanctioned for verbatim display, the one
+ *     F-210 exception to the fixed-copy rule (same discriminator as
+ *     `imageUploadErrorMessage`'s daily Vision cap).
+ *   - 429 WITH `retryAfter` — the generic short-window limiter; use
+ *     `errorMessageFor`'s structured-seconds copy as usual.
+ *   - 404 — missing/foreign story id (uniform IDOR posture); 400 — bad id.
+ *     Both map to fixed copy at the call site, never echoed.
+ */
+export async function requestStoryAudio(
+  id: number,
+  signal?: AbortSignal,
+): Promise<StoryAudio> {
+  const res = await api.post<StoryAudioEnvelope>(
+    `/reading/generated/${String(id)}/audio`,
+    undefined,
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.audio;
+}
+
+/**
+ * GET /reading/generated/:id/audio — the story's current audio state
+ * (always 200 for an owned story, whatever the status). The polling surface
+ * while a job is pending/running. 404s (as `ApiError`) for a missing or
+ * foreign story id.
+ */
+export async function getStoryAudio(
+  id: number,
+  signal?: AbortSignal,
+): Promise<StoryAudio> {
+  const res = await api.get<StoryAudioEnvelope>(
+    `/reading/generated/${String(id)}/audio`,
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.audio;
 }
 
 // ─────────────────────────────────────────────────────────────
