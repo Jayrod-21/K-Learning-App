@@ -217,6 +217,15 @@ const AUDIO_FAILED: StoryAudio = {
   segments: [],
 };
 
+/** Dormant deploy: the server reports it cannot synthesize (no TTS key) —
+ *  the client renders NO audio card at all (absence, not a dead
+ *  affordance). Only an EXPLICIT false hides; the other fixtures above omit
+ *  the flag on purpose (older-server forward-compat keeps the feature). */
+const AUDIO_NONE_UNCONFIGURED: StoryAudio = {
+  ...AUDIO_NONE,
+  ttsConfigured: false,
+};
+
 beforeEach(() => {
   readingSvc.listChapters.mockReset();
   readingSvc.getChapter.mockReset();
@@ -1881,5 +1890,98 @@ describe('Reading — story TTS audio (F-210)', () => {
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/try again in about 30 seconds/i);
     expect(alert).not.toHaveTextContent(/upstream prose/);
+  });
+
+  it('a never-settling job stops polling at the 150-tick ceiling — no unbounded fetch churn', async () => {
+    vi.useFakeTimers();
+    // Every status probe answers pending, forever (a stuck job).
+    readingSvc.getStoryAudio.mockResolvedValue(AUDIO_PENDING);
+
+    renderStory();
+    await flushAsync();
+    expect(readingSvc.getStoryAudio).toHaveBeenCalledTimes(1); // mount hydrate
+
+    // 302s ≈ 151 interval fires: ticks 1..150 each fetch; fire 151 crosses
+    // the ceiling and clears the interval WITHOUT fetching.
+    await flushAsync(302_000);
+    expect(readingSvc.getStoryAudio).toHaveBeenCalledTimes(151); // hydrate + 150
+
+    // Frozen: more time buys no more fetches.
+    await flushAsync(20_000);
+    expect(readingSvc.getStoryAudio).toHaveBeenCalledTimes(151);
+    // The last known status stays on screen (bounded churn, honest UI).
+    expect(screen.getByText(/Generating audio/)).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it('a mid-poll 404 (story deleted) is TERMINAL — polling stops immediately, no further fetches', async () => {
+    vi.useFakeTimers();
+    readingSvc.getStoryAudio
+      .mockResolvedValueOnce(AUDIO_PENDING) // mount hydrate → polling engages
+      .mockRejectedValueOnce(
+        new ApiError('story not found', { status: 404, code: 'not_found' }),
+      );
+
+    renderStory();
+    await flushAsync();
+    expect(readingSvc.getStoryAudio).toHaveBeenCalledTimes(1);
+
+    // Tick 1 (2s) hits the 404 → the interval clears itself.
+    await flushAsync(2000);
+    expect(readingSvc.getStoryAudio).toHaveBeenCalledTimes(2);
+
+    // Dead: later ticks never fire a fetch against a route that can only
+    // 404 again.
+    await flushAsync(10_000);
+    expect(readingSvc.getStoryAudio).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
+  it("a playback error on the <audio> element shows the \"couldn't load\" alert beside the player", async () => {
+    readingSvc.getStoryAudio.mockResolvedValue(AUDIO_DONE);
+
+    const { container } = renderStory();
+    await waitFor(() => {
+      expect(container.querySelector('audio')).not.toBeNull();
+    });
+
+    // The F-160 device: the element fetched its src and the bytes failed.
+    fireEvent.error(container.querySelector('audio') as HTMLAudioElement);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/Audio couldn't load/);
+    // The player stays mounted (a retry/seek can still succeed).
+    expect(container.querySelector('audio')).not.toBeNull();
+  });
+
+  it('ttsConfigured:false hides the ENTIRE audio card — no button, no dead affordance', async () => {
+    readingSvc.getStoryAudio.mockResolvedValue(AUDIO_NONE_UNCONFIGURED);
+
+    const { container } = renderStory();
+
+    // The reader body renders as usual…
+    expect(
+      await screen.findByRole('button', { name: /Mark story as finished/i }),
+    ).toBeInTheDocument();
+    // …and once the hydrate envelope has landed, the audio card is ABSENT.
+    await waitFor(() => {
+      expect(readingSvc.getStoryAudio).toHaveBeenCalledTimes(1);
+    });
+    await act(async () => {}); // flush the envelope's setState
+    expect(container.querySelector('.km-reading__audio')).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: /Generate audio/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('a MISSING ttsConfigured flag (older server) keeps the button — forward-compat default-true', async () => {
+    // AUDIO_NONE deliberately omits the flag.
+    readingSvc.getStoryAudio.mockResolvedValue(AUDIO_NONE);
+
+    renderStory();
+
+    expect(
+      await screen.findByRole('button', { name: /Generate audio/ }),
+    ).toBeInTheDocument();
   });
 });

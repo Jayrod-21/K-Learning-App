@@ -120,6 +120,26 @@ describe('getStoryAudio', () => {
 
     await expect(getStoryAudio(999)).rejects.toBe(notFound);
   });
+
+  it('passes the ttsConfigured capability flag through unmodified (dormant-deploy signal)', async () => {
+    const dormant: StoryAudio = {
+      status: 'none',
+      jobId: null,
+      error: null,
+      track: null,
+      segments: [],
+      ttsConfigured: false,
+    };
+    vi.spyOn(api, 'get').mockResolvedValueOnce({ audio: dormant });
+
+    const got = await getStoryAudio(7);
+
+    expect(got.ttsConfigured).toBe(false);
+    // And an envelope WITHOUT the flag (older server) stays undefined — the
+    // UI treats that as "shown" (forward-compat default-true).
+    vi.spyOn(api, 'get').mockResolvedValueOnce({ audio: PENDING_AUDIO });
+    expect((await getStoryAudio(7)).ttsConfigured).toBeUndefined();
+  });
 });
 
 describe('getGeneratedStory — F-210 turns groundwork', () => {

@@ -422,6 +422,13 @@ export interface StoryAudioTrack {
  *                         upstream prose), sanctioned for verbatim display;
  *                         a new POST retries.
  *   - `done`            — `track` + ordered `segments` are populated.
+ *
+ * `ttsConfigured` — whether this server can synthesize at all (a dormant
+ * deploy without a TTS key reports `false`, and the UI hides the audio
+ * section entirely rather than offering a button that can only 503).
+ * OPTIONAL and default-TRUE at the call sites: an older server that omits
+ * the flag keeps the feature visible (forward-compat) — only an explicit
+ * `false` hides it.
  */
 export interface StoryAudio {
   status: StoryAudioStatus;
@@ -429,6 +436,7 @@ export interface StoryAudio {
   error: string | null;
   track: StoryAudioTrack | null;
   segments: StoryAudioSegment[];
+  ttsConfigured?: boolean;
 }
 
 interface StoryAudioEnvelope {

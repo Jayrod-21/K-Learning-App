@@ -29,6 +29,14 @@ function main(): void {
   // never in createApp — so tests drive ticks explicitly; the interval is
   // unref'd and stopped on shutdown. A job caught mid-run by a restart is
   // reaped 'failed' by the stale-run sweep on the next boot.
+  //
+  // The key is OPTIONAL in every environment (dormant-deploy posture): with
+  // no key the feature simply reports itself unavailable (503 on enqueue,
+  // `ttsConfigured: false` on the status envelope). Warn at boot so a deploy
+  // that MEANT to enable TTS is diagnosable immediately.
+  if (cfg.ELEVENLABS_API_KEY === undefined) {
+    log.warn('story TTS disabled — ELEVENLABS_API_KEY not set');
+  }
   const stopStoryAudioRunner = startStoryAudioRunner(log);
 
   function shutdown(signal: string): void {

@@ -149,7 +149,8 @@ import { query, withTransaction } from '../db/pool.js';
 import { loadConfig } from '../config/index.js';
 import { mapClaudeError, NotFoundError } from '../middleware/errors.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
-import { StoryTtsDailyCapError } from '../services/storyAudio.js';
+import { StoryTtsDailyCapError, TtsUnavailableError } from '../services/storyAudio.js';
+import { isTtsConfigured } from '../services/tts.js';
 import type { StoryTurn } from '../services/claude/index.js';
 
 const router = Router();
@@ -753,6 +754,9 @@ interface StoryAudioSegmentDto {
  *   track.streamUrl is the EXISTING hardened audio byte route
  *   (/audio/tracks/:id/stream — Range, nosniff, IDOR-404); the client hands
  *   it to an <audio> element (same-origin, session cookie rides along).
+ *   ttsConfigured tells the client whether this server can synthesize AT ALL
+ *   (dormant-deploy posture: no ELEVENLABS_API_KEY → false → the client
+ *   hides the feature instead of offering a button that can only 503).
  */
 interface StoryAudioDto {
   status: 'none' | 'pending' | 'running' | 'failed' | 'done';
@@ -760,6 +764,7 @@ interface StoryAudioDto {
   error: string | null;
   track: { id: number; streamUrl: string; durationMs: number | null } | null;
   segments: StoryAudioSegmentDto[];
+  ttsConfigured: boolean;
 }
 
 /**
@@ -770,6 +775,11 @@ interface StoryAudioDto {
  * 081 composite FKs pin every set/job row to the story's owner.
  */
 async function buildStoryAudioDto(storyId: number, userId: number): Promise<StoryAudioDto> {
+  // Capability flag, stamped on EVERY envelope shape below: derived from the
+  // active provider (services/tts.ts isTtsConfigured — false only for the
+  // keyless UnconfiguredTtsProvider), so the client learns "this deploy
+  // cannot synthesize" from the same GET it already polls.
+  const ttsConfigured = isTtsConfigured();
   const trackRes = await query<{ track_id: string; duration_ms: number | null }>(
     `SELECT t.id AS track_id, t.duration_ms
        FROM audio_sources s
@@ -815,6 +825,7 @@ async function buildStoryAudioDto(storyId: number, userId: number): Promise<Stor
         endMs: s.end_ms,
         body: s.body,
       })),
+      ttsConfigured,
     };
   }
 
@@ -828,19 +839,33 @@ async function buildStoryAudioDto(storyId: number, userId: number): Promise<Stor
   );
   const job = jobRes.rows[0];
   if (job === undefined) {
-    return { status: 'none', jobId: null, error: null, track: null, segments: [] };
+    return { status: 'none', jobId: null, error: null, track: null, segments: [], ttsConfigured };
   }
   if (job.status === 'pending' || job.status === 'running') {
-    return { status: job.status, jobId: Number(job.id), error: null, track: null, segments: [] };
+    return {
+      status: job.status,
+      jobId: Number(job.id),
+      error: null,
+      track: null,
+      segments: [],
+      ttsConfigured,
+    };
   }
   if (job.status === 'failed') {
     // `error` is server-authored whitelisted copy (services/tts.ts /
     // storyAudio.ts) — safe to show verbatim.
-    return { status: 'failed', jobId: Number(job.id), error: job.error, track: null, segments: [] };
+    return {
+      status: 'failed',
+      jobId: Number(job.id),
+      error: job.error,
+      track: null,
+      segments: [],
+      ttsConfigured,
+    };
   }
   // 'done' job whose voiced set is gone (out-of-band deletion / partial
   // restore): report 'none' so the client can simply re-generate.
-  return { status: 'none', jobId: null, error: null, track: null, segments: [] };
+  return { status: 'none', jobId: null, error: null, track: null, segments: [], ttsConfigured };
 }
 
 /**
@@ -851,6 +876,11 @@ async function buildStoryAudioDto(storyId: number, userId: number): Promise<Stor
  *   already voiced        → 200 { audio: done-envelope } (no new job — the
  *                           voiced set is a permanent cache)
  *   live pending/running  → 202 { audio: that job's envelope } (no dup)
+ *   TTS not configured    → 503 tts_unavailable BEFORE any write (dormant
+ *                           deploy — a guaranteed-to-fail job must never
+ *                           burn a daily-cap slot; the voice-once and
+ *                           live-job short-circuits above still answer,
+ *                           since serving EXISTING audio needs no key)
  *   else, under the cap   → enqueue 'pending' → 202 (the in-server runner
  *                           picks it up; the client polls the GET sibling)
  *   over STORY_TTS_DAILY_CAP → 429 rate_limited BEFORE any write
@@ -915,7 +945,17 @@ router.post(
         );
         if (live.rows.length > 0) return 'live' as const;
 
-        // 3. Daily cap — count of today's enqueues, ALL statuses (a failed
+        // 3. Capability gate — a keyless deploy (story TTS dormant) refuses
+        //    the enqueue HERE, after the read-only short-circuits (existing
+        //    audio still serves; an in-flight job still reports) but BEFORE
+        //    the cap check and the INSERT: a job that can only fail must
+        //    never spend a daily-cap slot. The keyless provider failing the
+        //    job stays as defense-in-depth for a key removed mid-flight.
+        if (!isTtsConfigured()) {
+          throw new TtsUnavailableError();
+        }
+
+        // 4. Daily cap — count of today's enqueues, ALL statuses (a failed
         //    run spent quota too; 069/076's cost stance), BEFORE any write.
         const cap = await client.query<{ n: string }>(
           `SELECT count(*)::text AS n
@@ -933,7 +973,7 @@ router.post(
           throw new StoryTtsDailyCapError(cfg.STORY_TTS_DAILY_CAP, usedToday);
         }
 
-        // 4. Enqueue. char_count is the cost snapshot at enqueue (081's
+        // 5. Enqueue. char_count is the cost snapshot at enqueue (081's
         //    ledger contract); user_id is the session user, and the 081
         //    composite FK would reject any (story, user) mismatch anyway.
         await client.query(

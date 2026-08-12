@@ -23,11 +23,14 @@
  *
  * TESTABILITY / NO-KEY OPERATION:
  *   - `setTtsProvider` injects a mock so tests never touch the network.
- *   - With no ELEVENLABS_API_KEY configured (dev/test — config makes it
- *     optional outside production), `getTtsProvider` returns a provider whose
- *     `synthesize` rejects with `TtsNotConfiguredError`: the app boots, the
- *     routes work, and a claimed job settles 'failed' with a clear message
- *     instead of anything crashing.
+ *   - With no ELEVENLABS_API_KEY configured (the key is optional in EVERY
+ *     environment — production ships dormant until the operator sets it),
+ *     `getTtsProvider` returns a provider whose `synthesize` rejects with
+ *     `TtsNotConfiguredError`: the app boots, the routes work, and a claimed
+ *     job settles 'failed' with a clear message instead of anything
+ *     crashing. `isTtsConfigured()` is the capability probe the routes use
+ *     to refuse enqueues (503) and to tell the client whether to offer the
+ *     feature at all (`ttsConfigured` on the status envelope).
  */
 import { loadConfig } from '../config/index.js';
 import { z } from 'zod';
@@ -235,9 +238,12 @@ export class ElevenLabsTtsProvider implements TtsProvider {
 }
 
 /** Provider whose every call fails with the "not configured" message —
- *  installed when no API key exists (dev/test) so the pipeline stays
- *  exercisable end-to-end and a claimed job settles with a clear error. */
-class UnconfiguredTtsProvider implements TtsProvider {
+ *  installed when no API key exists (a dormant deploy, dev, or test) so the
+ *  pipeline stays exercisable end-to-end and a claimed job settles with a
+ *  clear error. Exported so tests can inject the dormant posture explicitly
+ *  (setTtsProvider(new UnconfiguredTtsProvider())) without depending on the
+ *  ambient env; `isTtsConfigured` keys off this exact class. */
+export class UnconfiguredTtsProvider implements TtsProvider {
   public synthesize(): Promise<TtsSynthesis> {
     return Promise.reject(new TtsNotConfiguredError());
   }
@@ -258,6 +264,19 @@ export function getTtsProvider(): TtsProvider {
         })
       : new UnconfiguredTtsProvider();
   return _provider;
+}
+
+/**
+ * True when a REAL TTS provider is available — i.e. the active provider is
+ * not the keyless `UnconfiguredTtsProvider`. Derived from the provider (not
+ * the raw config key) so an injected test/mock provider counts as
+ * configured, exactly like it does for the runner. The routes use this to
+ * (a) refuse a guaranteed-to-fail enqueue with 503 BEFORE burning a
+ * daily-cap slot and (b) stamp `ttsConfigured` on the status envelope so
+ * the client can hide the feature on a dormant deploy.
+ */
+export function isTtsConfigured(): boolean {
+  return !(getTtsProvider() instanceof UnconfiguredTtsProvider);
 }
 
 /** Test-only injection point (also usable by a future provider swap). */

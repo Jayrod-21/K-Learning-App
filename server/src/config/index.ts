@@ -142,22 +142,36 @@ const EnvSchema = z.object({
   // (AUDIO_UPLOAD_STORAGE_DIR above) and streams through the existing
   // /audio/tracks/:id/stream route — no new storage or streaming knobs.
   // ---------------------------------------------------------------------------
-  // ElevenLabs API key. OPTIONAL in dev/test so the app boots and the suite
-  // runs with no key (the TTS provider then fails any claimed job with a
-  // clear "not configured" error instead of crashing startup); REQUIRED in
-  // production (refined below) — a prod deploy with the feature live but the
-  // key missing is a config error we want at deploy time, not on the first
-  // "generate audio" click. Secrets policy (SECURITY.md §1): no default, and
-  // the value is never logged (services/tts.ts never places it anywhere but
-  // the request header).
-  ELEVENLABS_API_KEY: z.string().min(1).optional(),
+  // ElevenLabs API key. OPTIONAL in EVERY environment — including production
+  // — so story TTS can ship DORMANT without coupling unrelated deploys to a
+  // vendor key: with no key the app boots normally, the routes answer
+  // `ttsConfigured: false`, the enqueue POST refuses with 503
+  // `tts_unavailable` before writing a job, and the keyless provider fails
+  // any in-flight job with a clear "not configured" message
+  // (services/tts.ts). Going live later is a Deploy/.env edit + redeploy —
+  // zero code change. index.ts logs a startup warning when the key is
+  // absent so a deploy that MEANT to enable TTS is diagnosable at boot.
+  // Secrets policy (SECURITY.md §1): no default, and the value is never
+  // logged (services/tts.ts never places it anywhere but the request
+  // header). EMPTY STRING ⇒ unset: the deploy compose passes
+  // `ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}` so the plumbing exists
+  // before the key does, and docker substitutes '' while Deploy/.env leaves
+  // the value blank — that must read as "dormant", never a parse failure.
+  ELEVENLABS_API_KEY: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().min(1).optional(),
+  ),
 
   // The ElevenLabs voice used for the v1 single-narrator read. Default is the
   // ElevenLabs premade "Rachel" voice id — multilingual-capable and present on
   // every account; the operator swaps in a preferred Korean narrator voice id
   // without a code change. (Multi-voice per `turns` is v2 — it will map
-  // speakers to voice ids on top of this same provider.)
-  ELEVENLABS_VOICE_ID: z.string().min(1).default('21m00Tcm4TlvDq8ikWAM'),
+  // speakers to voice ids on top of this same provider.) Empty string ⇒ the
+  // default (compose passes `${ELEVENLABS_VOICE_ID:-}` — see the key above).
+  ELEVENLABS_VOICE_ID: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().min(1).default('21m00Tcm4TlvDq8ikWAM'),
+  ),
 
   // Per-user DAILY cap on story-TTS ENQUEUES (→ 429 BEFORE any job row is
   // written). TTS bills per character, but a per-JOB cap is the right lever
@@ -315,18 +329,9 @@ const EnvSchema = z.object({
       message: 'SMTP_FROM is required when SMTP_HOST is set',
     });
   }
-  // F-210: the story-TTS key is optional in dev/test (app boots, suite runs,
-  // jobs fail with a clear "not configured" error) but REQUIRED in production
-  // — a live deploy missing it should fail at startup, not on the first
-  // "generate audio" click (SECURITY.md §1 posture: bad config is a
-  // deploy-time problem).
-  if (cfg.NODE_ENV === 'production' && !cfg.ELEVENLABS_API_KEY) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['ELEVENLABS_API_KEY'],
-      message: 'ELEVENLABS_API_KEY is required in production (F-210 story TTS)',
-    });
-  }
+  // F-210 note: ELEVENLABS_API_KEY is deliberately NOT refined to be
+  // required in production — story TTS ships dormant (see the field's doc
+  // comment) and a missing key must never block an unrelated deploy.
 });
 
 export type Config = z.infer<typeof EnvSchema>;

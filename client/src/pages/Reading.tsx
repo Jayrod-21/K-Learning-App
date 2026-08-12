@@ -1927,9 +1927,17 @@ function StoryReader({ storyId }: { storyId: number }): JSX.Element {
   const hasTiming = orderedSegments.some(
     (s) => s.startMs !== 0 || s.endMs !== 0,
   );
+  // `track !== null` rides along defensively: segment lines exist to follow
+  // a player — a malformed done-envelope with no track must fall back to the
+  // plain paragraphs rather than render highlight lines nothing can drive.
+  // `ttsConfigured !== false` matches the audio-card gate below: when the
+  // card (and so the player) is hidden on a dormant deploy, the body keeps
+  // its plain paragraph rendering too.
   const readAlong =
     audio !== null &&
+    audio.ttsConfigured !== false &&
     audio.status === 'done' &&
+    audio.track !== null &&
     orderedSegments.length > 0 &&
     hasTiming;
 
@@ -2053,9 +2061,13 @@ function StoryReader({ storyId }: { storyId: number }): JSX.Element {
 
       {/* F-210 — the story-audio section, driven by the envelope status.
           Nothing renders while the mount hydrate is in flight (the story
-          body never waits on the audio probe). Same blue-signboard player
-          card as the Listen surfaces (MyAudioDetail). */}
-      {audio !== null ? (
+          body never waits on the audio probe), and NOTHING renders when the
+          server says it cannot synthesize (`ttsConfigured: false` — a
+          dormant deploy without a TTS key): absence, not a dead affordance.
+          Only an explicit `false` hides — a missing flag (older server)
+          keeps the feature visible, forward-compat. Same blue-signboard
+          player card as the Listen surfaces (MyAudioDetail). */}
+      {audio !== null && audio.ttsConfigured !== false ? (
         <CityCard tone="blue" className="km-reading__audio">
           {audio.status === 'done' && audio.track !== null ? (
             (() => {

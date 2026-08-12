@@ -46,6 +46,22 @@ import {
   type TtsCharAlignment,
 } from './tts.js';
 
+/** 503 for a keyless deploy (story TTS dormant — no ELEVENLABS_API_KEY).
+ *  Thrown by the enqueue route BEFORE any job row is written, so a
+ *  guaranteed-to-fail job never burns a daily-cap slot; the keyless
+ *  provider's job-failure path stays as defense-in-depth for a config
+ *  change that lands mid-flight. */
+export class TtsUnavailableError extends AppError {
+  public constructor() {
+    super(
+      503,
+      'tts_unavailable',
+      'audio generation is not available on this server — ask the operator to enable it',
+    );
+    this.name = 'TtsUnavailableError';
+  }
+}
+
 /** 429 for the per-user daily story-TTS cap (STORY_TTS_DAILY_CAP — mirrors
  *  AudioDailyCapError's shape/copy posture). Thrown by the enqueue route
  *  BEFORE any job row is written. */

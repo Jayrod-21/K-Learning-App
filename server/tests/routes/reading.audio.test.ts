@@ -6,9 +6,14 @@
  *   GET  /reading/generated/:id/audio  — status envelope (+ streamUrl and
  *                                        read-along segments when done)
  *
- * Pure ROUTE tests: no TTS provider and no filesystem — the "voiced" state is
- * seeded at rest (seedStoryAudio), the runner pipeline itself is covered by
- * tests/services/storyAudio.test.ts.
+ * Pure ROUTE tests: no filesystem and no real TTS network call — the "voiced"
+ * state is seeded at rest (seedStoryAudio), the runner pipeline itself is
+ * covered by tests/services/storyAudio.test.ts. A never-called mock provider
+ * is installed per test so the routes see a CONFIGURED deploy
+ * (isTtsConfigured() → true — the enqueue gate and the envelope's
+ * `ttsConfigured` flag both derive from the active provider); the
+ * unconfigured/dormant 503 posture has its own describe block which resets
+ * to the keyless default provider.
  *
  * Focus:
  *   - auth (401) + malformed id (400)
@@ -21,7 +26,11 @@
  *   - daily cap: cap-many rows today → 429 rate_limited BEFORE any write;
  *     yesterday's spend does not count (day boundary); other users unaffected
  *   - GET states: none / pending / failed (server-authored error surfaced) /
- *     done (streamUrl + ordered camelCase segments + durationMs)
+ *     done (streamUrl + ordered camelCase segments + durationMs); a 'done'
+ *     job whose voiced set was deleted out-of-band reads 'none'
+ *   - dormant deploy (no TTS provider): POST → 503 tts_unavailable with NO
+ *     job row (no cap slot burned); voice-once 200 still serves; GET reports
+ *     ttsConfigured: false
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
@@ -35,6 +44,11 @@ import {
 } from '../helpers/seed.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
 import { loadConfig } from '../../src/config/index.js';
+import {
+  resetTtsProviderForTesting,
+  setTtsProvider,
+  UnconfiguredTtsProvider,
+} from '../../src/services/tts.js';
 
 let pg: PgHandle;
 let t: TestApp;
@@ -45,6 +59,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  resetTtsProviderForTesting();
   await teardownTestApp(t);
   await stopPostgres(pg);
 });
@@ -54,7 +69,22 @@ beforeEach(async () => {
     'TRUNCATE TABLE story_audio_jobs, audio_transcript_segments, audio_tracks, audio_sources, generated_stories, sessions, users RESTART IDENTITY CASCADE',
   );
   resetLimiters();
+  // A CONFIGURED (but never-invoked) provider: routes only probe capability —
+  // synthesis belongs to the runner, so any call here is a test bug.
+  setTtsProvider({
+    synthesize: () =>
+      Promise.reject(new Error('route tests must never call synthesize')),
+  });
 });
+
+/** Flip this suite's app to the DORMANT deploy posture (exactly what a
+ *  keyless production deploy gets): install the real UnconfiguredTtsProvider
+ *  — isTtsConfigured() derives from the provider class, so this is the same
+ *  state a missing ELEVENLABS_API_KEY produces, but hermetic against any
+ *  ambient env key. beforeEach restores the configured mock. */
+function makeTtsUnconfigured(): void {
+  setTtsProvider(new UnconfiguredTtsProvider());
+}
 
 describe('story audio — auth required', () => {
   it('POST /reading/generated/:id/audio unauthenticated → 401', async () => {
@@ -280,6 +310,9 @@ describe('GET /reading/generated/:id/audio — status envelope', () => {
       error: null,
       track: null,
       segments: [],
+      // The suite's default provider is a configured mock — the envelope
+      // advertises the capability so the client offers the button.
+      ttsConfigured: true,
     });
   });
 
@@ -346,5 +379,65 @@ describe('GET /reading/generated/:id/audio — status envelope', () => {
     expect(res.status).toBe(200);
     expect(res.body.track.id).toBe(trackId);
     expect(res.body.segments).toHaveLength(2);
+  });
+
+  it("a 'done' job whose voiced set was deleted out-of-band reads 'none' — the client can simply re-generate", async () => {
+    // buildStoryAudioDto's last branch: the job LEDGER says done, but the
+    // audio_sources set (the voice-once authority) is gone — e.g. an
+    // out-of-band cleanup or a partial restore. 'none' (not a broken 'done')
+    // is the honest answer: no track exists to stream.
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const storyId = await seedGeneratedStory(pg.pool, userId);
+    await seedStoryAudioJob(pg.pool, userId, storyId, { status: 'done' });
+
+    const res = await agent.get(`/reading/generated/${storyId}/audio`);
+    expect(res.status).toBe(200);
+    expect(res.body.audio.status).toBe('none');
+    expect(res.body.audio.jobId).toBeNull();
+    expect(res.body.audio.track).toBeNull();
+    expect(res.body.audio.segments).toEqual([]);
+  });
+});
+
+describe('story audio — dormant deploy (TTS not configured)', () => {
+  it('POST → 503 tts_unavailable BEFORE any write: no job row, no daily-cap slot burned', async () => {
+    makeTtsUnconfigured();
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const storyId = await seedGeneratedStory(pg.pool, userId);
+
+    const res = await agent.post(`/reading/generated/${storyId}/audio`);
+    expect(res.status).toBe(503);
+    expect(res.body.error.code).toBe('tts_unavailable');
+
+    // Nothing was written — the guaranteed-to-fail job never spent a slot.
+    const jobs = await pg.pool.query(`SELECT id FROM story_audio_jobs`);
+    expect(jobs.rows).toHaveLength(0);
+  });
+
+  it('voice-once still serves: an ALREADY-VOICED story answers 200 done (streaming needs no key)', async () => {
+    makeTtsUnconfigured();
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const storyId = await seedGeneratedStory(pg.pool, userId);
+    const { trackId } = await seedStoryAudio(pg.pool, userId, storyId, {
+      segmentCount: 1,
+    });
+
+    const res = await agent.post(`/reading/generated/${storyId}/audio`);
+    expect(res.status).toBe(200);
+    expect(res.body.audio.status).toBe('done');
+    expect(res.body.audio.track.id).toBe(trackId);
+    // …but the envelope is honest about the capability being off.
+    expect(res.body.audio.ttsConfigured).toBe(false);
+  });
+
+  it('GET reports ttsConfigured: false so the client hides the feature', async () => {
+    makeTtsUnconfigured();
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const storyId = await seedGeneratedStory(pg.pool, userId);
+
+    const res = await agent.get(`/reading/generated/${storyId}/audio`);
+    expect(res.status).toBe(200);
+    expect(res.body.audio.status).toBe('none');
+    expect(res.body.audio.ttsConfigured).toBe(false);
   });
 });
