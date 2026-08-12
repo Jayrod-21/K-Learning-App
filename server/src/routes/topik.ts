@@ -109,7 +109,9 @@ const INT4_MAX = 2_147_483_647;
 // the page excludes them — the documented residual class for guards SQL cannot
 // express.
 // ---------------------------------------------------------------------------
-const NO_TRANSCRIPT_STEM_PREFIX = '[듣기 지문 없음';
+// Exported: diagnostic.ts's pickTopikRow applies the same placeholder
+// exclusion (B-038) and must share this literal rather than duplicate it.
+export const NO_TRANSCRIPT_STEM_PREFIX = '[듣기 지문 없음';
 const WITHHELD_PASSAGE_PREFIX = '[저작권';
 
 const SECTION_ENUM_TO_KR: Record<SectionEnum, SectionKr> = {

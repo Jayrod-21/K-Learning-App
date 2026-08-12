@@ -31,6 +31,7 @@ vi.mock('../services/auth', () => ({
 
 import { AuthProvider } from './AuthProvider';
 import { useAuth } from './useAuth';
+import { ToastProvider } from '../components/ToastProvider';
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -262,6 +263,80 @@ describe('AuthProvider.logout()', () => {
       expect(screen.getByTestId('status')).toHaveTextContent('guest');
     });
     expect(screen.getByTestId('email')).toHaveTextContent('');
+  });
+
+  it('retries the POST once on failure and stays quiet when the retry lands (F-201)', async () => {
+    vi.spyOn(api, 'get')
+      .mockResolvedValueOnce({
+        user: { id: 1, email: 'jay@example.com' },
+      })
+      .mockRejectedValueOnce(
+        new ApiError('no session', { status: 401, code: 'unauthenticated' }),
+      );
+    authMocks.logout
+      .mockRejectedValueOnce(
+        new ApiError('boom', { status: 500, code: 'internal' }),
+      )
+      .mockResolvedValueOnce(undefined);
+
+    render(
+      <ToastProvider>
+        <AuthProvider>
+          <Probe />
+        </AuthProvider>
+      </ToastProvider>,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('status')).toHaveTextContent('authenticated');
+    });
+
+    await act(async () => {
+      screen.getByRole('button', { name: 'do-logout' }).click();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('status')).toHaveTextContent('guest');
+    });
+    expect(authMocks.logout).toHaveBeenCalledTimes(2);
+    // Retry succeeded → no failure toast.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('surfaces a visible error toast when both attempts fail (F-201)', async () => {
+    vi.spyOn(api, 'get')
+      .mockResolvedValueOnce({
+        user: { id: 1, email: 'jay@example.com' },
+      })
+      .mockRejectedValueOnce(
+        new ApiError('no session', { status: 401, code: 'unauthenticated' }),
+      );
+    authMocks.logout.mockRejectedValue(
+      new ApiError('boom', { status: 500, code: 'internal' }),
+    );
+
+    render(
+      <ToastProvider>
+        <AuthProvider>
+          <Probe />
+        </AuthProvider>
+      </ToastProvider>,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('status')).toHaveTextContent('authenticated');
+    });
+
+    await act(async () => {
+      screen.getByRole('button', { name: 'do-logout' }).click();
+    });
+
+    // Local clear still happens (never stuck) …
+    await waitFor(() => {
+      expect(screen.getByTestId('status')).toHaveTextContent('guest');
+    });
+    expect(authMocks.logout).toHaveBeenCalledTimes(2);
+    // … AND the user sees a visible failure notice (role=alert, error tone).
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/couldn't fully end your session/i);
   });
 });
 

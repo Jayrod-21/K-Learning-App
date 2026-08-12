@@ -21,9 +21,9 @@ per-item status line in the same PR that lands the work).** Reconciliation trail
 **Bugs**
 - 🟡 **B-025** P1 — verify TTMIK transcripts + highlights (read-along forced alignment, deferred).
 - 🟡 **B-026** P1 — 10 TTMIK Level-9 lessons (5–14) have NULL `audio_path`. **AUDIT 2026-08-12: likely NO LONGER user-blocked** — the L9 audio appears already ingested as standalone tracks (`audio_sources` id 28 "TTMIK Grammar Textbook Level 9", 60 transcribed tracks via F-197); the fix is now the **F-197 per-slot mapping** (track→lesson), NOT user-supplied files. ("~48 Iyagi" half was phantom numbering — 0 NULL-audio iyagi rows.)
-- 🔴 **B-031** P3 — TOPIK item 222 option-1 OCR glitch (single-cell text fix).
+- 🟢 **B-031** P3 — RESOLVED 2026-08-12 (migration 082): NOT an option glitch — option ① matches the official 83rd-TOPIK-I scan verbatim; the stem transcription had dropped the photo context ('제주공항') that makes option ① true. Stem enriched via `082_fix_topik_222_stem`.
 - 🟡 **B-037** P2 — TOPIK listening MP3s decode-corrupt. **AUDIT 2026-08-12: residue is SMALL** — only **2 transcript-only papers remain** (96th TOPIK I id=10 + II id=67); 22 of 24 listening papers now have audio (855 spans). Blocked on user re-download of just the 96th-TOPIK pair, then re-run the F-119 segmenter+loader.
-- 🔴 **B-038** P4 (NEW 2026-07-29) — `diagnostic.ts` `pickTopikRow` mirrors `ANSWERABLE_ITEM_SQL`'s structural legs but never had the D-2 `[듣기 지문 없음]` placeholder-exclusion leg → can serve span-less placeholder items. Pre-existing; filed during F-119 Phase 5.
+- 🟢 **B-038** P4 (NEW 2026-07-29) — FIXED 2026-08-12: `pickTopikRow` now excludes `[듣기 지문 없음` placeholder stems (shared `NO_TRANSCRIPT_STEM_PREFIX` from topik.ts; unconditional — the diagnostic has no audio playback, so audio-backed placeholders stay excluded too). Regression test in `diagnostic.test.ts`.
 
 **Features**
 - 🟡 **F-081** P2 — question-paired images: client shipped; backend is F-120.
@@ -33,14 +33,14 @@ per-item status line in the same PR that lands the work).** Reconciliation trail
 - 🟡 **F-197** P2 — Track A "my audio" pipeline shipped (#146–153) AND the **bulk corpus ingest has RUN**: live DB = 21 `audio_sources` / **982 `audio_tracks`, all 982 transcription jobs done** (news-in-korean, jindo-dog, ttmik-grammar-level-1..10, korean-folktales, real-life-conversations, easy-korean-reading, topik mocks). OPEN sub-part only: the per-slot mapping (Track-N → lesson/TOPIK-question, the "A-5 pairing"); sets are standalone `standalone_listening` today.
 - 🟡 **F-198** P2 — device-adaptive layouts epic (D2 shipped #123; remaining breakpoints ongoing).
 - ⚪ **F-200** P4 — clear legacy pre-070 mine-written tags from `vocab_entries.source_upload_id`. **AUDIT 2026-08-12: OBSOLETE — no target data.** Live DB has 0 `user-mined` legacy tags (the 147 tagged `vocab_entries` are all legitimate F-108 upload extractions). Close; re-open only if a pre-070 dump is ever restored.
-- 🔴 **F-201** P3 — failed logout (5xx) leaves the server session live.
+- 🟢 **F-201** P3 — DONE 2026-08-12: logout is idempotent server-side (always clears the cookie + 204, even on a transient revoke failure or an already-revoked cookie; cheapLimiter bounds floods) and the client retries once then surfaces an error toast on final failure.
 - 🔴 **F-203** P4 — server-side bigint id normalization (fix int8→string at the source).
 - 🔴 **F-204** P4 — shared `coerceId()` helper across services.
 - 🔴 **F-205** P3 — reading comprehension questions from exercise-bearing books (post-beta epic; OCR/classifier foundation shipped #141–145).
 - 🔴 **F-206** P3 (NEW 2026-07-29) — study-mode listening audio (F-119 deferred decision #4: mock-only in v1; extend the player to the non-mock study view).
 - 🟡 **F-209** P2 — pre-seeded in-context definitions so tap-to-define is instant. **Phase 1 (progressive render) + Phase 2 pre-seed tooling SHIPPED + merged (PRs #172 / #173 kiwi / #174 + #177 tool).** First weekly reading batch live in prod (150 defs, reading order, 365-day cache); ~83,830 reading pairs remain, pre-seeded weekly on the Claude subscription ($0 API). Ongoing (weekly). **← NEXT (recurring): F-210** per the roadmap.
 - 🔴 **F-217** P3 (NEW 2026-08-11) — Shared Library browse surface: non-owner read-access to shared BOOKS. The F-207 cutover shared 18 books + 21 audio sets `is_shared=true`; audio surfaces via the Listen tiles, but shared books have no browse surface for non-owner accounts yet (split out of F-207).
-- 🔴 **F-218** P4 (NEW 2026-08-11) — real-km-kiwi integration smoke test: B-039 (KiwiTokenSchema drift) passed every unit test because they mocked kiwi; add a test that hits the REAL km-kiwi service so service↔schema drift fails CI.
+- 🟢 **F-218** P4 (NEW 2026-08-11) — DONE 2026-08-12: `server/tests/services/kiwi.live.test.ts` builds the real km-kiwi image (testcontainers, from `services/kiwi/Dockerfile`) and calls the live `/lemmatize` through the server's `lemmatize()` client — schema drift on either side now fails the server suite/CI.
 - 🔴 **F-210** P2 (NEW 2026-07-29, transcript) — multi-voice TTS audio for generated stories (ElevenLabs). **Story TEXT generation already ships** (`generated_stories`, migration 054) — this is the audio half, and it's the copyright-clean answer to the B-025/B-026 listening-corpus problem.
 - 🔴 **F-211** P3 (NEW 2026-07-29, transcript) — AI-generated illustrations paired with generated stories (story + pictures + voiced audio). Depends on F-210.
 - 🔴 **F-212** P2 EPIC (NEW 2026-07-29, transcript) — the adaptive "brain": infer the user's level against TOPIK 1–6/native from real in-app behavior and recommend the next best exercise. Jared's stated biggest worry; picks up F-011's deliberately-deferred IRT/adaptive half.
@@ -140,14 +140,14 @@ Launch one focused session per group; cross-cutting items noted.
 | B-028 | Bug | 🟢 | P1 | UI (BACKEND) | Verify Hanja drill / recall actually works |
 | B-029 | Bug | 🟢 | P2 | UI | TOPIK landing wrongly limited to 10 items |
 | B-030 | Bug | 🟢 | P1 | DATABASE (CONFIG) | App DB connection runs as a Postgres SUPERUSER |
-| B-031 | Bug | 🔴 | P3 | DATA | TOPIK item 222 option-1 text OCR glitch |
+| B-031 | Bug | 🟢 | P3 | DATA | TOPIK item 222 — option ① was correct per the official scan; stem gained the missing photo context (migration 082) |
 | B-032 | Bug | ✅ | P3 | BACKEND | `withRetry` never retries plain connection errors (dead error-name check) |
 | B-033 | Bug | ✅ | P3 | BACKEND | Tickets PATCH returns 409 instead of 404 when the ticket vanishes mid-update |
 | B-034 | Bug | 🟢 | P2 | UI | B-021 client slice — drill banner still says "next in ~10 minutes" for scheduledDays 0 |
 | B-035 | Bug | 🟢 | P2 | UI | B-027 client slice — Writing.tsx still indexes the deterministic prompt list |
 | B-036 | Bug | ✅ | P2 | bug · regression | Settings → Appearance text-size (S / M / L) does nothing |
 | B-037 | Bug | 🟡 | P2 | DATA (CONFIG) | Corrupt TOPIK listening MP3s — residue now just 2 papers (96th TOPIK I id10 + II id67); 22/24 have audio. Blocked on user re-download of that pair + F-119 rerun |
-| B-038 | Bug | 🔴 | P4 | BACKEND | `diagnostic.ts` `pickTopikRow` lacks the D-2 `[듣기 지문 없음]` exclusion → can serve span-less placeholder items |
+| B-038 | Bug | 🟢 | P4 | BACKEND | `diagnostic.ts` `pickTopikRow` now applies the D-2 `[듣기 지문 없음]` exclusion (shared constant + regression test) |
 | B-039 | Bug | 🟢 | P1 | BACKEND (API) | App-wide lemmatize broken — `KiwiTokenSchema` `{form,tag,length}` vs km-kiwi `{surface,pos,end}` → tap-to-define fell back to raw surface form corpuswide (fixed, PR #173) |
 | B-040 | Bug | 🟢 | P2 | UI | Listen swipe broken on touch (Samsung/Brave) — pointer-drag carousel lost the gesture to page scroll; fixed with native CSS scroll-snap (PR #171) |
 | B-041 | Bug | 🟢 | P1 | BACKEND | Reading materials vanished after F-207 cutover — `GET /uploads` hid owner's own shared books; owner now always sees own (PR #170) |
@@ -291,7 +291,7 @@ Launch one focused session per group; cross-cutting items noted.
 | F-198 | Feature | 🟡 | P2 | design-system · epic | EPIC · Device-adaptive layouts (responsive desktop/tablet/mobile) |
 | F-199 | Feature | 🟢 | P4 | multi-user correctness | Per-user upload provenance — a 2nd user mining the same lemma silently loses their tag |
 | F-200 | Feature | ⚪ | P4 | data hygiene · follow-up (F-199) | OBSOLETE (audit 2026-08-12) — 0 legacy user-mined tags in prod; nothing to clear |
-| F-201 | Feature | 🔴 | P3 | auth resilience · follow-up (client logout button, `docs/REVIEW_logout.md` SF-2) | Failed logout (5xx) leaves the server session live — silent /login round-trip back into the app |
+| F-201 | Feature | 🟢 | P3 | auth resilience · follow-up (client logout button, `docs/REVIEW_logout.md` SF-2) | Logout now idempotent server-side (always clears cookie, 204 on repeat/failed revoke) + client retry-once with error toast |
 | F-202 | Feature | 🟢 | P2 | CI / tooling | CI must run the client vitest suite (currently only lint/typecheck/build) |
 | F-203 | Feature | 🔴 | P4 | wire-contract hardening · follow-up (`REVIEW_ticket-id-fix.md` probe 3) | Server-side bigint id normalization — fix the bigint→string class at the source |
 | F-204 | Feature | 🔴 | P4 | wire-boundary hardening · follow-up (`REVIEW_ticket-id-fix.md` NIT-1) | Shared `coerceId()` helper — guard every service's bare `Number(id)` wire coercion |
@@ -308,7 +308,7 @@ Launch one focused session per group; cross-cutting items noted.
 | F-215 | Feature | ⚪ | P4 | product · decision (no code) · **deferred last** | Premium packaging + pricing — flags the private→commercial scope reversal (**same tier as F-214**) |
 | F-216 | Feature | 🔴 | P2 | API (BACKEND, DATABASE, UI) · epic | EPIC · Generative story experience — story text (F-068 ✅) + illustrations (F-211) + multi-voice audio (F-210) as one package |
 | F-217 | Feature | 🔴 | P3 | UI (BACKEND) | Shared Library browse surface — non-owner read-access to shared BOOKS (F-207 shared 18 books; audio surfaces via Listen tiles, books don't yet) |
-| F-218 | Feature | 🔴 | P4 | BACKEND (CI) | Real-km-kiwi integration smoke test — B-039 slipped because unit tests mocked kiwi; hit the real service so schema drift fails CI |
+| F-218 | Feature | 🟢 | P4 | BACKEND (CI) | Real-km-kiwi integration smoke test shipped (`kiwi.live.test.ts` — testcontainers build of the real image, live `/lemmatize` through the server client) |
 
 ---
 
@@ -1327,8 +1327,9 @@ New tickets from Phase 0:
 - **Notes:** F-022 A2/A3/B1. Author as a migration; the deploy runner applies it — do NOT hand-apply. **Scope change (migration 045):** the audit's proposed FK `grammar_drill_attempts → grammar_entries(user_id, pattern_key)` was DROPPED — the audit finding was wrong. `POST /grammar-drill` inserts the attempt row at generation time, but the grammar_entries row is only auto-banked at submit time, so a drill attempt for a not-yet-banked pattern is a legitimate state by design (the "5 orphan rows" were this state, not corruption); the FK would 500 the live drill route on every first drill of an unbanked pattern. The index/bak-table hygiene stands.
 
 ### B-031 · TOPIK item 222 option-1 text OCR glitch
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** DATA · **Beta:** —
+- **Status:** 🟢 done (2026-08-12, migration 082) · **Priority:** P3 · **Category:** DATA · **Beta:** —
 - **What:** `topik83-I-read-042` option[0] ("수미 씨는 공항에 왔습니다") reads as unsupported, making two options look false. The answer key (4) is correct; re-OCR option 1 against the original 83rd TOPIK PDF + patch `tools/ingest/output/topik_83_I_reading.json` + DB.
+- **Resolution (2026-08-12):** re-read the official scan (`~/data/korean-master/corpus/TOPIK TEST/83 - 83rd TOPIK/TOPIK-I/83rd-TOPIK-I-Reading-Test-Paper.pdf`, booklet p.12) — option ① matches the paper **verbatim**; it was never an OCR glitch. The item's SNS-post PHOTO shows 수미 in front of a '제주공항' (Jeju Airport) sign, which is exactly what makes option ① TRUE under the "맞지 않는 것" instruction (answer ④ = 민희 is not with her). The ingest stem transcription captured only the comment thread and dropped the photo, so the text-only app rendered an item with two apparently-false options. Fix: migration `082_fix_topik_222_stem` adds the photo description to the bracketed stem transcription (content-addressed, idempotent, exact round-trip down; `db/tests/test_migration_082.py`). Option text and answer key untouched. NOTE: the gitignored `tools/ingest/output/topik_83_I_reading.json` still carries the photo-less stem — a full re-ingest would regenerate it from the same extraction; the DB fix is authoritative until the extractor learns to describe photos.
 - **Notes:** F-UP-013 spinoff.
 
 ### F-084 · Iyagi 51–100 transcript load — numbering-mismatch investigation
@@ -2000,7 +2001,8 @@ The final page-rework batch's fixpass found the app is "one batch + two files fr
 ## 🔎 Logout-button follow-up — surfaced by the client-logout fix-pass (filed 2026-07-17)
 
 ### F-201 · Failed logout (5xx) leaves the server session live — silent /login round-trip back into the app
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** auth resilience · follow-up (client logout button, `docs/REVIEW_logout.md` SF-2)
+- **Status:** 🟢 done (2026-08-12) · **Priority:** P3 · **Category:** auth resilience · follow-up (client logout button, `docs/REVIEW_logout.md` SF-2)
+- **Resolution (2026-08-12):** server — `POST /auth/logout` no longer mounts `requireAuth`: it best-effort resolves the presented cookie's session (`getActiveSession` → `revokeSessionById`, both no-ops on a revoked/expired/absent session) and ALWAYS clears the cookie + returns 204, including on a transient DB revoke failure (logged; the row dies via expiry/idle timeout) — so a repeat logout or a retry after a lost response is a clean success, and only the cookie's own session can ever be revoked (IDOR-safe). Rate limiting moved to `cheapLimiter` (counts all requests) because an always-2xx route is invisible to the failure-counting auth bucket. Client — `logout()` retries the POST once and surfaces an error toast ("We couldn't fully end your session…") when both attempts fail; the always-clear-local "never stuck" invariant is unchanged and still tested. Tests: `server/tests/routes/auth.test.ts` (idempotent/repeat/failing-revoke + flood-bound), `client/src/hooks/AuthProvider.test.tsx` (retry-once quiet, both-fail toast).
 - **Where / State:** `client/src/hooks/AuthProvider.tsx` `logout()` is best-effort by design: a 5xx on `POST /auth/logout` still clears local state to `guest` (the tested never-stuck-signed-in invariant — KEEP IT), then the re-probe finds the cookie still valid and flips back to `authenticated`, so `PublicOnly` bounces the user from `/login` straight back to where they were. Net effect: the user clicked "Log out", the screen flashed, they are still signed in, and the only feedback is a `console.warn` (added when this ticket was filed). Staying authenticated is the CORRECT security posture — the session genuinely still exists; pretending otherwise would be worse — but the silence is user-hostile and the live session outlives the user's intent to end it.
 - **Key files:** `client/src/hooks/AuthProvider.tsx` (`logout()` + its doc comment), `client/src/pages/Settings.tsx` (handler comment), `server/src/routes/auth.ts` (the logout route)
 - **Fix hint:** server first (the real fix): make the session revoke idempotent and cheap so a client retry always lands, and/or keep the session cookie short-lived with rolling renewal so an un-revoked session dies on its own shortly after a failed logout. Client second: retry the POST once, and when it still fails surface a toast/banner ("We couldn't reach the server to end your session — try again, or close all tabs") instead of the silent round-trip. Do NOT block the local clear on the server call — the always-clear-local invariant is load-bearing and tested (`AuthProvider.test.tsx` "never stuck").
