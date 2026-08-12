@@ -136,6 +136,49 @@ const EnvSchema = z.object({
   // bytes cap (routes/audio.ts) so neither cap can be raced past.
   AUDIO_UPLOAD_DAILY_COUNT_CAP: z.coerce.number().int().positive().default(50),
 
+  // ---------------------------------------------------------------------------
+  // Story TTS (F-210 — voice a generated story via ElevenLabs). The synthesized
+  // mp3 lands in the SAME audio blob store as user uploads
+  // (AUDIO_UPLOAD_STORAGE_DIR above) and streams through the existing
+  // /audio/tracks/:id/stream route — no new storage or streaming knobs.
+  // ---------------------------------------------------------------------------
+  // ElevenLabs API key. OPTIONAL in dev/test so the app boots and the suite
+  // runs with no key (the TTS provider then fails any claimed job with a
+  // clear "not configured" error instead of crashing startup); REQUIRED in
+  // production (refined below) — a prod deploy with the feature live but the
+  // key missing is a config error we want at deploy time, not on the first
+  // "generate audio" click. Secrets policy (SECURITY.md §1): no default, and
+  // the value is never logged (services/tts.ts never places it anywhere but
+  // the request header).
+  ELEVENLABS_API_KEY: z.string().min(1).optional(),
+
+  // The ElevenLabs voice used for the v1 single-narrator read. Default is the
+  // ElevenLabs premade "Rachel" voice id — multilingual-capable and present on
+  // every account; the operator swaps in a preferred Korean narrator voice id
+  // without a code change. (Multi-voice per `turns` is v2 — it will map
+  // speakers to voice ids on top of this same provider.)
+  ELEVENLABS_VOICE_ID: z.string().min(1).default('21m00Tcm4TlvDq8ikWAM'),
+
+  // Per-user DAILY cap on story-TTS ENQUEUES (→ 429 BEFORE any job row is
+  // written). TTS bills per character, but a per-JOB cap is the right lever
+  // here because a story body is already hard-bounded (StoryResultSchema caps
+  // bodyKo at 6000 chars), so jobs/day × 6000 bounds spend; the
+  // story_audio_jobs.char_count ledger still records exact usage. Failed jobs
+  // count (cost control — a failed run spent quota too; 069/076's stance).
+  STORY_TTS_DAILY_CAP: z.coerce.number().int().positive().default(10),
+
+  // How often the in-server runner polls story_audio_jobs for pending work.
+  // In-process (NOT the km-worker — it mounts the audio volume read-only):
+  // the interval is unref'd so it never holds the process open.
+  STORY_TTS_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
+
+  // A 'running' job older than this is presumed crashed (server restart
+  // mid-synthesis) and reaped 'failed' at the next poll, un-bricking the
+  // story's one-live-job slot. Sized well past the longest plausible
+  // synthesis of a 6000-char body (uploadExtract.ts's STALE_RUN_MINUTES
+  // posture; 'pending' is never reaped — it is the healthy backlog).
+  STORY_TTS_STALE_RUN_MINUTES: z.coerce.number().int().positive().default(15),
+
   // Corpus audio root (F-012 — TTMIK/Iyagi mp3 streaming). Read-only tree the
   // audio routes stream from; DB rows store paths RELATIVE to this root (e.g.
   // 'TTMIK/이야기들/이야기/143 TTMIK Iyagi 143.mp3'). In the deploy compose this
@@ -270,6 +313,18 @@ const EnvSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['SMTP_FROM'],
       message: 'SMTP_FROM is required when SMTP_HOST is set',
+    });
+  }
+  // F-210: the story-TTS key is optional in dev/test (app boots, suite runs,
+  // jobs fail with a clear "not configured" error) but REQUIRED in production
+  // — a live deploy missing it should fail at startup, not on the first
+  // "generate audio" click (SECURITY.md §1 posture: bad config is a
+  // deploy-time problem).
+  if (cfg.NODE_ENV === 'production' && !cfg.ELEVENLABS_API_KEY) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['ELEVENLABS_API_KEY'],
+      message: 'ELEVENLABS_API_KEY is required in production (F-210 story TTS)',
     });
   }
 });

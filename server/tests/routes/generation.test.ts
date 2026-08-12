@@ -181,17 +181,23 @@ describe('POST /reading/generate — story generation + persistence (F-068)', ()
     expect(res.body.story.bodyKo).toContain('고양이가 운영하는 카페');
     expect(res.body.story.level).toBe('L4');
     expect(res.body.story.prompt).toBe('고양이가 운영하는 카페');
+    // F-210 groundwork: the stub emits turns — they ride the DTO verbatim.
+    expect(res.body.story.turns).toEqual([
+      { speaker: 'narrator', text: '옛날 옛적에 이야기가 시작되었습니다.' },
+      { speaker: '주인공', text: '"안녕하세요."' },
+    ]);
 
     // The persisted row is user-scoped and carries the SERVER-chosen level +
-    // the user's topic as prompt.
+    // the user's topic as prompt (+ the turns JSONB, F-210 groundwork).
     const { rows } = await pg.pool.query<{
       user_id: string;
       title: string;
       body_ko: string;
       level: string;
       prompt: string | null;
+      turns: Array<{ speaker: string; text: string }> | null;
     }>(
-      `SELECT user_id::text AS user_id, title, body_ko, level::text AS level, prompt
+      `SELECT user_id::text AS user_id, title, body_ko, level::text AS level, prompt, turns
          FROM generated_stories WHERE id = $1`,
       [res.body.story.id],
     );
@@ -201,6 +207,42 @@ describe('POST /reading/generate — story generation + persistence (F-068)', ()
     expect(rows[0]!.body_ko).toBe(res.body.story.bodyKo);
     expect(rows[0]!.level).toBe('L4');
     expect(rows[0]!.prompt).toBe('고양이가 운영하는 카페');
+    expect(rows[0]!.turns).toEqual(res.body.story.turns);
+  });
+
+  it('a turn-less model result persists turns as NULL (old-style stories keep working)', async () => {
+    const noTurnsApp = buildTestApp({
+      connectionString: pg.connectionString,
+      claudeProxy: {
+        generateStory: async () => ({
+          result: { title: '턴 없는 이야기', bodyKo: '옛날 옛적에. 끝.' },
+          metadata: {
+            model: 'claude-sonnet-4-6',
+            cacheHit: false,
+            latencyMs: 1,
+            inputTokens: 0,
+            outputTokens: 0,
+            cachedInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            costEstimateUsd: 0,
+            requestId: '00000000-0000-4000-8000-000000000000',
+          },
+        }),
+      },
+    });
+    try {
+      const { agent } = await registerUser(noTurnsApp.app, pg.pool);
+      const res = await agent.post('/reading/generate').send({ level: 'L2' });
+      expect(res.status).toBe(201);
+      expect(res.body.story.turns).toBeNull();
+      const { rows } = await pg.pool.query<{ turns: unknown }>(
+        `SELECT turns FROM generated_stories WHERE id = $1`,
+        [res.body.story.id],
+      );
+      expect(rows[0]!.turns).toBeNull();
+    } finally {
+      await teardownTestApp(noTurnsApp);
+    }
   });
 
   it('level defaults to L3 and topic/prompt to null', async () => {
