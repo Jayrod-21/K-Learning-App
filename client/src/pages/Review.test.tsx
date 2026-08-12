@@ -2312,6 +2312,61 @@ describe('Review — F-208 follow-up cloze drills toggle', () => {
     expect(clozeSwitch()).toHaveAttribute('aria-checked', 'true');
   });
 
+  it('a server whose `remaining` never shrinks stops at the 20-run cap — busy clears, pref stays on, soft-retry copy (not success)', async () => {
+    // Every run reports the same non-zero remaining — without the cap the
+    // loop would spin forever. The cap must be the exit: EXACTLY 20 calls.
+    vi.mocked(vocabService.seedClozePrompts).mockResolvedValue(
+      seedRun({ eligible: 10000, examined: 500, seeded: 500, remaining: 500 }),
+    );
+    settleLanding();
+    const user = userEvent.setup();
+    renderReview();
+    await waitFor(() => {
+      expect(clozeSwitch()).not.toBeDisabled();
+    });
+
+    await user.click(clozeSwitch());
+
+    // Busy clearing means the loop finished — then the call count is final.
+    await waitFor(() => {
+      expect(clozeSwitch()).not.toBeDisabled();
+    });
+    expect(vocabService.seedClozePrompts).toHaveBeenCalledTimes(20);
+    // The pref stays on (partial progress is committed; a later off/on
+    // resumes) …
+    expect(clozeSwitch()).toHaveAttribute('aria-checked', 'true');
+    // … and with work still remaining the SOFT-RETRY copy shows — the
+    // success "drills ready" copy would be a lie here.
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/some drills couldn’t be prepared/);
+  });
+
+  it('a seed throw mid-loop keeps the pref on, surfaces the error, AND refetches due (earlier runs are committed)', async () => {
+    vi.mocked(vocabService.seedClozePrompts)
+      .mockResolvedValueOnce(
+        seedRun({ eligible: 700, examined: 500, seeded: 480, remaining: 200 }),
+      )
+      .mockRejectedValueOnce(
+        new ApiError('boom', { status: 500, code: 'server_error' }),
+      );
+    settleLanding();
+    const user = userEvent.setup();
+    renderReview();
+    await waitFor(() => {
+      expect(clozeSwitch()).not.toBeDisabled();
+    });
+    expect(hoisted.refetchCalls.due).toBe(0);
+
+    await user.click(clozeSwitch());
+
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    // Pref persisted before the throw — the switch honestly reads ON.
+    expect(clozeSwitch()).toHaveAttribute('aria-checked', 'true');
+    // Run 1's 480 seeds are committed server-side; the due feed refetches
+    // so they surface now (same contract as the aborted_upstream path).
+    expect(hoisted.refetchCalls.due).toBeGreaterThan(0);
+  });
+
   it('disable: writes the pref false and NEVER seeds (prompts persist server-side)', async () => {
     vi.mocked(fetchPrefs).mockResolvedValue(prefsWithCloze(true));
     vi.mocked(patchClozeEnabled).mockResolvedValue(prefsWithCloze(false));

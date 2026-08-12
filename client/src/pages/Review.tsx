@@ -720,10 +720,16 @@ export function Review(): JSX.Element {
       setClozeBusy(true);
       setClozeStatus(null);
       void (async (): Promise<void> => {
+        // Set once the pref PATCH lands — from then on any thrown seed run
+        // has committed partial progress server-side, so the catch below
+        // refetches (mirroring the aborted_upstream path) instead of leaving
+        // already-seeded cards invisible until a natural refetch.
+        let prefPersisted = false;
         try {
           // Persist the pref FIRST — if the write fails, nothing changed
           // server-side and the toggle stays where it was.
           await patchClozeEnabled(next);
+          prefPersisted = true;
           setClozePref(next);
           if (!next) {
             // Disable: the server simply stops serving `cloze`; the prepared
@@ -739,21 +745,35 @@ export function Review(): JSX.Element {
           setClozeSeeding(true);
           let seededTotal = 0;
           let abortedUpstream = false;
+          // `remaining` from the LAST completed run — stays > 0 only when the
+          // run cap below exhausted with work still outstanding.
+          let remainingAfterLast = 0;
           try {
             for (let run = 0; run < CLOZE_SEED_MAX_RUNS; run++) {
               const res = await vocabService.seedClozePrompts(CLOZE_SEED_BATCH);
-              seededTotal += res.seeded;
+              // A malformed response (count missing or NaN) must not poison
+              // the tally — "NaN drills ready" — so any non-finite count
+              // reads as 0. For `remaining` that also EXITS the loop (0 ≤ 0)
+              // rather than hammering the seeder on garbage until the cap.
+              seededTotal += Number.isFinite(res.seeded) ? res.seeded : 0;
               if (res.aborted_upstream) {
                 abortedUpstream = true;
                 break;
               }
-              if (res.remaining <= 0) break;
+              remainingAfterLast = Number.isFinite(res.remaining)
+                ? res.remaining
+                : 0;
+              if (remainingAfterLast <= 0) break;
             }
           } finally {
             setClozeSeeding(false);
           }
+          // The run cap is the backstop against a server whose `remaining`
+          // never shrinks; exhausting it means drills are still unprepared,
+          // which deserves the same soft-retry copy as an upstream abort —
+          // never the success copy.
           setClozeStatus(
-            abortedUpstream
+            abortedUpstream || remainingAfterLast > 0
               ? {
                   kind: 'error',
                   text:
@@ -781,6 +801,11 @@ export function Review(): JSX.Element {
               'Could not update cloze drills. Try again.',
             ),
           });
+          if (prefPersisted) {
+            // Seed threw mid-loop: earlier runs are committed server-side,
+            // so surface them now — same as the aborted_upstream path.
+            refetchDue();
+          }
         } finally {
           setClozeBusy(false);
         }

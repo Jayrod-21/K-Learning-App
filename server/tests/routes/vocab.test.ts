@@ -2588,6 +2588,32 @@ describe('GET /vocab/cards/due — cloze presentation (F-208)', () => {
       (bRes.body.cards as Array<Record<string, unknown>>).find((c) => c.id === bCardId),
     ).not.toHaveProperty('cloze');
   });
+
+  it('a CORRUPT pref value (jsonb STRING "true", not boolean) fails closed: `cloze` omitted, no 500', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const { entryId, cardId } = await seedClozeCard(userId);
+    await seedClozePrompt(entryId);
+    // Bypass the PATCH route's boolean validation and plant the jsonb STRING
+    // 'true' directly — the shape a buggy writer or a hand-edited row could
+    // leave behind. The due gate compares jsonb VALUES (`-> = 'true'::jsonb`),
+    // and the string "true" ≠ the boolean true, so this must read as OFF.
+    await pg.pool.query(
+      `UPDATE users
+          SET preferences = jsonb_set(coalesce(preferences, '{}'::jsonb),
+                                      '{clozeEnabled}', '"true"'::jsonb)
+        WHERE id = $1`,
+      [userId],
+    );
+
+    const res = await agent.get('/vocab/cards/due?limit=200').expect(200);
+    const card = (res.body.cards as Array<Record<string, unknown>>).find(
+      (c) => c.id === cardId,
+    );
+    expect(card).toBeDefined();
+    expect(card).not.toHaveProperty('cloze');
+    // The card still serves as a plain flashcard — corruption costs nothing.
+    expect(card!.vocab_korean).toBe('마시다');
+  });
 });
 
 describe('POST /vocab/cards/:cardId/cloze/grade (F-208)', () => {
