@@ -153,6 +153,7 @@ export type {
   StoryGenInput,
   StoryLevel,
   StoryResult,
+  StoryTurn,
   TranslatePassageInput,
   TranslatePassageResult,
   WritingPromptGenInput,

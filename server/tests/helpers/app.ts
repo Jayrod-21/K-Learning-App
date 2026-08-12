@@ -246,13 +246,19 @@ export function makeStubProxy(overrides: Partial<ClaudeProxy> = {}): ClaudeProxy
     generateStory: async (input) => ({
       // Deterministic story echoing the requested level (+ topic when given).
       // Lets the /reading/generate route test assert persistence + the wire
-      // shape without touching Anthropic.
+      // shape without touching Anthropic. `turns` mirrors the F-210 prompt
+      // groundwork (narrator + one character) so the route's JSONB persist +
+      // DTO threading is exercised by default.
       result: {
         title: `모의 이야기 (${input.level})`,
         bodyKo:
           input.topic !== undefined
             ? `${input.topic}에 대한 모의 이야기입니다. 옛날 옛적에 이야기가 시작되었습니다.`
             : '모의 이야기입니다. 옛날 옛적에 이야기가 시작되었습니다.',
+        turns: [
+          { speaker: 'narrator', text: '옛날 옛적에 이야기가 시작되었습니다.' },
+          { speaker: '주인공', text: '"안녕하세요."' },
+        ],
       },
       metadata: { ...baseMeta, requestId: randomUUID() },
     }),

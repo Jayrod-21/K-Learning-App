@@ -511,12 +511,29 @@ export const StoryGenInputSchema = z.object({
 });
 export type StoryGenInput = z.infer<typeof StoryGenInputSchema>;
 
+/** One spoken unit of a story (F-210 multi-voice groundwork): `speaker` is
+ *  the literal string 'narrator' for narration or a short character label for
+ *  quoted dialogue; `text` is that unit's Korean text, in story order. */
+export const StoryTurnSchema = z.object({
+  speaker: NonEmptyText.max(100),
+  text: NonEmptyText.max(2000),
+});
+export type StoryTurn = z.infer<typeof StoryTurnSchema>;
+
 export const StoryResultSchema = z.object({
   /** Story title (Korean). Bounded UNDER the DB CHECK ceiling (300) so a
    *  schema-valid result can always persist. */
   title: NonEmptyText.max(200),
   /** The story body (Korean). Bounded UNDER the DB CHECK ceiling (20000). */
   bodyKo: NonEmptyText.max(6000),
+  /** F-210 multi-voice groundwork: the story split into ordered spoken units
+   *  (narrator narration + per-character dialogue). OPTIONAL and LATENT in
+   *  v1 — the reader and the narrator TTS both consume bodyKo, which stays
+   *  the source of truth; a future multi-voice pass consumes this. The route
+   *  persists it verbatim to generated_stories.turns (JSONB, migration 081);
+   *  a turn-less result stores NULL. maxItems mirrors the tool schema so a
+   *  runaway model output is a 502, never an unbounded row. */
+  turns: z.array(StoryTurnSchema).min(1).max(200).optional(),
 });
 export type StoryResult = z.infer<typeof StoryResultSchema>;
 

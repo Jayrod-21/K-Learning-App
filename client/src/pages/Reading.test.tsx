@@ -23,7 +23,14 @@
  * `lib/tapChain` + `useTapWord` stack those pages use.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { JSX } from 'react';
 import {
@@ -39,6 +46,7 @@ import type {
   GeneratedStory,
   GeneratedStorySummary,
   ReadingPosition,
+  StoryAudio,
 } from '../services/reading';
 import type { BookUpload } from '../types/domain';
 
@@ -52,6 +60,8 @@ const readingSvc = vi.hoisted(() => ({
   getGeneratedStory: vi.fn(),
   translatePassage: vi.fn(),
   logReadingAttempt: vi.fn(),
+  requestStoryAudio: vi.fn(),
+  getStoryAudio: vi.fn(),
   // Module CONSTANT (not a spy): Reading.tsx maps over it to build the
   // level radiogroup, so the mock must export the real display order.
   GENERATED_STORY_LEVELS: ['L1', 'L2', 'L3', 'L4', 'L5+'] as const,
@@ -160,6 +170,62 @@ const STORY_FULL: GeneratedStory = {
   bodyKo: '소년은 바닷가를 걸었다.\n\n바람이 불었다.',
 };
 
+// ── F-210 story-audio envelope fixtures ──
+
+const AUDIO_NONE: StoryAudio = {
+  status: 'none',
+  jobId: null,
+  error: null,
+  track: null,
+  segments: [],
+};
+
+const AUDIO_PENDING: StoryAudio = {
+  status: 'pending',
+  jobId: 11,
+  error: null,
+  track: null,
+  segments: [],
+};
+
+/** streamUrl matches the REAL `buildAudioSrc` allow-list (services/ttmik is
+ *  deliberately NOT mocked — the src assertions cover the true resolver,
+ *  the MyAudio.test.tsx precedent; empty API base → app-relative src). */
+const AUDIO_DONE: StoryAudio = {
+  status: 'done',
+  jobId: 11,
+  error: null,
+  track: { id: 9, streamUrl: '/audio/tracks/9/stream', durationMs: 8000 },
+  segments: [
+    { segmentNumber: 1, startMs: 0, endMs: 4000, body: '소년은 바닷가를 걸었다.' },
+    { segmentNumber: 2, startMs: 4000, endMs: 8000, body: '바람이 불었다.' },
+  ],
+};
+
+/** Voiced but with NO usable timing (all-zero windows) — audio must still
+ *  play, highlighting must not engage, body stays paragraph-rendered. */
+const AUDIO_DONE_NO_TIMING: StoryAudio = {
+  ...AUDIO_DONE,
+  segments: AUDIO_DONE.segments.map((s) => ({ ...s, startMs: 0, endMs: 0 })),
+};
+
+const AUDIO_FAILED: StoryAudio = {
+  status: 'failed',
+  jobId: 11,
+  error: 'The voice service is unavailable right now. Try again later.',
+  track: null,
+  segments: [],
+};
+
+/** Dormant deploy: the server reports it cannot synthesize (no TTS key) —
+ *  the client renders NO audio card at all (absence, not a dead
+ *  affordance). Only an EXPLICIT false hides; the other fixtures above omit
+ *  the flag on purpose (older-server forward-compat keeps the feature). */
+const AUDIO_NONE_UNCONFIGURED: StoryAudio = {
+  ...AUDIO_NONE,
+  ttsConfigured: false,
+};
+
 beforeEach(() => {
   readingSvc.listChapters.mockReset();
   readingSvc.getChapter.mockReset();
@@ -170,6 +236,8 @@ beforeEach(() => {
   readingSvc.getGeneratedStory.mockReset();
   readingSvc.translatePassage.mockReset();
   readingSvc.logReadingAttempt.mockReset();
+  readingSvc.requestStoryAudio.mockReset();
+  readingSvc.getStoryAudio.mockReset();
   uploadsSvc.listUploads.mockReset();
   uploadsSvc.getUpload.mockReset();
   tapSvc.lemmatize.mockReset();
@@ -185,6 +253,10 @@ beforeEach(() => {
   readingSvc.getReadingPosition.mockResolvedValue(null);
   readingSvc.saveReadingPosition.mockResolvedValue(SAVED_POSITION);
   readingSvc.listGeneratedStories.mockResolvedValue([]);
+  // F-210: the story reader hydrates audio status on mount — default to the
+  // never-voiced envelope so pre-F-210 story tests see the same reader body
+  // they always did (plus an inert "Generate audio" card).
+  readingSvc.getStoryAudio.mockResolvedValue(AUDIO_NONE);
 });
 
 function renderReading(): ReturnType<typeof render> {
@@ -1557,5 +1629,359 @@ describe('Reading — Seoul Day & Night reskin (F-128/F-129/F-131)', () => {
       within(head as HTMLElement).getByRole('button', { name: 'Close' }),
     ).toBeInTheDocument();
     expect(sheet.querySelector('.km-review__sheet-body')).toBeInTheDocument();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// F-210 — story TTS audio + read-along highlighting
+// ─────────────────────────────────────────────────────────────
+
+describe('Reading — story TTS audio (F-210)', () => {
+  /** Deep-link straight into the story reader (`?story=7`) — the audio
+   *  card is a story-reader concern; no need to walk the library. */
+  function renderStory(): ReturnType<typeof render> {
+    readingSvc.getGeneratedStory.mockResolvedValue(STORY_FULL);
+    return render(
+      <MemoryRouter initialEntries={['/learn/reading?story=7']}>
+        <ToastProvider>
+          <Reading />
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  /** Fake-timer helper (the MyAudio.test.tsx GOTCHA applies here too:
+   *  `userEvent` deadlocks against `vi.useFakeTimers()` in happy-dom, so
+   *  every polling test uses `fireEvent` + `advanceTimersByTimeAsync`). */
+  async function flushAsync(ms = 0): Promise<void> {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  it('an already-voiced story shows the real player on mount — no generate click, no POST', async () => {
+    readingSvc.getStoryAudio.mockResolvedValue(AUDIO_DONE);
+
+    const { container } = renderStory();
+
+    await waitFor(() => {
+      expect(container.querySelector('audio')).not.toBeNull();
+    });
+    // The REAL buildAudioSrc resolved the wire streamUrl (empty API base →
+    // app-relative src through the allow-list).
+    expect(container.querySelector('audio')).toHaveAttribute(
+      'src',
+      '/audio/tracks/9/stream',
+    );
+    expect(
+      screen.queryByRole('button', { name: /Generate audio/ }),
+    ).not.toBeInTheDocument();
+    expect(readingSvc.requestStoryAudio).not.toHaveBeenCalled();
+  });
+
+  it('renders the voiced body as per-sentence read-along lines with tap-to-define + translate intact', async () => {
+    readingSvc.getStoryAudio.mockResolvedValue(AUDIO_DONE);
+
+    const { container } = renderStory();
+
+    await waitFor(() => {
+      expect(
+        container.querySelectorAll('.km-reading__readalong-line'),
+      ).toHaveLength(2);
+    });
+    const lines = container.querySelectorAll('.km-reading__readalong-line');
+    expect(lines[0]!.textContent).toContain('소년은');
+    expect(lines[1]!.textContent).toContain('바람이');
+    // The per-line translate affordance survives the segment re-render —
+    // ariaContext is the SEGMENT number, so the windows and the buttons
+    // name the same unit.
+    expect(
+      screen.getByRole('button', { name: 'Translate sentence 1' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Translate sentence 2' }),
+    ).toBeInTheDocument();
+  });
+
+  it('highlights the segment whose [startMs, endMs) window contains the playhead, and clears past the end', async () => {
+    readingSvc.getStoryAudio.mockResolvedValue(AUDIO_DONE);
+
+    const { container } = renderStory();
+    await waitFor(() => {
+      expect(container.querySelector('audio')).not.toBeNull();
+    });
+    const audio = container.querySelector('audio') as HTMLAudioElement;
+    const lines = (): NodeListOf<Element> =>
+      container.querySelectorAll('.km-reading__readalong-line');
+
+    // 1s → 1000ms sits in segment 1's [0, 4000).
+    audio.currentTime = 1;
+    fireEvent.timeUpdate(audio);
+    expect(lines()[0]).toHaveClass('km-reading__readalong-line--active');
+    expect(lines()[0]).toHaveAttribute('aria-current', 'true');
+    expect(lines()[1]).not.toHaveClass('km-reading__readalong-line--active');
+
+    // 5s → 5000ms crosses into segment 2's [4000, 8000).
+    audio.currentTime = 5;
+    fireEvent.timeUpdate(audio);
+    expect(lines()[1]).toHaveClass('km-reading__readalong-line--active');
+    expect(lines()[0]).not.toHaveClass('km-reading__readalong-line--active');
+    expect(lines()[0]).not.toHaveAttribute('aria-current');
+
+    // 9s → past the last window: nothing highlighted (endMs exclusive).
+    audio.currentTime = 9;
+    fireEvent.timeUpdate(audio);
+    expect(
+      container.querySelector('.km-reading__readalong-line--active'),
+    ).toBeNull();
+  });
+
+  it('a voiced track with all-zero timing still plays but skips read-along — paragraph body unchanged', async () => {
+    readingSvc.getStoryAudio.mockResolvedValue(AUDIO_DONE_NO_TIMING);
+
+    const { container } = renderStory();
+
+    await waitFor(() => {
+      expect(container.querySelector('audio')).not.toBeNull();
+    });
+    // No segment lines — the pre-F-210 paragraph rendering (and its
+    // paragraph-scoped translate buttons) stands.
+    expect(
+      container.querySelectorAll('.km-reading__readalong-line'),
+    ).toHaveLength(0);
+    expect(
+      screen.getByRole('button', { name: 'Translate paragraph 1' }),
+    ).toBeInTheDocument();
+
+    // And a timeupdate can never paint a highlight without windows.
+    const audio = container.querySelector('audio') as HTMLAudioElement;
+    audio.currentTime = 1;
+    fireEvent.timeUpdate(audio);
+    expect(
+      container.querySelector('.km-reading__readalong-line--active'),
+    ).toBeNull();
+  });
+
+  it('request → 202 → ~2s polling → done renders the player, then polling STOPS (fake timers)', async () => {
+    vi.useFakeTimers();
+    readingSvc.getStoryAudio
+      .mockResolvedValueOnce(AUDIO_NONE) // mount hydrate
+      .mockResolvedValueOnce(AUDIO_PENDING) // poll tick 1
+      .mockResolvedValue(AUDIO_DONE); // poll tick 2+
+    readingSvc.requestStoryAudio.mockResolvedValue(AUDIO_PENDING);
+
+    const { container } = renderStory();
+    await flushAsync();
+
+    fireEvent.click(screen.getByRole('button', { name: /Generate audio/ }));
+    await flushAsync();
+    expect(readingSvc.requestStoryAudio).toHaveBeenCalledTimes(1);
+    expect(readingSvc.requestStoryAudio.mock.calls[0][0]).toBe(7);
+    // 202 landed a pending envelope → busy state replaces the button.
+    expect(screen.getByText(/Generating audio/)).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /Generate audio/ }),
+    ).not.toBeInTheDocument();
+
+    // Tick 1 (2s): still pending — busy stays, poll count grows.
+    await flushAsync(2000);
+    expect(readingSvc.getStoryAudio).toHaveBeenCalledTimes(2);
+    expect(screen.getByText(/Generating audio/)).toBeInTheDocument();
+
+    // Tick 2 (2s): done — the real player mounts with the resolved src.
+    await flushAsync(2000);
+    expect(container.querySelector('audio')).toHaveAttribute(
+      'src',
+      '/audio/tracks/9/stream',
+    );
+
+    // Settled → the poll stopped itself; no further status fetches.
+    await flushAsync(10_000);
+    expect(readingSvc.getStoryAudio).toHaveBeenCalledTimes(3);
+    vi.useRealTimers();
+  });
+
+  it('a pending story resumes polling on mount, and unmount clears the interval — no late fetch', async () => {
+    vi.useFakeTimers();
+    readingSvc.getStoryAudio.mockResolvedValue(AUDIO_PENDING);
+
+    const { unmount } = renderStory();
+    await flushAsync();
+    // Hydrate found an in-flight job (requested in an earlier session) —
+    // polling engages with no click.
+    expect(readingSvc.getStoryAudio).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/Generating audio/)).toBeInTheDocument();
+
+    await flushAsync(2000);
+    expect(readingSvc.getStoryAudio).toHaveBeenCalledTimes(2);
+
+    unmount();
+    await flushAsync(10_000);
+    expect(readingSvc.getStoryAudio).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
+  it('a failed envelope shows the server-authored error VERBATIM and "Try again" re-POSTs', async () => {
+    readingSvc.getStoryAudio.mockResolvedValue(AUDIO_FAILED);
+    readingSvc.requestStoryAudio.mockResolvedValue(AUDIO_PENDING);
+
+    const user = userEvent.setup();
+    renderStory();
+
+    const alert = await screen.findByRole('alert');
+    // The F-210 contract's sanctioned exception: whitelisted server copy,
+    // shown untouched.
+    expect(alert).toHaveTextContent(
+      'The voice service is unavailable right now. Try again later.',
+    );
+
+    await user.click(screen.getByRole('button', { name: /Try again/ }));
+    await waitFor(() => {
+      expect(readingSvc.requestStoryAudio).toHaveBeenCalledWith(
+        7,
+        expect.any(AbortSignal),
+      );
+    });
+    // The 202 pending envelope flips the card to the busy state.
+    expect(await screen.findByText(/Generating audio/)).toBeInTheDocument();
+  });
+
+  it('the daily-cap 429 (no retryAfter) shows the server message verbatim and keeps the button for tomorrow', async () => {
+    readingSvc.requestStoryAudio.mockRejectedValue(
+      new ApiError(
+        'daily story-audio limit reached: 3 of 3 generations used today. Try again tomorrow.',
+        { status: 429, code: 'rate_limited' },
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderStory();
+
+    await user.click(
+      await screen.findByRole('button', { name: /Generate audio/ }),
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(
+      'daily story-audio limit reached: 3 of 3 generations used today. Try again tomorrow.',
+    );
+    // Not a terminal state: the button stays available (the cap resets
+    // tomorrow) and is not stuck busy.
+    const button = screen.getByRole('button', { name: /Generate audio/ });
+    expect(button).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('a short-window 429 (structured retryAfter) uses the fixed rate-limit copy — server prose never leaks', async () => {
+    readingSvc.requestStoryAudio.mockRejectedValue(
+      new ApiError('upstream prose that must never reach the DOM', {
+        status: 429,
+        code: 'rate_limited',
+        retryAfter: 30,
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderStory();
+
+    await user.click(
+      await screen.findByRole('button', { name: /Generate audio/ }),
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/try again in about 30 seconds/i);
+    expect(alert).not.toHaveTextContent(/upstream prose/);
+  });
+
+  it('a never-settling job stops polling at the 150-tick ceiling — no unbounded fetch churn', async () => {
+    vi.useFakeTimers();
+    // Every status probe answers pending, forever (a stuck job).
+    readingSvc.getStoryAudio.mockResolvedValue(AUDIO_PENDING);
+
+    renderStory();
+    await flushAsync();
+    expect(readingSvc.getStoryAudio).toHaveBeenCalledTimes(1); // mount hydrate
+
+    // 302s ≈ 151 interval fires: ticks 1..150 each fetch; fire 151 crosses
+    // the ceiling and clears the interval WITHOUT fetching.
+    await flushAsync(302_000);
+    expect(readingSvc.getStoryAudio).toHaveBeenCalledTimes(151); // hydrate + 150
+
+    // Frozen: more time buys no more fetches.
+    await flushAsync(20_000);
+    expect(readingSvc.getStoryAudio).toHaveBeenCalledTimes(151);
+    // The last known status stays on screen (bounded churn, honest UI).
+    expect(screen.getByText(/Generating audio/)).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it('a mid-poll 404 (story deleted) is TERMINAL — polling stops immediately, no further fetches', async () => {
+    vi.useFakeTimers();
+    readingSvc.getStoryAudio
+      .mockResolvedValueOnce(AUDIO_PENDING) // mount hydrate → polling engages
+      .mockRejectedValueOnce(
+        new ApiError('story not found', { status: 404, code: 'not_found' }),
+      );
+
+    renderStory();
+    await flushAsync();
+    expect(readingSvc.getStoryAudio).toHaveBeenCalledTimes(1);
+
+    // Tick 1 (2s) hits the 404 → the interval clears itself.
+    await flushAsync(2000);
+    expect(readingSvc.getStoryAudio).toHaveBeenCalledTimes(2);
+
+    // Dead: later ticks never fire a fetch against a route that can only
+    // 404 again.
+    await flushAsync(10_000);
+    expect(readingSvc.getStoryAudio).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
+  it("a playback error on the <audio> element shows the \"couldn't load\" alert beside the player", async () => {
+    readingSvc.getStoryAudio.mockResolvedValue(AUDIO_DONE);
+
+    const { container } = renderStory();
+    await waitFor(() => {
+      expect(container.querySelector('audio')).not.toBeNull();
+    });
+
+    // The F-160 device: the element fetched its src and the bytes failed.
+    fireEvent.error(container.querySelector('audio') as HTMLAudioElement);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/Audio couldn't load/);
+    // The player stays mounted (a retry/seek can still succeed).
+    expect(container.querySelector('audio')).not.toBeNull();
+  });
+
+  it('ttsConfigured:false hides the ENTIRE audio card — no button, no dead affordance', async () => {
+    readingSvc.getStoryAudio.mockResolvedValue(AUDIO_NONE_UNCONFIGURED);
+
+    const { container } = renderStory();
+
+    // The reader body renders as usual…
+    expect(
+      await screen.findByRole('button', { name: /Mark story as finished/i }),
+    ).toBeInTheDocument();
+    // …and once the hydrate envelope has landed, the audio card is ABSENT.
+    await waitFor(() => {
+      expect(readingSvc.getStoryAudio).toHaveBeenCalledTimes(1);
+    });
+    await act(async () => {}); // flush the envelope's setState
+    expect(container.querySelector('.km-reading__audio')).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: /Generate audio/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('a MISSING ttsConfigured flag (older server) keeps the button — forward-compat default-true', async () => {
+    // AUDIO_NONE deliberately omits the flag.
+    readingSvc.getStoryAudio.mockResolvedValue(AUDIO_NONE);
+
+    renderStory();
+
+    expect(
+      await screen.findByRole('button', { name: /Generate audio/ }),
+    ).toBeInTheDocument();
   });
 });

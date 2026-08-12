@@ -27,6 +27,19 @@
  *   GET /reading/generated                   → the user's generated-story
  *                                              library, newest first
  *   GET /reading/generated/:id               → one generated story (full body)
+ *   POST /reading/generated/:id/audio        → request TTS narration of an
+ *                                              owned story (F-210): idempotent
+ *                                              voice-once enqueue of a
+ *                                              story_audio_jobs row (081) the
+ *                                              in-server runner processes
+ *                                              async (services/storyAudio.ts);
+ *                                              202 while working, 200 when
+ *                                              already voiced
+ *   GET /reading/generated/:id/audio         → the story's audio status; when
+ *                                              done, the streamUrl (the
+ *                                              existing /audio/tracks/:id/
+ *                                              stream route) + the read-along
+ *                                              segments (F-210)
  *   POST /reading/translate                  → Claude authors a natural-
  *                                              English translation of a
  *                                              selected Korean passage or
@@ -102,6 +115,20 @@
  *     deliberate variety, cacheTtl 0), translating a GIVEN passage is expected
  *     to be STABLE — the proxy caches (Layer B, 30-day TTL), so re-opening the
  *     same passage's translate sheet is a cache hit, not a repeat paid call.
+ *   - STORY AUDIO (F-210): POST /generated/:id/audio is the COST surface (a
+ *     paid per-character TTS call) → expensiveLimiter PLUS a per-user daily
+ *     enqueue cap (STORY_TTS_DAILY_CAP → 429 BEFORE any write, checked under
+ *     a per-user advisory xact lock so concurrent requests can't race past
+ *     it — audio.ts's exact pattern) PLUS voice-once idempotency (an already
+ *     voiced story or a live job short-circuits with NO new job; migration
+ *     081's partial-unique live-job index and one-set-per-story index make
+ *     both structural). IDOR: the story is ownership-checked first (uniform
+ *     404); every synthesized artifact lands user-owned in the audio tables,
+ *     whose 081 composite FKs pin ownership structurally. Audio BYTES are
+ *     never served here — the DTO points at the existing hardened
+ *     /audio/tracks/:id/stream route (Range, nosniff, IDOR-404). The
+ *     job `error` shown to the client is always server-authored whitelisted
+ *     copy (services/tts.ts), never TTS-provider response text.
  *   - READING ATTEMPTS (F-172): POST /attempts is a plain, cheap DB write (no
  *     Claude call) — cheapLimiter, not expensiveLimiter. IDOR: the named
  *     chapter/story is looked up SCOPED to the caller in the same query that
@@ -118,9 +145,13 @@ import { z } from 'zod';
 import { getUserId, requireAuth } from '../middleware/auth.js';
 import { cheapLimiter, expensiveLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
-import { query } from '../db/pool.js';
+import { query, withTransaction } from '../db/pool.js';
+import { loadConfig } from '../config/index.js';
 import { mapClaudeError, NotFoundError } from '../middleware/errors.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
+import { StoryTtsDailyCapError, TtsUnavailableError } from '../services/storyAudio.js';
+import { isTtsConfigured } from '../services/tts.js';
+import type { StoryTurn } from '../services/claude/index.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -523,13 +554,17 @@ const GenerateStoryBodySchema = z
   })
   .strict();
 
-/** Wire shape of one generated story (BIGINT id coerced to a JSON number). */
+/** Wire shape of one generated story (BIGINT id coerced to a JSON number).
+ *  `turns` (F-210 groundwork) is the optional multi-voice split — null for
+ *  pre-081 stories and turn-less generations; bodyKo stays the reader's
+ *  source of truth either way. */
 interface GeneratedStoryDto {
   id: number;
   title: string;
   bodyKo: string;
   level: string;
   prompt: string | null;
+  turns: StoryTurn[] | null;
   createdAt: Date;
 }
 
@@ -539,6 +574,10 @@ interface GeneratedStoryRow {
   body_ko: string;
   level: string;
   prompt: string | null;
+  // JSONB arrives pre-parsed from pg. Written ONLY from the Zod-validated
+  // StoryResultSchema.turns (the route below), so the stored shape is the
+  // StoryTurn array by construction; 081's CHECK additionally pins array-ness.
+  turns: StoryTurn[] | null;
   created_at: Date;
 }
 
@@ -549,12 +588,13 @@ function toStoryDto(row: GeneratedStoryRow): GeneratedStoryDto {
     bodyKo: row.body_ko,
     level: row.level,
     prompt: row.prompt,
+    turns: row.turns,
     createdAt: row.created_at,
   };
 }
 
 const STORY_COLUMNS =
-  'id::text AS id, title, body_ko, level::text AS level, prompt, created_at';
+  'id::text AS id, title, body_ko, level::text AS level, prompt, turns, created_at';
 
 /**
  * POST /reading/generate — Claude authors a short Korean story, the route
@@ -595,11 +635,21 @@ router.post(
       //    is the server-chosen request value; all values are bound parameters.
       //    StoryResultSchema's caps (title 200 / body 6000) sit UNDER the DB
       //    CHECK ceilings (300 / 20000), so a schema-valid story always fits.
+      //    turns (F-210 groundwork) is stored verbatim when the model emitted
+      //    it, NULL otherwise — JSON.stringify + ::jsonb because node-postgres
+      //    would otherwise serialize a JS array as a Postgres ARRAY literal.
       const { rows } = await query<GeneratedStoryRow>(
-        `INSERT INTO generated_stories (user_id, title, body_ko, level, prompt)
-         VALUES ($1, $2, $3, $4::proficiency_level, $5)
+        `INSERT INTO generated_stories (user_id, title, body_ko, level, prompt, turns)
+         VALUES ($1, $2, $3, $4::proficiency_level, $5, $6::jsonb)
          RETURNING ${STORY_COLUMNS}`,
-        [userId, story.title, story.bodyKo, body.level, body.topic ?? null],
+        [
+          userId,
+          story.title,
+          story.bodyKo,
+          body.level,
+          body.topic ?? null,
+          story.turns !== undefined ? JSON.stringify(story.turns) : null,
+        ],
       );
 
       res.status(201).json({ story: toStoryDto(rows[0]!) });
@@ -621,7 +671,9 @@ router.post(
 router.get('/generated', cheapLimiter(), async (req, res, next) => {
   try {
     const userId = getUserId(req);
-    const { rows } = await query<Omit<GeneratedStoryRow, 'body_ko'>>(
+    // Metadata only — neither the multi-KB body nor the turns array rides
+    // the list (GET /generated/:id serves both).
+    const { rows } = await query<Omit<GeneratedStoryRow, 'body_ko' | 'turns'>>(
       `SELECT id::text AS id, title, level::text AS level, prompt, created_at
          FROM generated_stories
         WHERE user_id = $1
@@ -673,6 +725,301 @@ router.get(
         throw new NotFoundError('story not found');
       }
       res.status(200).json({ story: toStoryDto(rows[0]!) });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/* ---------- Story audio (F-210; story_audio_jobs + audio_* tables, 081) ---------- */
+
+/** One read-along segment as served (same shape as routes/audio.ts's
+ *  SegmentDTO — the client binary-searches [startMs, endMs] against the
+ *  <audio> currentTime for the highlight). */
+interface StoryAudioSegmentDto {
+  segmentNumber: number;
+  startMs: number;
+  endMs: number;
+  body: string;
+}
+
+/**
+ * The story-audio status envelope both audio routes return.
+ *   status: 'none'    — never requested (client shows "Generate audio")
+ *           'pending' — enqueued, awaiting the runner
+ *           'running' — synthesis in flight
+ *           'failed'  — last attempt failed (error carries the reason; a new
+ *                       POST re-enqueues)
+ *           'done'    — voiced: track + segments are populated
+ *   track.streamUrl is the EXISTING hardened audio byte route
+ *   (/audio/tracks/:id/stream — Range, nosniff, IDOR-404); the client hands
+ *   it to an <audio> element (same-origin, session cookie rides along).
+ *   ttsConfigured tells the client whether this server can synthesize AT ALL
+ *   (dormant-deploy posture: no ELEVENLABS_API_KEY → false → the client
+ *   hides the feature instead of offering a button that can only 503).
+ */
+interface StoryAudioDto {
+  status: 'none' | 'pending' | 'running' | 'failed' | 'done';
+  jobId: number | null;
+  error: string | null;
+  track: { id: number; streamUrl: string; durationMs: number | null } | null;
+  segments: StoryAudioSegmentDto[];
+  ttsConfigured: boolean;
+}
+
+/**
+ * Resolve a story's current audio state. The voiced set — not the job row —
+ * is the authority for 'done' (voice-once: the set is the cache); job rows
+ * supply the in-flight/failed states. Caller has ALREADY ownership-checked
+ * the story (uniform 404), so the story-scoped reads here cannot leak: the
+ * 081 composite FKs pin every set/job row to the story's owner.
+ */
+async function buildStoryAudioDto(storyId: number, userId: number): Promise<StoryAudioDto> {
+  // Capability flag, stamped on EVERY envelope shape below: derived from the
+  // active provider (services/tts.ts isTtsConfigured — false only for the
+  // keyless UnconfiguredTtsProvider), so the client learns "this deploy
+  // cannot synthesize" from the same GET it already polls.
+  const ttsConfigured = isTtsConfigured();
+  const trackRes = await query<{ track_id: string; duration_ms: number | null }>(
+    `SELECT t.id AS track_id, t.duration_ms
+       FROM audio_sources s
+       JOIN audio_tracks t ON t.source_id = s.id AND t.track_number = 1
+      WHERE s.generated_story_id = $1 AND s.user_id = $2
+      LIMIT 1`,
+    [storyId, userId],
+  );
+  const track = trackRes.rows[0];
+  if (track !== undefined) {
+    const trackId = Number(track.track_id);
+    const segRes = await query<{
+      segment_number: number;
+      start_ms: number;
+      end_ms: number;
+      body: string;
+    }>(
+      `SELECT segment_number, start_ms, end_ms, body
+         FROM audio_transcript_segments
+        WHERE track_id = $1
+        ORDER BY segment_number`,
+      [trackId],
+    );
+    const jobRes = await query<{ id: string }>(
+      `SELECT id FROM story_audio_jobs
+        WHERE generated_story_id = $1 AND status = 'done'
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1`,
+      [storyId],
+    );
+    return {
+      status: 'done',
+      jobId: jobRes.rows[0] !== undefined ? Number(jobRes.rows[0].id) : null,
+      error: null,
+      track: {
+        id: trackId,
+        streamUrl: `/audio/tracks/${trackId}/stream`,
+        durationMs: track.duration_ms,
+      },
+      segments: segRes.rows.map((s) => ({
+        segmentNumber: s.segment_number,
+        startMs: s.start_ms,
+        endMs: s.end_ms,
+        body: s.body,
+      })),
+      ttsConfigured,
+    };
+  }
+
+  const jobRes = await query<{ id: string; status: string; error: string | null }>(
+    `SELECT id, status, error
+       FROM story_audio_jobs
+      WHERE generated_story_id = $1
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1`,
+    [storyId],
+  );
+  const job = jobRes.rows[0];
+  if (job === undefined) {
+    return { status: 'none', jobId: null, error: null, track: null, segments: [], ttsConfigured };
+  }
+  if (job.status === 'pending' || job.status === 'running') {
+    return {
+      status: job.status,
+      jobId: Number(job.id),
+      error: null,
+      track: null,
+      segments: [],
+      ttsConfigured,
+    };
+  }
+  if (job.status === 'failed') {
+    // `error` is server-authored whitelisted copy (services/tts.ts /
+    // storyAudio.ts) — safe to show verbatim.
+    return {
+      status: 'failed',
+      jobId: Number(job.id),
+      error: job.error,
+      track: null,
+      segments: [],
+      ttsConfigured,
+    };
+  }
+  // 'done' job whose voiced set is gone (out-of-band deletion / partial
+  // restore): report 'none' so the client can simply re-generate.
+  return { status: 'none', jobId: null, error: null, track: null, segments: [], ttsConfigured };
+}
+
+/**
+ * POST /reading/generated/:id/audio — request TTS narration of an owned story
+ * (F-210 v1: single narrator voice over body_ko).
+ *
+ * IDEMPOTENT, VOICE-ONCE, COST-BOUNDED:
+ *   already voiced        → 200 { audio: done-envelope } (no new job — the
+ *                           voiced set is a permanent cache)
+ *   live pending/running  → 202 { audio: that job's envelope } (no dup)
+ *   TTS not configured    → 503 tts_unavailable BEFORE any write (dormant
+ *                           deploy — a guaranteed-to-fail job must never
+ *                           burn a daily-cap slot; the voice-once and
+ *                           live-job short-circuits above still answer,
+ *                           since serving EXISTING audio needs no key)
+ *   else, under the cap   → enqueue 'pending' → 202 (the in-server runner
+ *                           picks it up; the client polls the GET sibling)
+ *   over STORY_TTS_DAILY_CAP → 429 rate_limited BEFORE any write
+ *
+ * The check-then-insert runs inside ONE transaction under a per-user
+ * advisory xact lock (audio.ts's exact cap pattern), so two concurrent
+ * requests serialize: they cannot both pass the cap, and they cannot both
+ * enqueue (belt: the lock; braces: 081's partial-unique live-job index).
+ * A `failed` job does NOT block a retry — the failure already spent today's
+ * quota (its row still counts toward the cap), but the slot is free.
+ */
+router.post(
+  '/generated/:id/audio',
+  expensiveLimiter(),
+  validateParams(StoryParamsSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const { id } = (
+        req as typeof req & { validatedParams: z.infer<typeof StoryParamsSchema> }
+      ).validatedParams;
+      const cfg = loadConfig();
+
+      // IDOR gate first: a missing id and another user's story are the same
+      // uniform 404 (mirrors GET /generated/:id). body_ko rides along for the
+      // char_count cost snapshot.
+      const storyRes = await query<{ body_ko: string }>(
+        `SELECT body_ko FROM generated_stories WHERE id = $1 AND user_id = $2 LIMIT 1`,
+        [id, userId],
+      );
+      const story = storyRes.rows[0];
+      if (story === undefined) {
+        throw new NotFoundError('story not found');
+      }
+
+      const outcome = await withTransaction(async (client) => {
+        // Per-user advisory xact lock: two concurrent enqueues by one user
+        // would otherwise both read pre-spend cap totals under READ COMMITTED
+        // (audio.ts / uploadExtract.ts's exact reasoning). Released at
+        // commit/rollback. Cross-user requests never contend (per-user key),
+        // and cross-user same-story is impossible (stories are user-owned).
+        await client.query(
+          `SELECT pg_advisory_xact_lock(hashtextextended('story_tts_daily_cap:' || $1::text, 0))`,
+          [userId],
+        );
+
+        // 1. Voice-once cache hit: the story already has its audio set.
+        const voiced = await client.query(
+          `SELECT 1 FROM audio_sources WHERE generated_story_id = $1 LIMIT 1`,
+          [id],
+        );
+        if (voiced.rows.length > 0) return 'done' as const;
+
+        // 2. A live job already exists — return it rather than duplicating
+        //    (081's partial UNIQUE would reject the INSERT anyway; checking
+        //    first keeps the response a clean 202 instead of a mapped 23505).
+        const live = await client.query(
+          `SELECT 1 FROM story_audio_jobs
+            WHERE generated_story_id = $1 AND status IN ('pending', 'running')
+            LIMIT 1`,
+          [id],
+        );
+        if (live.rows.length > 0) return 'live' as const;
+
+        // 3. Capability gate — a keyless deploy (story TTS dormant) refuses
+        //    the enqueue HERE, after the read-only short-circuits (existing
+        //    audio still serves; an in-flight job still reports) but BEFORE
+        //    the cap check and the INSERT: a job that can only fail must
+        //    never spend a daily-cap slot. The keyless provider failing the
+        //    job stays as defense-in-depth for a key removed mid-flight.
+        if (!isTtsConfigured()) {
+          throw new TtsUnavailableError();
+        }
+
+        // 4. Daily cap — count of today's enqueues, ALL statuses (a failed
+        //    run spent quota too; 069/076's cost stance), BEFORE any write.
+        const cap = await client.query<{ n: string }>(
+          `SELECT count(*)::text AS n
+             FROM story_audio_jobs
+            WHERE user_id = $1
+              AND created_at >= date_trunc('day', now())`,
+          [userId],
+        );
+        const usedToday = Number(cap.rows[0]?.n ?? '0');
+        if (usedToday >= cfg.STORY_TTS_DAILY_CAP) {
+          req.log.warn(
+            { userId, usedToday, cap: cfg.STORY_TTS_DAILY_CAP },
+            'storyAudio: daily cap hit — enqueue refused before any write',
+          );
+          throw new StoryTtsDailyCapError(cfg.STORY_TTS_DAILY_CAP, usedToday);
+        }
+
+        // 5. Enqueue. char_count is the cost snapshot at enqueue (081's
+        //    ledger contract); user_id is the session user, and the 081
+        //    composite FK would reject any (story, user) mismatch anyway.
+        await client.query(
+          `INSERT INTO story_audio_jobs (generated_story_id, user_id, status, char_count)
+           VALUES ($1, $2, 'pending', $3)`,
+          [id, userId, story.body_ko.length],
+        );
+        return 'enqueued' as const;
+      });
+
+      // One envelope for every outcome (the client renders off `status`
+      // alone): 200 when the audio already exists, 202 while work is queued
+      // or in flight.
+      const dto = await buildStoryAudioDto(id, userId);
+      res.status(outcome === 'done' ? 200 : 202).json({ audio: dto });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/**
+ * GET /reading/generated/:id/audio — the story's audio status (the client's
+ * polling surface while a job runs; poll every ~2s until status is 'done' or
+ * 'failed'). When 'done', the envelope carries the streamUrl + the ordered
+ * read-along segments. IDOR: story ownership is asserted first — a missing
+ * or foreign story id is a uniform 404.
+ */
+router.get(
+  '/generated/:id/audio',
+  cheapLimiter(),
+  validateParams(StoryParamsSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const { id } = (
+        req as typeof req & { validatedParams: z.infer<typeof StoryParamsSchema> }
+      ).validatedParams;
+      const owned = await query<{ id: string }>(
+        `SELECT id FROM generated_stories WHERE id = $1 AND user_id = $2 LIMIT 1`,
+        [id, userId],
+      );
+      if (owned.rows.length === 0) {
+        throw new NotFoundError('story not found');
+      }
+      res.status(200).json({ audio: await buildStoryAudioDto(id, userId) });
     } catch (err) {
       next(err);
     }

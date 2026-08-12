@@ -49,6 +49,18 @@
  *   its structured retry-after copy — this is an EXPENSIVE route). Single-word
  *   tap-to-define is untouched.
  *
+ *   F-210 (story TTS + read-along): the story reader carries an audio card
+ *   driven by the `GET /reading/generated/:id/audio` envelope — "Generate
+ *   audio" POSTs the enqueue, a ~2s poll rides pending/running, `done`
+ *   mounts a real streaming `<audio>` (the MyAudioDetail recipe:
+ *   `buildAudioSrc` allow-list, Range-enabled `/audio/tracks/:id/stream`,
+ *   onError alert) and re-renders the body from the voiced SEGMENTS — one
+ *   tappable/translatable line per sentence, the line whose `[startMs,
+ *   endMs)` window contains the playhead highlighted via a binary search on
+ *   `timeupdate`. No audio, or a track with all-zero timing, keeps the
+ *   plain `bodyKo` paragraph rendering (and the latter still plays). The
+ *   story DTO's `turns` field is LATENT groundwork — no UI reads it.
+ *
  * Tap-to-define reuses the shared stack as-is (`lib/tapChain`,
  * `components/Tapword`, `components/WordPopover`) via the page-local
  * `useMineable` hook below — the same optimistic-flip + rollback +
@@ -137,6 +149,7 @@ import {
   GLOSS_UNAVAILABLE,
   tokeniseKorean,
 } from '../lib/tapChain';
+import { cn } from '../lib/cn';
 import { errorMessageFor } from '../lib/errorCopy';
 import { navItem } from '../lib/nav';
 import { ApiError } from '../services/api';
@@ -146,9 +159,11 @@ import {
   getChapter,
   getGeneratedStory,
   getReadingPosition,
+  getStoryAudio,
   listChapters,
   listGeneratedStories,
   logReadingAttempt,
+  requestStoryAudio,
   saveReadingPosition,
   translatePassage,
 } from '../services/reading';
@@ -157,7 +172,10 @@ import type {
   GeneratedStoryLevel,
   GeneratedStorySummary,
   ReadingPosition,
+  StoryAudio,
+  StoryAudioSegment,
 } from '../services/reading';
+import { buildAudioSrc } from '../services/ttmik';
 import { getUpload, listUploads } from '../services/uploads';
 import { mineWord } from '../services/vocab';
 import type {
@@ -1626,6 +1644,215 @@ function StoriesSection({
 }
 
 // ─────────────────────────────────────────────────────────────
+// Story TTS audio (F-210) — request / poll / read-along
+// ─────────────────────────────────────────────────────────────
+
+/** Poll cadence while a TTS job is pending/running (server contract:
+ *  "poll every ~2s until done or failed"). */
+const STORY_AUDIO_POLL_MS = 2000;
+
+/**
+ * Poll attempt ceiling — bounded churn for a never-settling job (the
+ * MyAudioDetail precedent). 150 ticks × 2s = 5 minutes, generous against a
+ * short story's real synthesis time; the last known status stays on screen
+ * and a reopen restarts the budget.
+ */
+const STORY_AUDIO_POLL_MAX_TICKS = 150;
+
+/** Fixed fallback copy for a failed audio REQUEST (errorCopy contract). */
+const AUDIO_REQUEST_FAILED_COPY = 'Could not request audio. Try again.';
+
+/** Fixed fallback shown for a `failed` envelope whose `error` is null
+ *  (defensive — the server settles a failure with copy, but never trust
+ *  a nullable field to be populated). */
+const AUDIO_FAILED_FALLBACK_COPY = 'Audio generation failed. Try again.';
+
+/** The empty envelope — what a hydrate failure degrades to (the button
+ *  shows; the POST is idempotent, so a tap on an already-voiced story just
+ *  returns the done envelope — self-healing). */
+const NO_STORY_AUDIO: StoryAudio = {
+  status: 'none',
+  jobId: null,
+  error: null,
+  track: null,
+  segments: [],
+};
+
+/**
+ * Binary-search the ordered segments for the one whose `[startMs, endMs)`
+ * window contains `ms` — O(log n) per `timeupdate` tick (~4 Hz), the same
+ * model as the Listen surface. Returns that segment's `segmentNumber`, or
+ * null when the playhead sits in no window (before the first sentence,
+ * inside an inter-sentence gap, or past the end).
+ */
+function activeSegmentNumberAt(
+  segments: readonly StoryAudioSegment[],
+  ms: number,
+): number | null {
+  let lo = 0;
+  let hi = segments.length - 1;
+  let candidate: StoryAudioSegment | null = null;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const seg = segments[mid];
+    if (seg === undefined) return null; // unreachable — bounds are checked
+    if (seg.startMs <= ms) {
+      candidate = seg;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  if (candidate === null) return null;
+  return ms < candidate.endMs ? candidate.segmentNumber : null;
+}
+
+/**
+ * F-210 story-audio state machine: hydrate once on mount (an already-voiced
+ * story shows its player immediately), POST on demand, poll the GET every
+ * `STORY_AUDIO_POLL_MS` while a job is pending/running, and stop on settle
+ * (done/failed), unmount, a terminal mid-poll 404, or the tick ceiling.
+ * Every request is abortable; cleanup aborts in-flight calls so a closed
+ * reader never lands a late setState (the page-wide contract).
+ *
+ * Error copy: the daily-cap 429 (no `retryAfter`) and a `failed` envelope's
+ * `error` are server-authored WHITELISTED copy shown verbatim — the F-210
+ * contract's sanctioned exception to the fixed-copy rule (see
+ * services/reading.ts `requestStoryAudio`). Everything else routes through
+ * `errorMessageFor` as usual.
+ */
+function useStoryAudio(storyId: number): {
+  /** Latest envelope, or null while the mount hydrate is in flight. */
+  audio: StoryAudio | null;
+  /** True while the POST itself is in flight (pre-202 button busy state). */
+  requesting: boolean;
+  /** Request failure copy (429 cap verbatim / fixed copy), or null. */
+  requestError: string | null;
+  requestAudio: () => void;
+} {
+  const [audio, setAudio] = useState<StoryAudio | null>(null);
+  const [requesting, setRequesting] = useState(false);
+  const [requestError, setRequestError] = useState<string | null>(null);
+  const hydrateCtrlRef = useRef<AbortController | null>(null);
+  const pollTickCtrlRef = useRef<AbortController | null>(null);
+  const requestCtrlRef = useRef<AbortController | null>(null);
+
+  // Hydrate once per story: a `done` shows the player with no click; a
+  // `pending`/`running` (requested in an earlier session) resumes polling.
+  useEffect(() => {
+    const ctrl = new AbortController();
+    hydrateCtrlRef.current?.abort();
+    hydrateCtrlRef.current = ctrl;
+    getStoryAudio(storyId, ctrl.signal)
+      .then((env) => {
+        if (ctrl.signal.aborted) return;
+        setAudio(env);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        // Degrade to 'none' rather than blocking the reader behind an audio
+        // status probe: the button renders, and the idempotent POST
+        // self-heals (an already-voiced story answers 200 done).
+        setAudio(NO_STORY_AUDIO);
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [storyId]);
+
+  // Poll while a job is unsettled — per-tick abort-before-fetch, transient
+  // failures retried next tick, terminal 404 (story deleted mid-poll) stops
+  // immediately, and the interval + in-flight tick both die on unmount
+  // (MyAudioDetail's exact posture).
+  const status = audio?.status;
+  const polling = status === 'pending' || status === 'running';
+  useEffect(() => {
+    if (!polling) return;
+    let ticks = 0; // effect-local — every (re)start gets a fresh budget
+    const id = window.setInterval(() => {
+      ticks += 1;
+      if (ticks > STORY_AUDIO_POLL_MAX_TICKS) {
+        window.clearInterval(id);
+        return;
+      }
+      pollTickCtrlRef.current?.abort();
+      const ctrl = new AbortController();
+      pollTickCtrlRef.current = ctrl;
+      getStoryAudio(storyId, ctrl.signal)
+        .then((env) => {
+          if (ctrl.signal.aborted) return;
+          // Settling to done/failed flips `polling` false → effect teardown
+          // clears this interval.
+          setAudio(env);
+        })
+        .catch((err: unknown) => {
+          if (ctrl.signal.aborted) return;
+          if (err instanceof ApiError && err.code === 'canceled') return;
+          if (err instanceof ApiError && err.status === 404) {
+            // Story gone mid-poll — terminal: stop NOW rather than hammer a
+            // route that can only 404 again.
+            window.clearInterval(id);
+            return;
+          }
+          // Transient poll failure — next tick retries.
+        });
+    }, STORY_AUDIO_POLL_MS);
+    return () => {
+      window.clearInterval(id);
+      pollTickCtrlRef.current?.abort();
+      pollTickCtrlRef.current = null;
+    };
+  }, [polling, storyId]);
+
+  // Abort an in-flight POST on unmount (the hydrate/poll effects own their
+  // own cleanup above).
+  useEffect(
+    () => () => {
+      requestCtrlRef.current?.abort();
+    },
+    [],
+  );
+
+  const requestAudio = useCallback((): void => {
+    requestCtrlRef.current?.abort();
+    const ctrl = new AbortController();
+    requestCtrlRef.current = ctrl;
+    setRequesting(true);
+    setRequestError(null);
+    requestStoryAudio(storyId, ctrl.signal).then(
+      (env) => {
+        if (ctrl.signal.aborted) return;
+        setRequesting(false);
+        // 202 lands a pending/running envelope (polling starts via the
+        // effect above); 200 lands `done` directly (already voiced).
+        setAudio(env);
+      },
+      (err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setRequesting(false);
+        if (
+          err instanceof ApiError &&
+          err.status === 429 &&
+          err.retryAfter === undefined
+        ) {
+          // The DAILY TTS cap — server-authored whitelisted copy, shown
+          // verbatim per the F-210 contract ("try again tomorrow"); the
+          // button stays available. A short-window 429 carries `retryAfter`
+          // and falls through to errorMessageFor's structured copy instead.
+          setRequestError(err.message);
+          return;
+        }
+        setRequestError(errorMessageFor(err, AUDIO_REQUEST_FAILED_COPY));
+      },
+    );
+  }, [storyId]);
+
+  return { audio, requesting, requestError, requestAudio };
+}
+
+// ─────────────────────────────────────────────────────────────
 // Story reader (?story=N)
 // ─────────────────────────────────────────────────────────────
 
@@ -1679,6 +1906,94 @@ function StoryReader({ storyId }: { storyId: number }): JSX.Element {
       .map((block) => block.trim())
       .filter((block) => block !== '');
   }, [story]);
+
+  // ── F-210: story TTS audio + read-along highlighting ──
+  const { audio, requesting, requestError, requestAudio } =
+    useStoryAudio(storyId);
+
+  // Defensive ordinal sort (MyAudioDetail's stance — the server already
+  // orders by segment_number).
+  const orderedSegments = useMemo(
+    () =>
+      audio !== null && audio.status === 'done'
+        ? [...audio.segments].sort((a, b) => a.segmentNumber - b.segmentNumber)
+        : [],
+    [audio],
+  );
+
+  // Degrade gracefully: all-zero windows mean the provider returned no
+  // usable timing — play audio, skip highlighting (and keep the plain
+  // paragraph rendering, since segment lines exist only to be highlighted).
+  const hasTiming = orderedSegments.some(
+    (s) => s.startMs !== 0 || s.endMs !== 0,
+  );
+  // `track !== null` rides along defensively: segment lines exist to follow
+  // a player — a malformed done-envelope with no track must fall back to the
+  // plain paragraphs rather than render highlight lines nothing can drive.
+  // `ttsConfigured !== false` matches the audio-card gate below: when the
+  // card (and so the player) is hidden on a dormant deploy, the body keeps
+  // its plain paragraph rendering too.
+  const readAlong =
+    audio !== null &&
+    audio.ttsConfigured !== false &&
+    audio.status === 'done' &&
+    audio.track !== null &&
+    orderedSegments.length > 0 &&
+    hasTiming;
+
+  // Runtime playback failure (the F-160 device, via MyAudioDetail) —
+  // distinct from a fetch error: the element stays mounted, an alert
+  // renders alongside it. A fresh envelope gives the player a fresh chance.
+  const [playbackError, setPlaybackError] = useState(false);
+  const onPlaybackError = useCallback((): void => {
+    setPlaybackError(true);
+  }, []);
+
+  // Read-along: highlight the segment whose [startMs, endMs) contains the
+  // playhead. Listeners attach only while a timed track is rendered and are
+  // removed on unmount / when the player leaves the tree (browsers don't
+  // fire `timeupdate` while paused, so pause needs no extra teardown).
+  // `seeked` re-syncs after a scrub; `ended` clears the highlight.
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
+  const activeLineRef = useRef<HTMLDivElement | null>(null);
+  const [activeSegmentNumber, setActiveSegmentNumber] = useState<
+    number | null
+  >(null);
+  useEffect(() => {
+    if (!readAlong) return;
+    const el = audioElRef.current;
+    if (el === null) return;
+    const sync = (): void => {
+      setActiveSegmentNumber(
+        activeSegmentNumberAt(orderedSegments, el.currentTime * 1000),
+      );
+    };
+    const clear = (): void => {
+      setActiveSegmentNumber(null);
+    };
+    el.addEventListener('timeupdate', sync);
+    el.addEventListener('seeked', sync);
+    el.addEventListener('ended', clear);
+    return () => {
+      el.removeEventListener('timeupdate', sync);
+      el.removeEventListener('seeked', sync);
+      el.removeEventListener('ended', clear);
+    };
+  }, [readAlong, orderedSegments]);
+
+  // Gentle auto-follow (nice-to-have): keep the active line in view while
+  // actually playing — never on a paused scrub, and `nearest` so the page
+  // doesn't lurch. Guarded: happy-dom/test environments may not implement
+  // scrollIntoView.
+  useEffect(() => {
+    if (activeSegmentNumber === null) return;
+    const line = activeLineRef.current;
+    const player = audioElRef.current;
+    if (line === null || player === null || player.paused) return;
+    if (typeof line.scrollIntoView === 'function') {
+      line.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [activeSegmentNumber]);
 
   // F-172 — "Mark story as finished" (reading_attempts, migration 060). A
   // generated story has no passage/position tracking at all (unlike a
@@ -1744,6 +2059,107 @@ function StoryReader({ storyId }: { storyId: number }): JSX.Element {
         </p>
       ) : null}
 
+      {/* F-210 — the story-audio section, driven by the envelope status.
+          Nothing renders while the mount hydrate is in flight (the story
+          body never waits on the audio probe), and NOTHING renders when the
+          server says it cannot synthesize (`ttsConfigured: false` — a
+          dormant deploy without a TTS key): absence, not a dead affordance.
+          Only an explicit `false` hides — a missing flag (older server)
+          keeps the feature visible, forward-compat. Same blue-signboard
+          player card as the Listen surfaces (MyAudioDetail). */}
+      {audio !== null && audio.ttsConfigured !== false ? (
+        <CityCard tone="blue" className="km-reading__audio">
+          {audio.status === 'done' && audio.track !== null ? (
+            (() => {
+              // The strict allow-list resolver — the ONLY path to the
+              // <audio> src. A tampered streamUrl resolves to null and the
+              // player simply doesn't render (MyAudioDetail's stance).
+              const audioSrc = buildAudioSrc(audio.track.streamUrl);
+              return audioSrc !== null ? (
+                <>
+                  {/* Real streaming player (HTTP Range server-side, so
+                      seeking works); the read-along transcript below is the
+                      caption surface — same a11y exemption as the Listen
+                      players. */}
+                  {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                  <audio
+                    ref={audioElRef}
+                    controls
+                    preload="metadata"
+                    src={audioSrc}
+                    aria-label={`Audio for ${story.title}`}
+                    onError={onPlaybackError}
+                    style={{ width: '100%' }}
+                  />
+                  {playbackError ? (
+                    <p className="km-reading__audio-error" role="alert">
+                      <Bilingual
+                        en="Audio couldn't load — try again later."
+                        kr="오디오를 불러올 수 없어요 — 나중에 다시 시도해 주세요."
+                      />
+                    </p>
+                  ) : null}
+                </>
+              ) : (
+                // Defensive only: reachable solely if a tampered streamUrl
+                // was rejected by the allow-list.
+                <p className="km-reference__empty" role="note">
+                  <Bilingual
+                    en="No audio yet — check back soon."
+                    kr="아직 오디오가 없어요 — 잠시 후 다시 확인해 주세요."
+                  />
+                </p>
+              );
+            })()
+          ) : audio.status === 'pending' || audio.status === 'running' ? (
+            // In flight — the poll above lands the settle; role=status so AT
+            // hears the eventual flip via the re-render.
+            <p className="km-reading__audio-busy" role="status">
+              <Bilingual en="Generating audio…" kr="오디오 생성 중…" />
+            </p>
+          ) : (
+            // 'none' | 'failed' — the request affordance.
+            <>
+              {audio.status === 'failed' ? (
+                // Server-authored whitelisted failure copy — verbatim per
+                // the F-210 contract (see services/reading.ts).
+                <p className="km-reading__audio-error" role="alert">
+                  {audio.error ?? AUDIO_FAILED_FALLBACK_COPY}
+                </p>
+              ) : null}
+              <div>
+                <Button
+                  variant="gold"
+                  size="sm"
+                  // aria-disabled, NOT disabled: the hard attribute would
+                  // drop keyboard focus to <body> the instant the call
+                  // starts (StoryGenerator's exact pattern).
+                  aria-disabled={requesting || undefined}
+                  leadingIcon={<Icon name="headphones" size={14} />}
+                  onClick={() => {
+                    if (requesting) return; // aria-disabled doesn't block clicks
+                    requestAudio();
+                  }}
+                >
+                  {requesting ? (
+                    <Bilingual en="Requesting…" kr="요청 중…" compact />
+                  ) : audio.status === 'failed' ? (
+                    <Bilingual en="Try again" kr="다시 시도" compact />
+                  ) : (
+                    <Bilingual en="Generate audio" kr="오디오 생성" compact />
+                  )}
+                </Button>
+              </div>
+              {requestError !== null ? (
+                <div role="alert" className="km-reading__audio-error">
+                  {requestError}
+                </div>
+              ) : null}
+            </>
+          )}
+        </CityCard>
+      ) : null}
+
       {/* Same reading-surface treatment as the chapter reader's CityCard
           (device #1/#2) — one consistent "reading surface" identity across
           both the uploaded-book and AI-story readers. */}
@@ -1752,18 +2168,47 @@ function StoryReader({ storyId }: { storyId: number }): JSX.Element {
         rail
         className="km-reading__reader-card km-reading__reader-card--story"
       >
-        {paragraphs.map((block, i) => (
-          <TranslatablePassage
-            // Index keys are safe here: the list is derived, static per
-            // loaded story, and never reordered.
-            key={i}
-            body={block}
-            ariaContext={`paragraph ${String(i + 1)}`}
-            minedIds={minedIds}
-            onTapWord={onTapWord}
-            onTranslate={setTranslateText}
-          />
-        ))}
+        {readAlong
+          ? // F-210 read-along: the body re-renders from the ordered voiced
+            // segments — one tappable line per sentence, so the highlight
+            // window and the rendered line are the SAME unit (exact
+            // alignment by construction) and tap-to-define + translate keep
+            // working per line. Falls back to the paragraph rendering below
+            // whenever there's no audio or no usable timing.
+            orderedSegments.map((seg) => {
+              const active = seg.segmentNumber === activeSegmentNumber;
+              return (
+                <div
+                  key={seg.segmentNumber}
+                  ref={active ? activeLineRef : null}
+                  className={cn(
+                    'km-reading__readalong-line',
+                    active && 'km-reading__readalong-line--active',
+                  )}
+                  {...(active ? { 'aria-current': 'true' } : {})}
+                >
+                  <TranslatablePassage
+                    body={seg.body}
+                    ariaContext={`sentence ${String(seg.segmentNumber)}`}
+                    minedIds={minedIds}
+                    onTapWord={onTapWord}
+                    onTranslate={setTranslateText}
+                  />
+                </div>
+              );
+            })
+          : paragraphs.map((block, i) => (
+              <TranslatablePassage
+                // Index keys are safe here: the list is derived, static per
+                // loaded story, and never reordered.
+                key={i}
+                body={block}
+                ariaContext={`paragraph ${String(i + 1)}`}
+                minedIds={minedIds}
+                onTapWord={onTapWord}
+                onTranslate={setTranslateText}
+              />
+            ))}
       </CityCard>
 
       <MarkCompleteButton

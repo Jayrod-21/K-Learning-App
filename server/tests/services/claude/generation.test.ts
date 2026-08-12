@@ -203,4 +203,54 @@ describe('generateStory — tool-use parse + topic handling', () => {
       ClaudeOutputSchemaError,
     );
   });
+
+  // F-210 groundwork: turns is OPTIONAL (a turn-less story still parses — the
+  // two tests above prove it) and parses verbatim when present.
+  it('parses optional turns ({speaker, text}[]) when the model emits them', async () => {
+    const { proxy, sdk } = setupProxy([
+      {
+        toolUse: {
+          name: 'submit_story',
+          input: {
+            title: '고양이 카페',
+            bodyKo: '고양이가 말했다. "어서 오세요."',
+            turns: [
+              { speaker: 'narrator', text: '고양이가 말했다.' },
+              { speaker: '고양이', text: '"어서 오세요."' },
+            ],
+          },
+        },
+      },
+    ]);
+    const r = await proxy.generateStory({ level: 'L3' });
+    expect(r.result.turns).toEqual([
+      { speaker: 'narrator', text: '고양이가 말했다.' },
+      { speaker: '고양이', text: '"어서 오세요."' },
+    ]);
+    // The tool schema advertises turns (the model can only emit what the
+    // schema admits) but does NOT require it.
+    const req = sdk.calls[0]!.req as {
+      tools: Array<{ input_schema: { required: string[]; properties: Record<string, unknown> } }>;
+    };
+    expect(Object.keys(req.tools[0]!.input_schema.properties)).toContain('turns');
+    expect(req.tools[0]!.input_schema.required).toEqual(['title', 'bodyKo']);
+  });
+
+  it('malformed turns (empty speaker) → ClaudeOutputSchemaError', async () => {
+    const { proxy } = setupProxy([
+      {
+        toolUse: {
+          name: 'submit_story',
+          input: {
+            title: '제목',
+            bodyKo: '이야기입니다.',
+            turns: [{ speaker: '', text: '이야기입니다.' }],
+          },
+        },
+      },
+    ]);
+    await expect(proxy.generateStory({ level: 'L2' })).rejects.toBeInstanceOf(
+      ClaudeOutputSchemaError,
+    );
+  });
 });

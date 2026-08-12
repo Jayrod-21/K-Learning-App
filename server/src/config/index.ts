@@ -136,6 +136,63 @@ const EnvSchema = z.object({
   // bytes cap (routes/audio.ts) so neither cap can be raced past.
   AUDIO_UPLOAD_DAILY_COUNT_CAP: z.coerce.number().int().positive().default(50),
 
+  // ---------------------------------------------------------------------------
+  // Story TTS (F-210 — voice a generated story via ElevenLabs). The synthesized
+  // mp3 lands in the SAME audio blob store as user uploads
+  // (AUDIO_UPLOAD_STORAGE_DIR above) and streams through the existing
+  // /audio/tracks/:id/stream route — no new storage or streaming knobs.
+  // ---------------------------------------------------------------------------
+  // ElevenLabs API key. OPTIONAL in EVERY environment — including production
+  // — so story TTS can ship DORMANT without coupling unrelated deploys to a
+  // vendor key: with no key the app boots normally, the routes answer
+  // `ttsConfigured: false`, the enqueue POST refuses with 503
+  // `tts_unavailable` before writing a job, and the keyless provider fails
+  // any in-flight job with a clear "not configured" message
+  // (services/tts.ts). Going live later is a Deploy/.env edit + redeploy —
+  // zero code change. index.ts logs a startup warning when the key is
+  // absent so a deploy that MEANT to enable TTS is diagnosable at boot.
+  // Secrets policy (SECURITY.md §1): no default, and the value is never
+  // logged (services/tts.ts never places it anywhere but the request
+  // header). EMPTY STRING ⇒ unset: the deploy compose passes
+  // `ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}` so the plumbing exists
+  // before the key does, and docker substitutes '' while Deploy/.env leaves
+  // the value blank — that must read as "dormant", never a parse failure.
+  ELEVENLABS_API_KEY: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().min(1).optional(),
+  ),
+
+  // The ElevenLabs voice used for the v1 single-narrator read. Default is the
+  // ElevenLabs premade "Rachel" voice id — multilingual-capable and present on
+  // every account; the operator swaps in a preferred Korean narrator voice id
+  // without a code change. (Multi-voice per `turns` is v2 — it will map
+  // speakers to voice ids on top of this same provider.) Empty string ⇒ the
+  // default (compose passes `${ELEVENLABS_VOICE_ID:-}` — see the key above).
+  ELEVENLABS_VOICE_ID: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().min(1).default('21m00Tcm4TlvDq8ikWAM'),
+  ),
+
+  // Per-user DAILY cap on story-TTS ENQUEUES (→ 429 BEFORE any job row is
+  // written). TTS bills per character, but a per-JOB cap is the right lever
+  // here because a story body is already hard-bounded (StoryResultSchema caps
+  // bodyKo at 6000 chars), so jobs/day × 6000 bounds spend; the
+  // story_audio_jobs.char_count ledger still records exact usage. Failed jobs
+  // count (cost control — a failed run spent quota too; 069/076's stance).
+  STORY_TTS_DAILY_CAP: z.coerce.number().int().positive().default(10),
+
+  // How often the in-server runner polls story_audio_jobs for pending work.
+  // In-process (NOT the km-worker — it mounts the audio volume read-only):
+  // the interval is unref'd so it never holds the process open.
+  STORY_TTS_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
+
+  // A 'running' job older than this is presumed crashed (server restart
+  // mid-synthesis) and reaped 'failed' at the next poll, un-bricking the
+  // story's one-live-job slot. Sized well past the longest plausible
+  // synthesis of a 6000-char body (uploadExtract.ts's STALE_RUN_MINUTES
+  // posture; 'pending' is never reaped — it is the healthy backlog).
+  STORY_TTS_STALE_RUN_MINUTES: z.coerce.number().int().positive().default(15),
+
   // Corpus audio root (F-012 — TTMIK/Iyagi mp3 streaming). Read-only tree the
   // audio routes stream from; DB rows store paths RELATIVE to this root (e.g.
   // 'TTMIK/이야기들/이야기/143 TTMIK Iyagi 143.mp3'). In the deploy compose this
@@ -272,6 +329,9 @@ const EnvSchema = z.object({
       message: 'SMTP_FROM is required when SMTP_HOST is set',
     });
   }
+  // F-210 note: ELEVENLABS_API_KEY is deliberately NOT refined to be
+  // required in production — story TTS ships dormant (see the field's doc
+  // comment) and a missing key must never block an unrelated deploy.
 });
 
 export type Config = z.infer<typeof EnvSchema>;

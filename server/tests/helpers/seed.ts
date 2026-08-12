@@ -6,7 +6,7 @@
  * return the freshly-inserted ids so tests can chain.
  */
 import type { Pool } from 'pg';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 /** Register a user via the app, then return the supertest agent + user id. */
 import request from 'supertest';
@@ -862,6 +862,82 @@ export async function seedGeneratedStory(
     ],
   );
   return Number(rows[0]!.id);
+}
+
+/**
+ * Seed a single story_audio_jobs row (F-210, migration 081) directly —
+ * bypasses POST /reading/generated/:id/audio. Returns the new job id.
+ * `userId` MUST own `storyId` (081's composite owner FK rejects any other
+ * pairing). Defaults to a settled 'failed' row so cap tests can stack many
+ * rows on ONE story without tripping the one-live-job partial unique.
+ */
+export async function seedStoryAudioJob(
+  pool: Pool,
+  userId: number,
+  storyId: number,
+  opts: {
+    status?: 'pending' | 'running' | 'done' | 'failed';
+    charCount?: number;
+    error?: string | null;
+    createdAt?: Date;
+    startedAt?: Date;
+  } = {},
+): Promise<number> {
+  const { rows } = await pool.query<{ id: string }>(
+    `INSERT INTO story_audio_jobs
+       (generated_story_id, user_id, status, char_count, error, created_at, started_at)
+     VALUES ($1, $2, $3, $4, $5, COALESCE($6, now()), $7)
+     RETURNING id`,
+    [
+      storyId,
+      userId,
+      opts.status ?? 'failed',
+      opts.charCount ?? 100,
+      opts.error ?? null,
+      opts.createdAt ?? null,
+      opts.startedAt ?? null,
+    ],
+  );
+  return Number(rows[0]!.id);
+}
+
+/**
+ * Seed a fully VOICED story (F-210): an audio_sources set (kind
+ * 'generated_story', linked + owner-pinned to the story), its single
+ * audio_tracks row, and `segmentCount` ordered transcript segments — the
+ * at-rest state the runner produces, without running TTS or touching the
+ * filesystem (blob_ref points at nothing; tests that stream must write the
+ * file themselves). Returns the ids.
+ */
+export async function seedStoryAudio(
+  pool: Pool,
+  userId: number,
+  storyId: number,
+  opts: { title?: string; durationMs?: number | null; segmentCount?: number } = {},
+): Promise<{ sourceId: number; trackId: number }> {
+  const title = opts.title ?? '모의 이야기';
+  const src = await pool.query<{ id: string }>(
+    `INSERT INTO audio_sources
+       (user_id, slug, title, kind, source_upload_id, generated_story_id, status)
+     VALUES ($1, $2, $3, 'generated_story', NULL, $4, 'ready')
+     RETURNING id`,
+    [userId, `generated-story-${storyId}`, title, storyId],
+  );
+  const sourceId = Number(src.rows[0]!.id);
+  const trk = await pool.query<{ id: string }>(
+    `INSERT INTO audio_tracks
+       (source_id, user_id, track_number, title, blob_ref, byte_size, duration_ms,
+        transcript_status)
+     VALUES ($1, $2, 1, $3, $4, 3, $5, 'done')
+     RETURNING id`,
+    [sourceId, userId, title, `${userId}/${randomUUID()}.mp3`, opts.durationMs ?? 4000],
+  );
+  const trackId = Number(trk.rows[0]!.id);
+  const segmentCount = opts.segmentCount ?? 2;
+  for (let n = 1; n <= segmentCount; n++) {
+    await seedAudioSegment(pool, trackId, n);
+  }
+  return { sourceId, trackId };
 }
 
 /** Insert a minimal krdict entry. Returns id. */

@@ -46,6 +46,10 @@ const TOUCHED_KEYS = [
   'AUDIO_UPLOAD_MAX_BYTES',
   'AUDIO_TRANSCRIBE_DAILY_BYTES_CAP',
   'AUDIO_UPLOAD_DAILY_COUNT_CAP',
+  'NODE_ENV',
+  'ELEVENLABS_API_KEY',
+  'ELEVENLABS_VOICE_ID',
+  'STORY_TTS_DAILY_CAP',
 ] as const;
 
 let savedEnv: Record<string, string | undefined>;
@@ -179,6 +183,49 @@ describe('audio-upload knobs (Track A, A-3)', () => {
     process.env.AUDIO_UPLOAD_DAILY_COUNT_CAP = '0';
     expect(() => parse()).toThrow(/Invalid configuration/);
     process.env.AUDIO_UPLOAD_DAILY_COUNT_CAP = 'many';
+    expect(() => parse()).toThrow(/Invalid configuration/);
+  });
+});
+
+describe('story TTS config (F-210) — dormant-deploy posture', () => {
+  it('no ELEVENLABS_API_KEY in PRODUCTION parses cleanly — a keyless deploy must never fail at startup', () => {
+    // The B1 regression pin: the key used to be refined required-in-prod,
+    // which coupled every unrelated km-server deploy to a vendor key. The
+    // feature now ships dormant instead (503 + ttsConfigured:false).
+    process.env.NODE_ENV = 'production';
+    delete process.env.ELEVENLABS_API_KEY;
+    const cfg = parse();
+    expect(cfg.NODE_ENV).toBe('production');
+    expect(cfg.ELEVENLABS_API_KEY).toBeUndefined();
+  });
+
+  it("EMPTY string reads as unset (the compose passes `${ELEVENLABS_API_KEY:-}` → '')", () => {
+    process.env.ELEVENLABS_API_KEY = '';
+    process.env.ELEVENLABS_VOICE_ID = '';
+    const cfg = parse();
+    expect(cfg.ELEVENLABS_API_KEY).toBeUndefined();
+    // Empty voice id falls back to the documented default, not ''.
+    expect(cfg.ELEVENLABS_VOICE_ID).toBe('21m00Tcm4TlvDq8ikWAM');
+  });
+
+  it('a set key and voice id parse through as given', () => {
+    process.env.ELEVENLABS_API_KEY = 'test-elevenlabs-key';
+    process.env.ELEVENLABS_VOICE_ID = 'voice-abc';
+    const cfg = parse();
+    expect(cfg.ELEVENLABS_API_KEY).toBe('test-elevenlabs-key');
+    expect(cfg.ELEVENLABS_VOICE_ID).toBe('voice-abc');
+  });
+
+  it('STORY_TTS_DAILY_CAP: default 10, env strings parse to numbers (the compose passes STRINGS)', () => {
+    expect(parse().STORY_TTS_DAILY_CAP).toBe(10);
+    process.env.STORY_TTS_DAILY_CAP = '3';
+    expect(parse().STORY_TTS_DAILY_CAP).toBe(3);
+  });
+
+  it('a non-positive or garbage STORY_TTS_DAILY_CAP fails config parse at startup', () => {
+    process.env.STORY_TTS_DAILY_CAP = '0';
+    expect(() => parse()).toThrow(/Invalid configuration/);
+    process.env.STORY_TTS_DAILY_CAP = 'unlimited';
     expect(() => parse()).toThrow(/Invalid configuration/);
   });
 });

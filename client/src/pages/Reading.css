@@ -271,3 +271,58 @@
   font-size: 0.78125rem;
   color: var(--paper-mute);
 }
+
+/* ── Story TTS audio + read-along (F-210) ───────────────────── */
+
+/* The audio card — a `blue`-tone CityCard (the Listen surfaces' player
+ * signboard); CityCard.css owns the paint, this only stacks the player /
+ * busy / failed rows. */
+.km-reading__audio {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.km-reading__audio-busy {
+  margin: 0;
+  font-size: 0.84375rem;
+  color: var(--paper-dim);
+}
+
+.km-reading__audio-error {
+  margin: 0;
+  font-size: 0.78125rem;
+  color: var(--danger-ink);
+}
+
+/* Mirror the shared .km-btn:disabled paint while the request is in flight —
+ * the button goes aria-disabled (not `disabled`) so keyboard focus stays
+ * put (the StoryGenerator precedent). */
+.km-reading__audio .km-btn[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* One voiced sentence line. Negative inline margin lets the highlight pad
+ * breathe past the text column without shifting the copy; the transition
+ * keeps the read-along sweep calm instead of strobing line to line. */
+.km-reading__readalong-line {
+  padding: 2px 8px;
+  margin: 0 -8px;
+  border-radius: var(--radius);
+  transition: background-color 180ms ease;
+}
+
+/* Sentence lines sit closer than paragraph blocks — the 18px paragraph
+ * rhythm reads as gaps between sentences of ONE story. */
+.km-reading__readalong-line .km-reading__passage {
+  margin: 0 0 6px;
+}
+
+/* Accent-driven highlight (F-131 stance — the shared `--vermilion` token,
+ * never a hard-coded color), soft enough that the serif copy stays primary
+ * in both themes. */
+.km-reading__readalong-line--active {
+  background: color-mix(in srgb, var(--vermilion) 14%, transparent);
+}

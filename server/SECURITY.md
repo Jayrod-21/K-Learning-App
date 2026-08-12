@@ -1236,3 +1236,73 @@ SAME `vocab_cards` row through the shared FSRS write path.
   upstream. Spans are verified against the exact sentence text before
   persisting (offset-drift guard), so a drifted upstream can never store a
   garbled blank.
+
+## 21. Pass F-210 surface — story TTS audio (`POST`/`GET /reading/generated/:id/audio`, migration 081)
+
+Voices a user's own generated story through a paid TTS provider
+(ElevenLabs), persists the mp3 in the existing audio blob store, and serves
+it back through the existing hardened `/audio/tracks/:id/stream` byte route.
+Two endpoints on the existing `/reading` prefix (no new nginx allow-list
+entry needed): `POST /reading/generated/:id/audio` requests narration,
+`GET /reading/generated/:id/audio` is the status/polling envelope.
+
+### 21.1 API key handling (the only new secret)
+- **Threat:** the vendor key leaks — into a URL (proxy/server logs), a log
+  line, or a client-visible error.
+- **Defense:** `ELEVENLABS_API_KEY` is server-side only and appears in
+  exactly ONE place: the `xi-api-key` REQUEST HEADER inside
+  `ElevenLabsTtsProvider.synthesize` (`services/tts.ts`). Never in a URL
+  (query-string keys end up in logs), never logged, never echoed into any
+  error message. Only the story body (server-held text the user authored via
+  generation) is sent upstream — no PII rides the request.
+- The key is OPTIONAL in every environment — including production. A keyless
+  deploy is a DORMANT deploy, not a config error: the server boots (with a
+  startup `log.warn`), the envelope reports `ttsConfigured: false`, the
+  enqueue POST refuses with 503 `tts_unavailable` before writing anything,
+  and the compose files pass `${ELEVENLABS_API_KEY:-}` so the plumbing exists
+  before the key does (empty string reads as unset). This decouples every
+  unrelated km-server deploy from the vendor key; going live is a
+  `Deploy/.env` edit + redeploy.
+
+### 21.2 Upstream error whitelisting
+- **Threat:** provider response text (which can embed request details, quota
+  numbers, or account identifiers) reaches a client-visible field —
+  `story_audio_jobs.error` is DISPLAYED VERBATIM by the client.
+- **Defense:** every failure surfaced from the TTS layer is a fixed,
+  SERVER-AUTHORED message (`TtsUpstreamError` carries only the HTTP status
+  code, never response prose; malformed/oversized/empty responses each map to
+  our own fixed line) — the same posture as `mapClaudeError`'s whitelist
+  (§13). The runner's catch-all writes a generic line and keeps details in
+  the server log only.
+
+### 21.3 Cost bounding (the POST is a paid per-character call)
+- `expensiveLimiter` on the enqueue route, PLUS a per-user DAILY enqueue cap
+  (`STORY_TTS_DAILY_CAP`, default 10) checked under a per-user
+  `pg_advisory_xact_lock` in the same transaction as the insert — two
+  concurrent requests serialize and cannot both slip under the cap (the
+  `/audio` upload cap's exact pattern). Failed jobs still count (a failed run
+  spent quota); the cap check runs BEFORE any write, and the
+  capability gate (503 when keyless) runs before the cap so a
+  guaranteed-to-fail job never burns a slot.
+- **Voice-once:** an already-voiced story short-circuits 200 with the cached
+  set — a replay can never re-synthesize (migration 081's partial UNIQUE on
+  `audio_sources.generated_story_id` makes this structural). One live job per
+  story is likewise a partial-unique index, not just a code check.
+- Story bodies are schema-capped (6000 chars) and the provider call has its
+  own input ceiling + timeout, so a single job's spend is bounded.
+
+### 21.4 IDOR / ownership
+- Both endpoints ownership-check the story FIRST — a missing id and a foreign
+  id are the same uniform 404, before any job/audio read or write. Every
+  persisted artifact (source, track, segments, job) is user-owned, and 081's
+  composite FKs `(generated_story_id, user_id)` make a cross-user row
+  structurally impossible even if route code regresses.
+- Audio BYTES are never served by these routes: the envelope points at the
+  existing `/audio/tracks/:id/stream` route, which brings its own Range
+  handling, nosniff, and owner-scoped 404.
+
+### 21.5 Answer/leak posture
+- None to defend: the synthesized audio narrates the user's OWN
+  server-generated story (already fully readable to them via
+  `GET /reading/generated/:id`). No answer material, no third-party content,
+  no cross-user data is embedded in the audio, the segments, or the job rows.
