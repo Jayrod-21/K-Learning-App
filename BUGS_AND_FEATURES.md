@@ -20,9 +20,9 @@ per-item status line in the same PR that lands the work).** Reconciliation trail
 
 **Bugs**
 - 🟡 **B-025** P1 — verify TTMIK transcripts + highlights (read-along forced alignment, deferred).
-- 🟡 **B-026** P1 — missing audio: **10 TTMIK Level-9 mp3s** (L9 lessons 5–14); blocked on user-supplied audio. (The "~48 Iyagi" half was PHANTOM numbering — resolved by the F-185 season remap; live `iyagi_episodes` has 0 NULL-audio rows.)
+- 🟡 **B-026** P1 — 10 TTMIK Level-9 lessons (5–14) have NULL `audio_path`. **AUDIT 2026-08-12: likely NO LONGER user-blocked** — the L9 audio appears already ingested as standalone tracks (`audio_sources` id 28 "TTMIK Grammar Textbook Level 9", 60 transcribed tracks via F-197); the fix is now the **F-197 per-slot mapping** (track→lesson), NOT user-supplied files. ("~48 Iyagi" half was phantom numbering — 0 NULL-audio iyagi rows.)
 - 🔴 **B-031** P3 — TOPIK item 222 option-1 OCR glitch (single-cell text fix).
-- 🟡 **B-037** P2 (NEW 2026-07-29) — 96 TOPIK section MP3s decode-corrupt (ffmpeg "Invalid data"); their papers stay transcript-only until re-downloaded. Blocked on user re-download, then re-run the F-119 segmenter+loader.
+- 🟡 **B-037** P2 — TOPIK listening MP3s decode-corrupt. **AUDIT 2026-08-12: residue is SMALL** — only **2 transcript-only papers remain** (96th TOPIK I id=10 + II id=67); 22 of 24 listening papers now have audio (855 spans). Blocked on user re-download of just the 96th-TOPIK pair, then re-run the F-119 segmenter+loader.
 - 🔴 **B-038** P4 (NEW 2026-07-29) — `diagnostic.ts` `pickTopikRow` mirrors `ANSWERABLE_ITEM_SQL`'s structural legs but never had the D-2 `[듣기 지문 없음]` placeholder-exclusion leg → can serve span-less placeholder items. Pre-existing; filed during F-119 Phase 5.
 
 **Features**
@@ -32,7 +32,7 @@ per-item status line in the same PR that lands the work).** Reconciliation trail
 - 🔴 **F-194** P3 — 064 down-migration can't distinguish backfilled from real pre-064 rows.
 - 🟡 **F-197** P2 — Track A "my audio" pipeline shipped (#146–153) AND the **bulk corpus ingest has RUN**: live DB = 21 `audio_sources` / **982 `audio_tracks`, all 982 transcription jobs done** (news-in-korean, jindo-dog, ttmik-grammar-level-1..10, korean-folktales, real-life-conversations, easy-korean-reading, topik mocks). OPEN sub-part only: the per-slot mapping (Track-N → lesson/TOPIK-question, the "A-5 pairing"); sets are standalone `standalone_listening` today.
 - 🟡 **F-198** P2 — device-adaptive layouts epic (D2 shipped #123; remaining breakpoints ongoing).
-- 🔴 **F-200** P4 — clear legacy pre-070 mine-written tags from `vocab_entries.source_upload_id`.
+- ⚪ **F-200** P4 — clear legacy pre-070 mine-written tags from `vocab_entries.source_upload_id`. **AUDIT 2026-08-12: OBSOLETE — no target data.** Live DB has 0 `user-mined` legacy tags (the 147 tagged `vocab_entries` are all legitimate F-108 upload extractions). Close; re-open only if a pre-070 dump is ever restored.
 - 🔴 **F-201** P3 — failed logout (5xx) leaves the server session live.
 - 🔴 **F-203** P4 — server-side bigint id normalization (fix int8→string at the source).
 - 🔴 **F-204** P4 — shared `coerceId()` helper across services.
@@ -135,7 +135,7 @@ Launch one focused session per group; cross-cutting items noted.
 | B-023 | Bug | 🟢 | P3 | UI | Card has pointed corner + square box over a rounded tile |
 | B-024 | Bug | 🟢 | P3 | UI | Saved-grammar list formatting is cluttered; forms wrap lines |
 | B-025 | Bug | 🟡 | P1 | DATA (UI) | Verify TTMIK transcripts + highlights |
-| B-026 | Bug | 🟡 | P1 | DATA (BACKEND, CONFIG) | Missing audio investigation — ~10 TTMIK lessons + ~48 Iyagi episodes |
+| B-026 | Bug | 🟡 | P1 | DATA (BACKEND, CONFIG) | 10 TTMIK L9 lessons NULL audio_path — audio likely already ingested (src 28), now = F-197 per-slot mapping, not user files (Iyagi half was phantom) |
 | B-027 | Bug | 🟢 | P1 | BACKEND (UI) | Verify writing questions aren't hard-locked to Q53/Q54 and randomize |
 | B-028 | Bug | 🟢 | P1 | UI (BACKEND) | Verify Hanja drill / recall actually works |
 | B-029 | Bug | 🟢 | P2 | UI | TOPIK landing wrongly limited to 10 items |
@@ -146,7 +146,7 @@ Launch one focused session per group; cross-cutting items noted.
 | B-034 | Bug | 🟢 | P2 | UI | B-021 client slice — drill banner still says "next in ~10 minutes" for scheduledDays 0 |
 | B-035 | Bug | 🟢 | P2 | UI | B-027 client slice — Writing.tsx still indexes the deterministic prompt list |
 | B-036 | Bug | ✅ | P2 | bug · regression | Settings → Appearance text-size (S / M / L) does nothing |
-| B-037 | Bug | 🟡 | P2 | DATA (CONFIG) | 96 TOPIK section MP3s decode-corrupt → their papers stay transcript-only (blocked on user re-download, then re-run F-119 segmenter+loader) |
+| B-037 | Bug | 🟡 | P2 | DATA (CONFIG) | Corrupt TOPIK listening MP3s — residue now just 2 papers (96th TOPIK I id10 + II id67); 22/24 have audio. Blocked on user re-download of that pair + F-119 rerun |
 | B-038 | Bug | 🔴 | P4 | BACKEND | `diagnostic.ts` `pickTopikRow` lacks the D-2 `[듣기 지문 없음]` exclusion → can serve span-less placeholder items |
 | B-039 | Bug | 🟢 | P1 | BACKEND (API) | App-wide lemmatize broken — `KiwiTokenSchema` `{form,tag,length}` vs km-kiwi `{surface,pos,end}` → tap-to-define fell back to raw surface form corpuswide (fixed, PR #173) |
 | B-040 | Bug | 🟢 | P2 | UI | Listen swipe broken on touch (Samsung/Brave) — pointer-drag carousel lost the gesture to page scroll; fixed with native CSS scroll-snap (PR #171) |
@@ -290,7 +290,7 @@ Launch one focused session per group; cross-cutting items noted.
 | F-197 | Feature | 🟡 | P2 | content | Ingest the Downloads audio corpus — pipeline shipped (#146–153) + bulk ingest DONE (982 tracks transcribed); only Track-N→slot pairing open |
 | F-198 | Feature | 🟡 | P2 | design-system · epic | EPIC · Device-adaptive layouts (responsive desktop/tablet/mobile) |
 | F-199 | Feature | 🟢 | P4 | multi-user correctness | Per-user upload provenance — a 2nd user mining the same lemma silently loses their tag |
-| F-200 | Feature | 🔴 | P4 | data hygiene · follow-up (F-199) | Clear legacy pre-070 mine-written tags from `vocab_entries.source_upload_id` |
+| F-200 | Feature | ⚪ | P4 | data hygiene · follow-up (F-199) | OBSOLETE (audit 2026-08-12) — 0 legacy user-mined tags in prod; nothing to clear |
 | F-201 | Feature | 🔴 | P3 | auth resilience · follow-up (client logout button, `docs/REVIEW_logout.md` SF-2) | Failed logout (5xx) leaves the server session live — silent /login round-trip back into the app |
 | F-202 | Feature | 🟢 | P2 | CI / tooling | CI must run the client vitest suite (currently only lint/typecheck/build) |
 | F-203 | Feature | 🔴 | P4 | wire-contract hardening · follow-up (`REVIEW_ticket-id-fix.md` probe 3) | Server-side bigint id normalization — fix the bigint→string class at the source |
@@ -1986,7 +1986,7 @@ The final page-rework batch's fixpass found the app is "one batch + two files fr
 
 ### F-199 · Per-user upload provenance — a 2nd user mining the same lemma silently loses their tag
 - **Status:** 🟢 done (2026-07-16, migration 070 + mine/saved-from-uploads rework — see `docs/BUILD_f199_per_user_provenance.md`) · **Priority:** P4 · **Category:** multi-user correctness
-- **Resolution:** provenance moved to the user-scoped save artifact exactly per the fix hint — `vocab_cards.source_upload_id` (migration 070, mirroring 068: named FK → `book_uploads`, `ON DELETE SET NULL`, partial index) with an ownership-guarded backfill (a card whose entry was tagged to ANOTHER user's upload stays NULL — the mis-attributed shared-row tags are dropped, never copied). `POST /vocab/mine` now tags the caller's card (keep-first per user) and no longer writes the shared row; `GET /vocab/saved-from-uploads` reads the caller's own card tags, falling back to the entry's F-108 tag only for uploads the caller owns (covers list-adds of the user's own extracted words). Both halves of the bug are gone: B keeps their tag, and the "someone tagged this first" inference oracle no longer exists. `vocab_entries.source_upload_id` now receives **F-108 extracted-corpus writes ONLY** — do not write user-saved provenance to it again. Legacy pre-070 mine-written tags remain on shared `user_mined` rows (harmless — owner-fenced, never cross users — and load-bearing for pre-070 list-only saves in saved-from-uploads leg 2); cleanup tracked as **F-200**.
+- **Resolution:** provenance moved to the user-scoped save artifact exactly per the fix hint — `vocab_cards.source_upload_id` (migration 070, mirroring 068: named FK → `book_uploads`, `ON DELETE SET NULL`, partial index) with an ownership-guarded backfill (a card whose entry was tagged to ANOTHER user's upload stays NULL — the mis-attributed shared-row tags are dropped, never copied). `POST /vocab/mine` now tags the caller's card (keep-first per user) and no longer writes the shared row; `GET /vocab/saved-from-uploads` reads the caller's own card tags, falling back to the entry's F-108 tag only for uploads the caller owns (covers list-adds of the user's own extracted words). Both halves of the bug are gone: B keeps their tag, and the "someone tagged this first" inference oracle no longer exists. `vocab_entries.source_upload_id` now receives **F-108 extracted-corpus writes ONLY** — do not write user-saved provenance to it again. Legacy pre-070 mine-written tags remain on shared `user_mined` rows (harmless — owner-fenced, never cross users — and load-bearing for pre-070 list-only saves in saved-from-uploads leg 2); cleanup tracked as **F-200**. **AUDIT 2026-08-12: prod km-db actually has 0 such legacy `user-mined` rows** (all 147 tagged `vocab_entries` are F-108 `book-upload`) — so this retention is vacuous in prod and F-200 is ⚪ obsolete.
 - **Where / State:** `vocab_entries.source_upload_id` (F-107) lives on a SHARED row keyed `(corpus, source_id)`, written first-write-wins by `POST /vocab/mine`'s `ON CONFLICT … COALESCE` upsert. If user A mines a lemma tagged to A's upload and user B later genuinely mines the SAME lemma from B's own upload, B gets a 201 but B's tag is silently discarded — the word never appears in B's `GET /vocab/saved-from-uploads`. Also a weak inference oracle: B can detect that *someone* tagged the entry first (never whose upload or its title). No cross-user tagging attack and no title leak (ownership is checked before any write; the read joins on `bu.user_id`) — this is a deliberate, documented single-user-scope tradeoff (see the ACCEPTED TRADEOFF comment at the upsert). Grammar is unaffected: `grammar_entries` is user-scoped. Surfaced by the Batch 5 server review (SF-1).
 - **Key files:** `server/src/routes/vocab.ts` (mine upsert + saved-from-uploads read), `db/migrations/040_book_uploads.up.sql` (the shared-row column)
 - **Fix hint:** move provenance to the user-scoped save artifact — `source_upload_id` on `vocab_cards` (exactly as migration 068 did for user-scoped `grammar_entries`), or a `(user, entry, upload)` association table — and point the saved-from-uploads read at the user's own tag. Only worth building if the app ever gains real multi-user use; do NOT bolt more semantics onto the shared column.
