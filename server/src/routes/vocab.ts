@@ -308,6 +308,16 @@ router.get(
       // is gated to `c.face = 'recognition'` (fix-pass M3): cloze is an
       // alternate presentation of the RECOGNITION face only — a production
       // card sharing the same vocab_entry must never carry (or grade) a cloze.
+      // CLOZE TOGGLE (F-208 follow-up): the join is ALSO gated on the user's
+      // `preferences.clozeEnabled` (018 blob — written by PATCH
+      // /settings/prefs/cloze-enabled). The flag is read once per request via
+      // an uncorrelated scalar subquery on $1 inside the join condition — no
+      // per-row users lookup, no second round-trip. `-> = 'true'::jsonb`
+      // (not a ::boolean cast) so a missing key OR a corrupt non-boolean
+      // value compares unequal and serves the safe default (no cloze) instead
+      // of erroring the whole due fetch. When disabled the cp columns are all
+      // NULL, so the `cloze` object below is entirely absent from the payload
+      // — no answer material ships and every card renders as a flashcard.
       // The answer_surface column is DELIBERATELY never selected, so the
       // `cloze` object itself never carries the answer string or its length
       // (SECURITY.md §20); the answer is revealed only by the grade route's
@@ -374,6 +384,9 @@ router.get(
            LEFT JOIN cloze_prompts cp
                   ON cp.vocab_entry_id = c.vocab_entry_id
                  AND c.face = 'recognition'
+                 AND (SELECT u.preferences -> 'clozeEnabled'
+                        FROM users u
+                       WHERE u.id = $1) = 'true'::jsonb
           WHERE c.user_id = $1
             AND c.deleted_at IS NULL
             AND c.suspended_at IS NULL
@@ -393,8 +406,8 @@ router.get(
       const total = rows.length > 0 ? Number(rows[0]!.total) : 0;
       // F-208: the cloze_* columns are folded into an OPTIONAL `cloze` object
       // (present ⇔ the entry has a cloze_prompts row AND the card is the
-      // recognition face — that presence IS the client's cloze-eligibility
-      // signal). `blanked` is built server-side by replacing
+      // recognition face AND the user's clozeEnabled pref is on — that
+      // presence IS the client's cloze-eligibility signal). `blanked` is built server-side by replacing
       // [blank_start, blank_end) with the fixed-width marker, so the sentence
       // never ships with the answer in place. The span offsets are used ONLY
       // for that server-side substitution and are NOT serialized (fix-pass

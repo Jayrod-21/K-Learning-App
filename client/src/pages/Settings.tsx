@@ -233,6 +233,10 @@ async function loadPrefsMock(): Promise<Prefs> {
     // Tours: the localStorage cache is the honest local value (TourProvider
     // owns it), same posture as `local.languageDisplay` above.
     toursSeen: [...loadSeenTours()].sort(),
+    // Cloze toggle: wire-only here (owned by the Review page's toggle, no
+    // local copy) — the mock is never adopted (isMock guard), so the server
+    // default is the honest stand-in, like the wire palette above.
+    clozeEnabled: false,
   };
 }
 
@@ -722,12 +726,20 @@ export default function Settings(): JSX.Element {
   // mounted. TourProvider is the only writer that initiates PUTs FOR the
   // field (read-merge-write), so it is deliberately absent from the
   // change-diff below.
+  // `clozeEnabled` is a pass-through like `notif`: this screen never edits it
+  // (the Review page's toggle owns it via the field-scoped PATCH), so every
+  // PUT relays the last SERVER-reported value — seeded false only until the
+  // hydration GET lands. Residual (accepted, same class the tours-seen PATCH
+  // documents): a toggle flipped in Review while this screen sits mounted
+  // with a stale baseline can be reverted by a later Settings PUT; the next
+  // toggle tap re-asserts it through the PATCH.
   const lastSyncedPrefsRef = useRef<Prefs>({
     notif: settings.notif,
     palette: { ...LEGACY_PALETTE_DEFAULT, accent },
     languageDisplay: settings.languageDisplay,
     textSize,
     toursSeen: [...loadSeenTours()].sort(),
+    clozeEnabled: false,
   });
 
   const prefsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -847,6 +859,10 @@ export default function Settings(): JSX.Element {
       palette: { ...fresh.palette, accent: freshAccent },
       languageDisplay: freshLanguageDisplay,
       textSize: freshTextSize,
+      // A pre-feature server omits the field on GET (rolling deploy) —
+      // normalize to a real boolean so the PUT pass-through never relays
+      // `undefined` (`=== true` is the documented reader guard).
+      clozeEnabled: fresh.clozeEnabled === true,
     };
     if (freshTextSize !== localTextSize) {
       // Adopt = a plain provider update (stamps `data-text-size` on <html> +
@@ -920,6 +936,9 @@ export default function Settings(): JSX.Element {
       // the freshest set, and NOT part of the diff below: this screen only
       // ever relays the value alongside its own changes.
       toursSeen: [...loadSeenTours()].sort(),
+      // Pass-through like `notif` — the Review page's toggle owns this flag
+      // (field-scoped PATCH); this screen only relays the last server value.
+      clozeEnabled: last.clozeEnabled,
     };
     if (
       current.palette.accent === last.palette.accent &&

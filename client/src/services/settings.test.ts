@@ -2,7 +2,13 @@
  * settings service — /settings/prefs URL/body wiring + error surface.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchPrefs, patchToursSeen, putPrefs, type Prefs } from './settings';
+import {
+  fetchPrefs,
+  patchClozeEnabled,
+  patchToursSeen,
+  putPrefs,
+  type Prefs,
+} from './settings';
 import { api, ApiError } from './api';
 
 afterEach(() => {
@@ -20,6 +26,7 @@ const PREFS: Prefs = {
   languageDisplay: { mode: 'both', primary: 'ko', subScale: 0.7 },
   textSize: 'md',
   toursSeen: ['first-run'],
+  clozeEnabled: false,
 };
 
 describe('fetchPrefs', () => {
@@ -122,6 +129,45 @@ describe('patchToursSeen', () => {
     );
 
     await expect(patchToursSeen(['first-run'])).rejects.toMatchObject({
+      code: 'network',
+    });
+  });
+});
+
+describe('patchClozeEnabled', () => {
+  it('PATCHes /settings/prefs/cloze-enabled with ONLY the flag and returns the echoed prefs', async () => {
+    const echoed = { ...PREFS, clozeEnabled: true };
+    const spy = vi.spyOn(api, 'patch').mockResolvedValueOnce(echoed);
+
+    const out = await patchClozeEnabled(true);
+
+    expect(spy).toHaveBeenCalledWith(
+      '/settings/prefs/cloze-enabled',
+      { clozeEnabled: true },
+      undefined,
+    );
+    expect(out).toEqual(echoed);
+  });
+
+  it('forwards the abort signal when given', async () => {
+    const spy = vi.spyOn(api, 'patch').mockResolvedValueOnce(PREFS);
+    const ctrl = new AbortController();
+
+    await patchClozeEnabled(false, ctrl.signal);
+
+    expect(spy).toHaveBeenCalledWith(
+      '/settings/prefs/cloze-enabled',
+      { clozeEnabled: false },
+      { signal: ctrl.signal },
+    );
+  });
+
+  it('surfaces failures as ApiError (the toggle reports and keeps its state)', async () => {
+    vi.spyOn(api, 'patch').mockRejectedValueOnce(
+      new ApiError('network unreachable', { status: 0, code: 'network' }),
+    );
+
+    await expect(patchClozeEnabled(true)).rejects.toMatchObject({
       code: 'network',
     });
   });

@@ -250,6 +250,34 @@
   font-size: 0.875rem;
 }
 
+/* ── Cloze drills toggle (F-208 follow-up) ────────────────────────────── */
+.km-review__cloze-strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+}
+.km-review__cloze-body {
+  flex: 1;
+  min-width: 0;
+}
+.km-review__cloze-title {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--paper);
+}
+.km-review__cloze-hint {
+  margin-top: 2px;
+  font-size: 0.75rem;
+  color: var(--paper-mute);
+}
+/* No `color` here: the error state pairs this class with
+ * `.km-review__inline-error` (same layering rule as `__clear-status`). */
+.km-review__cloze-status {
+  margin-top: 8px;
+  font-size: 0.8125rem;
+}
+
 /* ── Clear-the-queue (remove all vocab cards; saved words are kept) ───── */
 /* No `color` here: the error state pairs this class with
  * `.km-review__inline-error`, whose vermilion must win (this rule is later

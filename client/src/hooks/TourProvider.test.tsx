@@ -63,6 +63,7 @@ const BASE_PREFS: Prefs = {
   languageDisplay: { mode: 'both', primary: 'ko', subScale: 0.7 },
   textSize: 'md',
   toursSeen: [],
+  clozeEnabled: false,
 };
 
 /** Last onFinished handed to the (mocked) runner — lets a test "finish" or

@@ -16,6 +16,9 @@
  *   PATCH /settings/prefs/tours-seen → union-merge tour ids into the stored
  *                                      `toursSeen` ONLY (jsonb_set — no
  *                                      other field carried or clobbered)
+ *   PATCH /settings/prefs/cloze-enabled → set the stored `clozeEnabled`
+ *                                      boolean ONLY (same field-scoped
+ *                                      jsonb_set posture as tours-seen)
  *
  * F-093 CONTRACT step: `notif` is no longer stored in (or read from) the 018
  * blob. `notification_schedules` (052) is the single source of truth for
@@ -147,6 +150,22 @@ const ToursSeenSchema = z.preprocess(
   z.array(TourIdElementSchema).max(200).default([]).catch([]),
 );
 
+/**
+ * Cloze drills opt-in (F-208 follow-up) — when true, `GET /vocab/cards/due`
+ * attaches the `cloze` presentation to eligible cards; when false (the
+ * default), cloze is entirely absent from the due payload and every card is
+ * a plain flashcard. The flashcard study flow's toggle writes it via the
+ * field-scoped `PATCH /settings/prefs/cloze-enabled` below.
+ *
+ * `.default(false)` — every blob stored before this feature has NO
+ * `clozeEnabled` key; defaulting (the `toursSeen` posture) keeps the
+ * GET-side safeParse passing so the user's palette/textSize are NOT wiped
+ * back to defaults. `.catch(false)` — a corrupt stored value (hand-edited
+ * blob) coerces to the safe default instead of failing the whole-blob parse;
+ * worst case the user re-enables with one tap (the seeder is idempotent).
+ */
+const ClozeEnabledSchema = z.boolean().default(false).catch(false);
+
 const PalettePrefsSchema = z
   .object({
     paper: PaperPreset,
@@ -234,6 +253,7 @@ export const StoredPrefsSchema = z
     languageDisplay: LanguageDisplayPrefsSchema.default(DEFAULT_LANGUAGE_DISPLAY),
     textSize: TextSizePreset,
     toursSeen: ToursSeenSchema,
+    clozeEnabled: ClozeEnabledSchema,
   })
   .strict();
 export type StoredPrefs = z.infer<typeof StoredPrefsSchema>;
@@ -263,6 +283,7 @@ const DEFAULT_STORED_PREFS: StoredPrefs = {
   languageDisplay: DEFAULT_LANGUAGE_DISPLAY,
   textSize: 'md',
   toursSeen: [],
+  clozeEnabled: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -402,6 +423,7 @@ router.put('/prefs', cheapLimiter(), validateBody(PrefsSchema), async (req, res,
       languageDisplay: body.languageDisplay,
       textSize: body.textSize,
       toursSeen: body.toursSeen,
+      clozeEnabled: body.clozeEnabled,
     };
 
     // Write the WHOLE stored object (no merge, no version gate). Last-writer-wins
@@ -516,6 +538,83 @@ router.patch(
         notif: await deriveNotifFromSchedules(userId),
         ...base,
         toursSeen: merged,
+      };
+      res.status(200).json(view);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// PATCH /settings/prefs/cloze-enabled — field-scoped cloze-drills opt-in.
+// ---------------------------------------------------------------------------
+
+const ClozeEnabledPatchSchema = z
+  .object({ clozeEnabled: z.boolean() })
+  .strict();
+
+/**
+ * Field-scoped cloze-drills toggle write (F-208 follow-up). The flashcard
+ * study flow's "Cloze drills" toggle flips ONLY this boolean — a full-blob
+ * PUT from there would carry a GET-time snapshot of every other slice and
+ * reintroduce exactly the clobber window the tours-seen PATCH closed, so the
+ * same primitive is used: `jsonb_set` on the CURRENT column value, no other
+ * prefs field ever carried. Unlike tours-seen (grow-only user DATA) this is
+ * a plain scalar PREFERENCE, so the body value simply replaces the stored
+ * one — last-writer-wins, the route's locked posture.
+ *
+ * The body boolean is hard-validated (`.strict()`, no catch): the toggle is
+ * the only caller and only ever sends true/false, so a malformed value is a
+ * bug or a crafted request → 400, matching the palette-enum posture.
+ */
+router.patch(
+  '/prefs/cloze-enabled',
+  cheapLimiter(),
+  validateBody(ClozeEnabledPatchSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const { clozeEnabled } = req.body as z.infer<typeof ClozeEnabledPatchSchema>;
+      const { rows } = await query<{ preferences: unknown }>(
+        `SELECT preferences
+           FROM users
+          WHERE id = $1 AND deleted_at IS NULL`,
+        [userId],
+      );
+      const stored = rows[0] ? parseStoredPrefs(rows[0].preferences) : null;
+      const base = stored ?? DEFAULT_STORED_PREFS;
+
+      if (stored !== null) {
+        // Valid blob: touch ONLY the clozeEnabled key (see the tours-seen
+        // route for why jsonb_set — a palette/textSize write landing since
+        // our SELECT survives intact; the jsonb_typeof predicate guards the
+        // read-to-write window against a non-object replacement).
+        await query(
+          `UPDATE users
+              SET preferences = jsonb_set(preferences, '{clozeEnabled}', $1::jsonb, true)
+            WHERE id = $2 AND deleted_at IS NULL
+              AND jsonb_typeof(preferences) = 'object'`,
+          [JSON.stringify(clozeEnabled), userId],
+        );
+      } else {
+        // Empty `{}` (migration default) or corrupt blob: persist a full
+        // valid blob (stored defaults + the flag) — a jsonb_set on `{}`
+        // would store a palette-less blob the GET-side parse rejects.
+        await query(
+          `UPDATE users
+              SET preferences = $1::jsonb
+            WHERE id = $2 AND deleted_at IS NULL`,
+          [JSON.stringify({ ...DEFAULT_STORED_PREFS, clozeEnabled }), userId],
+        );
+      }
+
+      // Same view shape as GET/PUT — the (unchanged) stored slices with the
+      // new flag + the canonical derived notif.
+      const view: PrefsView = {
+        notif: await deriveNotifFromSchedules(userId),
+        ...base,
+        clozeEnabled,
       };
       res.status(200).json(view);
     } catch (err) {

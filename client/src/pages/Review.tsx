@@ -84,11 +84,13 @@ import { SealStamp } from '../components/SealStamp';
 import { Sheet } from '../components/Sheet';
 import { ShowMore } from '../components/ShowMore';
 import { SubwayProgress } from '../components/SubwayProgress';
+import { Toggle } from '../components/Toggle';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { usePagination } from '../hooks/usePagination';
 import { loadVocabMock, loadVocabListsMock } from '../data/mocks/review';
 import * as vocabService from '../services/vocab';
 import * as progressService from '../services/progress';
+import { fetchPrefs, patchClozeEnabled } from '../services/settings';
 import { defineEntry } from '../services/define';
 import { ApiError } from '../services/api';
 import { buildReviewSubmission } from '../lib/reviewSubmission';
@@ -265,6 +267,17 @@ interface SeedStatus {
   kind: 'success' | 'error';
   text: string;
 }
+
+/**
+ * Cloze auto-seed loop bounds (F-208 follow-up). Enabling the toggle runs
+ * `POST /vocab/cloze/seed` until the server reports `remaining: 0` — the
+ * seeder is idempotent + resumable, so each call tackles the NEXT batch.
+ * 500 is the route's max per run; 20 runs bound the loop at 10,000 entries
+ * (far past any personal deck) so a server bug reporting a never-shrinking
+ * `remaining` can't spin the client forever.
+ */
+const CLOZE_SEED_BATCH = 500;
+const CLOZE_SEED_MAX_RUNS = 20;
 
 // ─────────────────────────────────────────────────────────────
 // Mock-fallback loaders (module scope — stable identity for the hook)
@@ -658,6 +671,149 @@ export function Review(): JSX.Element {
     })();
   }, [clearing, refetchDue]);
 
+  // ── F-208 follow-up — cloze drills enable toggle ─────────────
+  //
+  // The pref lives server-side (`users.preferences.clozeEnabled`, written via
+  // the field-scoped PATCH /settings/prefs/cloze-enabled) because the SERVER
+  // gates the due payload on it: when off, no `cloze` object (and no answer
+  // material) ships at all and every card is a plain flashcard. The toggle
+  // renders on this page's landing — the study start screen — NOT the global
+  // Settings page: it is a property of the flashcard study flow.
+  //
+  //   null  → pref not hydrated yet (initial fetch pending or failed); the
+  //           toggle renders disabled so a tap can never race the load or
+  //           write over an unknown server state.
+  //   bool  → the persisted server value; the toggle reflects it directly.
+  //
+  // Enabling ALSO auto-seeds the user's cloze prompts (the F-208 seeder) so
+  // there is no manual step — see `toggleCloze` for the loop contract.
+  const [clozePref, setClozePref] = useState<boolean | null>(null);
+  const [clozeBusy, setClozeBusy] = useState(false);
+  // True only while the enable-path seed loop is running — drives the
+  // "Setting up cloze drills…" line (clozeBusy alone also covers the brief
+  // pref PATCH round-trips, where that copy would be wrong).
+  const [clozeSeeding, setClozeSeeding] = useState(false);
+  const [clozeStatus, setClozeStatus] = useState<SeedStatus | null>(null);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    fetchPrefs(ctrl.signal)
+      .then((prefs) => {
+        if (ctrl.signal.aborted) return;
+        // `=== true` — a pre-feature server omits the field on GET (rolling
+        // deploy); anything but a real true reads as off.
+        setClozePref(prefs.clozeEnabled === true);
+      })
+      .catch(() => {
+        // Pref unknown (network blip / server down): leave the toggle
+        // disabled rather than render a state that might be a lie. The
+        // page's other feeds surface the outage; no extra error UI here.
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, []);
+
+  const toggleCloze = useCallback(
+    (next: boolean): void => {
+      if (clozeBusy || clozePref === null || next === clozePref) return;
+      setClozeBusy(true);
+      setClozeStatus(null);
+      void (async (): Promise<void> => {
+        // Set once the pref PATCH lands — from then on any thrown seed run
+        // has committed partial progress server-side, so the catch below
+        // refetches (mirroring the aborted_upstream path) instead of leaving
+        // already-seeded cards invisible until a natural refetch.
+        let prefPersisted = false;
+        try {
+          // Persist the pref FIRST — if the write fails, nothing changed
+          // server-side and the toggle stays where it was.
+          await patchClozeEnabled(next);
+          prefPersisted = true;
+          setClozePref(next);
+          if (!next) {
+            // Disable: the server simply stops serving `cloze`; the prepared
+            // prompts persist, so re-enabling is instant. Refetch so the
+            // in-memory due page drops its cloze objects too.
+            refetchDue();
+            return;
+          }
+          // Enable: auto-seed until done. The pref STAYS true on a partial
+          // run (Kiwi outage / mid-loop failure) — the seeder is idempotent
+          // and resumable, so toggling off/on later resumes where it left
+          // off, and already-seeded cards work meanwhile.
+          setClozeSeeding(true);
+          let seededTotal = 0;
+          let abortedUpstream = false;
+          // `remaining` from the LAST completed run — stays > 0 only when the
+          // run cap below exhausted with work still outstanding.
+          let remainingAfterLast = 0;
+          try {
+            for (let run = 0; run < CLOZE_SEED_MAX_RUNS; run++) {
+              const res = await vocabService.seedClozePrompts(CLOZE_SEED_BATCH);
+              // A malformed response (count missing or NaN) must not poison
+              // the tally — "NaN drills ready" — so any non-finite count
+              // reads as 0. For `remaining` that also EXITS the loop (0 ≤ 0)
+              // rather than hammering the seeder on garbage until the cap.
+              seededTotal += Number.isFinite(res.seeded) ? res.seeded : 0;
+              if (res.aborted_upstream) {
+                abortedUpstream = true;
+                break;
+              }
+              remainingAfterLast = Number.isFinite(res.remaining)
+                ? res.remaining
+                : 0;
+              if (remainingAfterLast <= 0) break;
+            }
+          } finally {
+            setClozeSeeding(false);
+          }
+          // The run cap is the backstop against a server whose `remaining`
+          // never shrinks; exhausting it means drills are still unprepared,
+          // which deserves the same soft-retry copy as an upstream abort —
+          // never the success copy.
+          setClozeStatus(
+            abortedUpstream || remainingAfterLast > 0
+              ? {
+                  kind: 'error',
+                  text:
+                    'Cloze drills are on, but some drills couldn’t be prepared. ' +
+                    'Turn the toggle off and on later to finish setting up.',
+                }
+              : {
+                  kind: 'success',
+                  text:
+                    seededTotal > 0
+                      ? `Cloze drills are on — ${String(seededTotal)} drill${seededTotal === 1 ? '' : 's'} ready.`
+                      : 'Cloze drills are on — your cards were already prepared.',
+                },
+          );
+          // Refetch so the current due page picks up its cloze presentations.
+          refetchDue();
+        } catch (err) {
+          // Either the pref write failed (state unchanged — the toggle still
+          // shows the old value) or a seed call failed mid-loop (pref kept
+          // true; partial seeds are committed and a re-enable resumes).
+          setClozeStatus({
+            kind: 'error',
+            text: errorMessageFor(
+              err,
+              'Could not update cloze drills. Try again.',
+            ),
+          });
+          if (prefPersisted) {
+            // Seed threw mid-loop: earlier runs are committed server-side,
+            // so surface them now — same as the aborted_upstream path.
+            refetchDue();
+          }
+        } finally {
+          setClozeBusy(false);
+        }
+      })();
+    },
+    [clozeBusy, clozePref, refetchDue],
+  );
+
   const drillGrammarCard = useCallback(
     (gc: GrammarProductionCard): void => {
       navigate('/learn/grammar', {
@@ -797,6 +953,11 @@ export function Review(): JSX.Element {
         clearing={clearing}
         clearStatus={clearStatus}
         onClearQueue={clearQueue}
+        clozeEnabled={clozePref}
+        clozeBusy={clozeBusy}
+        clozeSeeding={clozeSeeding}
+        clozeStatus={clozeStatus}
+        onToggleCloze={toggleCloze}
       />
     );
   }
@@ -851,6 +1012,16 @@ interface LandingViewProps {
   clearing: boolean;
   clearStatus: SeedStatus | null;
   onClearQueue: () => void;
+  /** F-208 follow-up — cloze drills toggle. `null` = pref not hydrated yet
+   *  (toggle renders disabled); `clozeBusy` spans the whole toggle action
+   *  (pref write + any seeding) and disables the switch; `clozeSeeding` is
+   *  true only during the enable-path seed loop and drives the "Setting
+   *  up…" line; the status line reports the last toggle outcome. */
+  clozeEnabled: boolean | null;
+  clozeBusy: boolean;
+  clozeSeeding: boolean;
+  clozeStatus: SeedStatus | null;
+  onToggleCloze: (next: boolean) => void;
 }
 
 function LandingView(props: LandingViewProps): JSX.Element {
@@ -874,6 +1045,11 @@ function LandingView(props: LandingViewProps): JSX.Element {
     clearing,
     clearStatus,
     onClearQueue,
+    clozeEnabled,
+    clozeBusy,
+    clozeSeeding,
+    clozeStatus,
+    onToggleCloze,
   } = props;
 
   // `clearStatus` keeps the section mounted after a full clear empties the
@@ -1118,6 +1294,56 @@ function LandingView(props: LandingViewProps): JSX.Element {
           </Sheet>
         </section>
       ) : null}
+
+      {/* F-208 follow-up — cloze drills enable toggle. Lives HERE on the
+          study start screen (not the global Settings page): it changes what
+          the flashcard session serves. Always rendered — the user should be
+          able to opt in before anything is due. Enabling auto-seeds the
+          user's cloze prompts (busy state below); disabling just flips the
+          server gate — prepared drills persist for an instant re-enable. */}
+      <section aria-labelledby="review-cloze-head">
+        <div className="km-eyebrow km-review__section-head" id="review-cloze-head">
+          <Bilingual kr="빈칸 채우기" en="Cloze drills" />
+        </div>
+        <Card variant="accent" className="km-review__cloze-strip">
+          <div className="km-review__cloze-body">
+            <div className="km-review__cloze-title">
+              <Bilingual en="Cloze drills — fill in the blank" kr="빈칸 채우기 연습" />
+            </div>
+            <div className="km-review__cloze-hint">
+              <Bilingual
+                en="Mix typed fill-in-the-blank drills into your flashcard reviews."
+                kr="플래시카드 복습에 빈칸 채우기 문제를 섞어요."
+                compact
+              />
+            </div>
+          </div>
+          <Toggle
+            checked={clozeEnabled === true}
+            onChange={onToggleCloze}
+            disabled={clozeBusy || clozeEnabled === null}
+            ariaLabel="Cloze drills — fill in the blank"
+          />
+        </Card>
+        {clozeSeeding ? (
+          // Only the ENABLE path seeds — this is the "preparing" busy line.
+          // (During a disable, the toggle's disabled state is signal enough.)
+          <div role="status" className="km-review__cloze-status">
+            <Bilingual en="Setting up cloze drills…" kr="빈칸 채우기 준비 중…" compact />
+          </div>
+        ) : clozeStatus ? (
+          <div
+            role={clozeStatus.kind === 'error' ? 'alert' : 'status'}
+            className={
+              clozeStatus.kind === 'error'
+                ? 'km-review__inline-error km-review__cloze-status'
+                : 'km-review__cloze-status'
+            }
+          >
+            {clozeStatus.text}
+          </div>
+        ) : null}
+      </section>
 
       {/* B-013 corpus seeding — secondary utility, folded away by default.
           F-128 device #1/#2: CityCard signboard surface, matching the same

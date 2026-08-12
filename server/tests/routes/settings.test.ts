@@ -46,13 +46,14 @@ const NOTIF_NONE = {
   weekly: false,
 };
 
-/** The blob-persisted defaults (palette/languageDisplay/textSize/toursSeen —
- *  no notif). */
+/** The blob-persisted defaults (palette/languageDisplay/textSize/toursSeen/
+ *  clozeEnabled — no notif). */
 const DEFAULT_STORED = {
   palette: { paper: 'hanji', accent: 'coral', correct: 'moss', wrong: 'vermilion' },
   languageDisplay: DEFAULT_LANGUAGE_DISPLAY,
   textSize: 'md',
   toursSeen: [],
+  clozeEnabled: false,
 };
 
 /** What GET serves a fresh user: stored defaults + derived (empty) notif. */
@@ -63,6 +64,9 @@ const CUSTOM_STORED = {
   languageDisplay: { mode: 'en', primary: 'en', subScale: 0.5 },
   textSize: 'lg',
   toursSeen: ['first-run', 'hanja'],
+  // Non-default so every CUSTOM round-trip in this file also proves the
+  // cloze-toggle flag persists through PUT/GET/PATCH untouched.
+  clozeEnabled: true,
 };
 
 /**
@@ -122,13 +126,16 @@ describe('settings — auth required', () => {
     ['GET', '/settings/prefs'],
     ['PUT', '/settings/prefs'],
     ['PATCH', '/settings/prefs/tours-seen'],
+    ['PATCH', '/settings/prefs/cloze-enabled'],
   ])('%s %s unauthenticated → 401', async (method, p) => {
     const res =
       method === 'GET'
         ? await request(t.app).get(p)
         : method === 'PUT'
           ? await request(t.app).put(p).send(DEFAULT_PREFS_BODY)
-          : await request(t.app).patch(p).send({ toursSeen: ['first-run'] });
+          : p.endsWith('cloze-enabled')
+            ? await request(t.app).patch(p).send({ clozeEnabled: true })
+            : await request(t.app).patch(p).send({ toursSeen: ['first-run'] });
     expect(res.status).toBe(401);
   });
 });
@@ -387,14 +394,15 @@ describe('languageDisplay (Overhaul P3a)', () => {
     const res = await agent.get('/settings/prefs');
     expect(res.status).toBe(200);
     // The user's stored choices survive; only the missing fields default
-    // (textSize catches to 'md' and toursSeen defaults to [] the same way).
-    // notif is derived.
+    // (textSize catches to 'md', toursSeen defaults to [] and clozeEnabled
+    // to false the same way). notif is derived.
     expect(res.body).toEqual({
       notif: NOTIF_NONE,
       palette: CUSTOM_STORED.palette,
       languageDisplay: DEFAULT_LANGUAGE_DISPLAY,
       textSize: 'md',
       toursSeen: [],
+      clozeEnabled: false,
     });
   });
 
@@ -426,6 +434,7 @@ describe('languageDisplay (Overhaul P3a)', () => {
       languageDisplay: DEFAULT_LANGUAGE_DISPLAY,
       textSize: 'md',
       toursSeen: [],
+      clozeEnabled: false,
     });
     const get = await agent.get('/settings/prefs');
     expect(get.body.languageDisplay).toEqual(DEFAULT_LANGUAGE_DISPLAY);
@@ -501,9 +510,14 @@ describe('textSize (F-025 app-wide text size)', () => {
     expect(res.status).toBe(200);
     expect(res.body.textSize).toBe('md');
     // ...and the rest of the PUT body persisted untouched (derived notif).
-    // The body carried no toursSeen either → the field defaults to [].
+    // The body carried no toursSeen/clozeEnabled either → those default.
     const get = await agent.get('/settings/prefs');
-    expect(get.body).toEqual({ ...CUSTOM_VIEW, textSize: 'md', toursSeen: [] });
+    expect(get.body).toEqual({
+      ...CUSTOM_VIEW,
+      textSize: 'md',
+      toursSeen: [],
+      clozeEnabled: false,
+    });
   });
 
   it("a totally unknown textSize value also coerces to 'md' (catch posture, never 400/500)", async () => {
@@ -742,6 +756,116 @@ describe('PATCH /settings/prefs/tours-seen (fix-pass S3 — field-scoped union m
     await a.agent
       .patch('/settings/prefs/tours-seen')
       .send({ toursSeen: ['first-run'] })
+      .expect(200);
+    const res = await b.agent.get('/settings/prefs');
+    expect(res.body).toEqual(DEFAULT_VIEW);
+  });
+});
+
+describe('clozeEnabled (F-208 follow-up — cloze drills opt-in)', () => {
+  it('defaults to false for a fresh user and on a legacy blob WITHOUT the field — other slices survive', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // Fresh user (empty {} blob) → full defaults view, flag off.
+    const fresh = await agent.get('/settings/prefs');
+    expect(fresh.status).toBe(200);
+    expect(fresh.body.clozeEnabled).toBe(false);
+    // A blob stored before the feature existed — NOT the defaults fallback:
+    // the user's stored choices survive with only the flag defaulting.
+    const { clozeEnabled: _drop, ...legacy } = CUSTOM_STORED;
+    await pg.pool.query(`UPDATE users SET preferences = $1::jsonb WHERE id = $2`, [
+      JSON.stringify(legacy),
+      userId,
+    ]);
+    const res = await agent.get('/settings/prefs');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ...CUSTOM_VIEW, clozeEnabled: false });
+  });
+
+  it('round-trips through PUT (echo + GET + column)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const put = await agent.put('/settings/prefs').send(CUSTOM_PREFS); // clozeEnabled: true
+    expect(put.status).toBe(200);
+    expect(put.body.clozeEnabled).toBe(true);
+    const get = await agent.get('/settings/prefs');
+    expect(get.body).toEqual(CUSTOM_VIEW);
+    const { rows } = await pg.pool.query<{ preferences: { clozeEnabled: unknown } }>(
+      `SELECT preferences FROM users WHERE id = $1`,
+      [userId],
+    );
+    expect(rows[0]!.preferences.clozeEnabled).toBe(true);
+  });
+
+  it('GET coerces a corrupt stored clozeEnabled to false WITHOUT wiping the rest of the blob', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const poisoned = { ...CUSTOM_STORED, clozeEnabled: 'yes-please' };
+    await pg.pool.query(`UPDATE users SET preferences = $1::jsonb WHERE id = $2`, [
+      JSON.stringify(poisoned),
+      userId,
+    ]);
+    const res = await agent.get('/settings/prefs');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ...CUSTOM_VIEW, clozeEnabled: false });
+  });
+
+  it('PATCH /settings/prefs/cloze-enabled flips the flag and touches ONLY that key (no-clobber)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await agent.put('/settings/prefs').send(CUSTOM_PREFS).expect(200); // stores true
+    const off = await agent
+      .patch('/settings/prefs/cloze-enabled')
+      .send({ clozeEnabled: false });
+    expect(off.status).toBe(200);
+    expect(off.body).toEqual({ ...CUSTOM_VIEW, clozeEnabled: false });
+    // The full stored blob: CUSTOM_STORED with only the flag flipped.
+    const { rows } = await pg.pool.query<{ preferences: Record<string, unknown> }>(
+      `SELECT preferences FROM users WHERE id = $1`,
+      [userId],
+    );
+    expect(rows[0]!.preferences).toEqual({ ...CUSTOM_STORED, clozeEnabled: false });
+    // ...and back on.
+    const on = await agent
+      .patch('/settings/prefs/cloze-enabled')
+      .send({ clozeEnabled: true });
+    expect(on.status).toBe(200);
+    expect(on.body.clozeEnabled).toBe(true);
+    const get = await agent.get('/settings/prefs');
+    expect(get.body).toEqual(CUSTOM_VIEW);
+  });
+
+  it('PATCH on a FRESH user (empty {} migration blob) persists a full valid blob + the flag', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .patch('/settings/prefs/cloze-enabled')
+      .send({ clozeEnabled: true });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ...DEFAULT_VIEW, clozeEnabled: true });
+    // The GET-side parse accepts what was written (a jsonb_set on `{}` would
+    // have stored a palette-less blob the parser rejects).
+    const get = await agent.get('/settings/prefs');
+    expect(get.body).toEqual({ ...DEFAULT_VIEW, clozeEnabled: true });
+  });
+
+  it('PATCH rejects a non-boolean value → 400 (hard posture — the toggle is the only caller)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .patch('/settings/prefs/cloze-enabled')
+      .send({ clozeEnabled: 'true' });
+    expect(res.status).toBe(400);
+  });
+
+  it('PATCH rejects an unknown sibling key (strict) → 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .patch('/settings/prefs/cloze-enabled')
+      .send({ clozeEnabled: true, palette: CUSTOM_STORED.palette });
+    expect(res.status).toBe(400);
+  });
+
+  it("a user's PATCH never touches another user's flag (IDOR structurally impossible)", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    await a.agent
+      .patch('/settings/prefs/cloze-enabled')
+      .send({ clozeEnabled: true })
       .expect(200);
     const res = await b.agent.get('/settings/prefs');
     expect(res.body).toEqual(DEFAULT_VIEW);
