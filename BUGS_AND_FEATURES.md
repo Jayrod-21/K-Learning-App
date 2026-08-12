@@ -11,7 +11,7 @@ cause + a **category label** so work can be batched into focused coding sessions
   `CONFIG` (env/deploy). Many items are cross-cutting — the **primary** tag is
   where the bulk of the fix lives; secondary tags in parentheses.
 
-## Status snapshot (2026-08-11 — reconciled against `origin/rebuild` @ 874427c; prior 2026-07-29 @ 86a809e)
+## Status snapshot (2026-08-12 — F-208 done; prior 2026-08-11 @ 874427c, 2026-07-29 @ 86a809e)
 
 **This is the single source of truth. Update it as part of each ship (flip the row + the
 per-item status line in the same PR that lands the work).** Reconciliation trail below.
@@ -38,8 +38,7 @@ per-item status line in the same PR that lands the work).** Reconciliation trail
 - 🔴 **F-204** P4 — shared `coerceId()` helper across services.
 - 🔴 **F-205** P3 — reading comprehension questions from exercise-bearing books (post-beta epic; OCR/classifier foundation shipped #141–145).
 - 🔴 **F-206** P3 (NEW 2026-07-29) — study-mode listening audio (F-119 deferred decision #4: mock-only in v1; extend the player to the non-mock study view).
-- 🔴 **F-208** P2 (NEW 2026-07-29, transcript) — cloze vocab drill: sentence with a blanked word, as a mode ALONGSIDE flashcards (explicitly not a replacement). **← NEXT UP (starting 2026-08-11).**
-- 🟡 **F-209** P2 — pre-seeded in-context definitions so tap-to-define is instant. **Phase 1 (progressive tap-to-define render) SHIPPED + merged (PR #172).** Phase 2 subscription pre-seed tooling in review (PR #173 kiwi fix + PR #174 tool); **first weekly reading batch live in prod** (150 defs, reading order, 365-day cache); ~83,830 reading pairs remain, pre-seeded weekly on the Claude subscription ($0 API). See the 2026-08-11 reconciliation trail.
+- 🟡 **F-209** P2 — pre-seeded in-context definitions so tap-to-define is instant. **Phase 1 (progressive render) + Phase 2 pre-seed tooling SHIPPED + merged (PRs #172 / #173 kiwi / #174 + #177 tool).** First weekly reading batch live in prod (150 defs, reading order, 365-day cache); ~83,830 reading pairs remain, pre-seeded weekly on the Claude subscription ($0 API). Ongoing (weekly). **← NEXT (recurring): F-210** per the roadmap.
 - 🔴 **F-217** P3 (NEW 2026-08-11) — Shared Library browse surface: non-owner read-access to shared BOOKS. The F-207 cutover shared 18 books + 21 audio sets `is_shared=true`; audio surfaces via the Listen tiles, but shared books have no browse surface for non-owner accounts yet (split out of F-207).
 - 🔴 **F-218** P4 (NEW 2026-08-11) — real-km-kiwi integration smoke test: B-039 (KiwiTokenSchema drift) passed every unit test because they mocked kiwi; add a test that hits the REAL km-kiwi service so service↔schema drift fails CI.
 - 🔴 **F-210** P2 (NEW 2026-07-29, transcript) — multi-voice TTS audio for generated stories (ElevenLabs). **Story TEXT generation already ships** (`generated_stories`, migration 054) — this is the audio half, and it's the copyright-clean answer to the B-025/B-026 listening-corpus problem.
@@ -49,6 +48,9 @@ per-item status line in the same PR that lands the work).** Reconciliation trail
 - 🔴 **F-216** P2 EPIC (NEW 2026-07-29, transcript) — generative story experience: one story delivered as **text + illustrations + multi-voice audio**. Text ships (F-068); the umbrella tracks the multimodal package, with F-210 (audio) + F-211 (images) as its halves.
 - ⚪ **F-214** P3 EPIC (NEW 2026-07-29, transcript) — language-agnostic core → Japanese + Chinese. **DEFERRED LAST (decided 2026-07-29): do not start until the Korean side is finished.** Korean is "pretty much done"; content foundation reuses the copyright-clean recipe (own definitions/examples over uncopyrightable grammar forms + vocab).
 - ⚪ **F-215** P4 DECISION (NEW 2026-07-29, transcript) — premium packaging + pricing. **DEFERRED LAST (decided 2026-07-29), same tier as F-214.** Flags a scope reversal (private single-user → commercial product). Consequence to note: F-213 (i18n) was gated on this decision, so it inherits the same late tier unless it's justified on Korean-only grounds.
+
+### Flipped to DONE this reconciliation (2026-08-12)
+- **F-208** 🔴→🟢 — cloze vocab drill, shipped end-to-end + LIVE. A due vocab word is randomly presented as a normal flashcard OR a fill-in-the-blank **cloze** (its example sentence with the target word blanked); free-type answer **Kiwi-graded** (any valid conjugation, $0 Claude); a wrong answer shows a **hint** (first syllable + length) before revealing; grade advances the SAME recognition card's FSRS once at resolution. **Migration 080** `cloze_prompts` (per vocab_entry; vocab_example→KRDICT fallback; skips multi-occurrence sentences so the answer is never visible elsewhere). Plus an **enable-toggle** on the vocab study LANDING screen (Review, not Settings): per-user `clozeEnabled` pref (default OFF; server gates the due-serve cloze on it, fail-closed), and **enabling auto-runs the per-user seeder** (no manual step). PRs **#178** (core) + **#179** (toggle) merged; full 4-phase /fixpass each; deployed **active=green `tog-28a45d4`**. In-code follow-up TODOs: homograph-sense seeder disambiguation; wider coverage via subscription-generated example sentences for words lacking one.
 
 ### Flipped to DONE / updated this reconciliation (2026-08-11)
 - **F-207** 🔴→🟢 — Listen shared-corpus swipeable tiles, shipped end-to-end (PRs #163 `is_shared` flag + migration 079, #165 Listen tiles, #166 cross-account book read, #168 share-corpus cutover). Cutover flipped **21 audio sets + 18 books** to `is_shared=true` (owner id=1). Blue/green deployed. The hand-rolled `SwipeCarousel` broke on touch → replaced with a native CSS scroll-snap carousel (B-040). Non-owner shared-BOOK browse surface split out as **F-217**.
@@ -296,7 +298,7 @@ Launch one focused session per group; cross-cutting items noted.
 | F-205 | Feature | 🔴 | P3 | DATABASE (BACKEND, UI, ingest) · post-beta epic | Reading comprehension questions from exercise-bearing books (Folktales/conversations/graded readers) |
 | F-206 | Feature | 🔴 | P3 | UI (BACKEND) | Study-mode listening audio — extend the F-119 player to the non-mock TOPIK study view (deferred decision #4) |
 | F-207 | Feature | 🟢 | P2 | UI (BACKEND) | Listen page swipeable themed content tiles + shared corpus (PRs #163/165/166/168, migration 079); native scroll-snap after touch-swipe fix (B-040); non-owner shared-book browse = F-217 |
-| F-208 | Feature | 🔴 | P2 | UI (BACKEND, DATABASE) | Cloze vocab drill — sentence with a blanked word, as a mode alongside flashcards |
+| F-208 | Feature | 🟢 | P2 | UI (BACKEND, DATABASE) | Cloze vocab drill — random fill-in-the-blank presentation, Kiwi-graded, hint-then-reveal; migration 080; enable-toggle in study flow with auto-seed (PRs #178/#179, live) |
 | F-209 | Feature | 🟡 | P2 | DATABASE (BACKEND, API) | Pre-seeded in-context definitions — instant tap-to-define. P1 progressive render shipped (#172); P2 pre-seed tool in review (#173/#174); first weekly reading batch live; ~83,830 reading pairs remain (subscription, weekly) |
 | F-210 | Feature | 🔴 | P2 | API (BACKEND, DATABASE, UI) | Multi-voice TTS audio for generated stories (ElevenLabs) — copyright-clean listening material |
 | F-211 | Feature | 🔴 | P3 | API (BACKEND, UI) | AI-generated illustrations for generated stories (story + pictures + voiced audio) |
