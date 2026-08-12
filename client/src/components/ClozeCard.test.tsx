@@ -37,8 +37,6 @@ import { gradeCloze } from '../services/vocab';
 const CLOZE: DueCardCloze = {
   blanked: '그 정책은 경제에 큰 ______을 미쳤다.',
   english: 'That policy had a big effect on the economy.',
-  blankStart: 11,
-  blankEnd: 13,
 };
 
 const COMMITTED_GOOD: ClozeGradeCommittedResponse = {

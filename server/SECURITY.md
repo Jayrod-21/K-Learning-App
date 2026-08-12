@@ -1163,3 +1163,76 @@ config-toggleable login gate. Design + operator steps:
   `access_log` carve-out is needed. DNS: the sending domain MUST publish
   SPF/DKIM/DMARC authorizing the From address (see BUILD_f006 deploy steps) or
   receivers spam-folder the mail.
+
+## 20. Pass F-208 surface — cloze vocab drill (`/vocab/cards/:cardId/cloze/grade`, `/vocab/cloze/seed`, migration 080)
+
+The cloze drill is an alternate PRESENTATION of an existing vocab recognition
+card: the entry's example sentence with the target word blanked, answered by
+typing, graded deterministically server-side (exact surface match, then a
+Kiwi lemma-tolerance leg — zero Claude). Prompts are pre-computed by an
+operator seeder into `cloze_prompts` (migration 080); grading advances the
+SAME `vocab_cards` row through the shared FSRS write path.
+
+### 20.1 Answer stripping on the wire
+- **Threat:** the served card leaks the answer before the learner types it —
+  as a field, as text, or as metadata an attentive learner can read off
+  DevTools.
+- **Defense:** `cloze_prompts.answer_surface` is SERVER-ONLY — the due-queue
+  read never selects it and no route response serializes it outside a
+  COMMITTING grade response (correct, wrong-out on attempt 2, or give-up).
+  The served `cloze` object carries only `{blanked, english}`: the blank is a
+  fixed-width `______` marker substituted server-side, and the span offsets
+  (`blankStart`/`blankEnd`) are deliberately NOT serialized — their
+  difference is the answer's length, which is exactly what the
+  post-wrong-attempt hint is supposed to be the first reveal of. The
+  wrong-attempt-1 response is hint-only (first syllable + character count,
+  `clozeHint`) — no reveal, no FSRS write, no version bump.
+- Cloze eligibility is face-gated (`c.face = 'recognition'`) in BOTH the
+  due-queue join and the grade route's card load, so a production card
+  sharing the vocab entry can neither carry nor grade a cloze.
+- Sentences where the headword lemma matches MORE THAN ONE token are never
+  seeded (`buildClozePrompt` returns null): blanking one occurrence would
+  leave another visible on screen — and lemma-tolerant grading would accept
+  that visible occurrence as the answer.
+
+### 20.2 Accepted residual — the example sentence co-ships with the card
+- **Residual:** a cloze-eligible due card's payload still includes the
+  un-blanked `vocab_example_korean`/`vocab_example_english` alongside the
+  `cloze` object, and the blanked sentence is typically derived from that
+  same example. A learner reading the raw JSON can therefore reconstruct the
+  answer before typing it.
+- **Why accepted (single-user self-study threat model):** the client decides
+  the flashcard-vs-cloze coin flip locally, and the FLASHCARD presentation of
+  the same card needs the full example — stripping it per-presentation would
+  require a second round-trip or a server-side flip, buying nothing: there is
+  no adversary in this app who benefits from a learner seeing their own
+  study answer. What matters is the ON-SCREEN exercise, and that never shows
+  the answer — guaranteed by the multi-occurrence seeding rule above plus the
+  client contract that the cloze face renders ONLY the `cloze` object (never
+  the headword or example fields, including accessible names and error copy).
+  This is a documented, accepted residual, not a gap to fix.
+
+### 20.3 Grade route hardening
+- **IDOR:** the card load is scoped `(id, user_id, deleted_at IS NULL)` —
+  foreign/missing/soft-deleted ids 404 without existence leak, and the 404
+  body carries no answer material.
+- **Schedule tampering:** the client sends only `{answer, attempt, giveUp,
+  expected_version}`; the FSRS rating is assigned server-side from the graded
+  outcome (`good`/`hard`/`again`) through `applyCardReview` (ADR-003
+  server-authoritative posture, optimistic concurrency 409 on stale version).
+- **Upstream failure = no half-state:** a Kiwi outage on the lemma leg 502s
+  BEFORE any write — no `card_reviews` row, no version bump; the learner
+  retries or falls back to the flashcard face.
+- **Input bounds:** typed answers are zod-capped (≤200 chars, well inside
+  Kiwi's 2000-char input cap); `attempt` is a literal union; unknown keys are
+  rejected (`.strict()`).
+
+### 20.4 Seeder (operator endpoint) robustness
+- `POST /vocab/cloze/seed` is authenticated, `expensiveLimiter`-bounded, and
+  batch-capped (`limit` ≤ 500). It is idempotent (`ON CONFLICT DO NOTHING`,
+  already-seeded entries excluded from the candidate set) and aborts honestly
+  on a Kiwi outage (`aborted_upstream: true`, partial counts, partial
+  progress committed per-row) instead of burning timeouts against a dead
+  upstream. Spans are verified against the exact sentence text before
+  persisting (offset-drift guard), so a drifted upstream can never store a
+  garbled blank.

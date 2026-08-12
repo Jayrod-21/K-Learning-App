@@ -25,6 +25,8 @@ export type ClozePresentation = 'flashcard' | 'cloze';
  * render would flicker the face mid-card).
  */
 export function pickPresentation(card: DueCard): ClozePresentation {
-  if (card.cloze === undefined) return 'flashcard';
+  // `== null` (not `=== undefined`): belt-and-suspenders against a server
+  // ever serializing `cloze: null` — either absent form means "no cloze".
+  if (card.cloze == null) return 'flashcard';
   return Math.random() < 0.5 ? 'cloze' : 'flashcard';
 }

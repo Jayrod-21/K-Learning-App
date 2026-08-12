@@ -2084,6 +2084,32 @@ describe('Review — F-208 cloze presentation (coin flip)', () => {
     expect(within(againCell).getByText('0')).toBeInTheDocument();
   });
 
+  it('a FAILED remove on a cloze face shows generic copy — the headword/answer never reaches the DOM (fix-pass M2)', async () => {
+    vi.mocked(pickPresentation).mockReturnValue('cloze');
+    vi.mocked(vocabService.removeCard).mockRejectedValue(
+      new ApiError('server exploded', { status: 500, code: 'server_error' }),
+    );
+    settleLanding({ due: DUE_CLOZE_STUDY });
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?study=due');
+
+    await user.click(
+      screen.getByRole('button', { name: 'Remove this card from review' }),
+    );
+
+    // The failure surfaces honestly…
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain("Couldn't remove this card");
+    // …but the cloze blank is STILL on screen, so the answer ('영향') must be
+    // NOWHERE in the document — innerHTML covers attributes (aria-labels,
+    // titles) as well as text content.
+    expect(document.body.innerHTML).not.toContain('영향');
+    // The card stayed (nothing optimistically lied away), still as a cloze.
+    expect(
+      screen.getByRole('textbox', { name: 'Your answer' }),
+    ).toBeInTheDocument();
+  });
+
   it('falls back to the flashcard face for THIS card when the cloze grade 404s (no prompt)', async () => {
     vi.mocked(pickPresentation).mockReturnValue('cloze');
     vi.mocked(vocabService.gradeCloze).mockRejectedValue(

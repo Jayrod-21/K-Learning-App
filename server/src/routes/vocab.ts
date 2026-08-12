@@ -304,10 +304,18 @@ router.get(
       // a pre-computed cloze carries the BLANKED presentation inline (the
       // client's flashcard-vs-cloze coin flip needs no second round-trip).
       // uq_cloze_prompts_vocab_entry guarantees at most one row per entry, so
-      // the join can never multiply cards (COUNT total unaffected). The
-      // answer_surface column is DELIBERATELY never selected — the served card
-      // must not contain the answer in any form (SECURITY.md §17 posture); it
-      // is revealed only by the grade route's response.
+      // the join can never multiply cards (COUNT total unaffected). The join
+      // is gated to `c.face = 'recognition'` (fix-pass M3): cloze is an
+      // alternate presentation of the RECOGNITION face only — a production
+      // card sharing the same vocab_entry must never carry (or grade) a cloze.
+      // The answer_surface column is DELIBERATELY never selected, so the
+      // `cloze` object itself never carries the answer string or its length
+      // (SECURITY.md §20); the answer is revealed only by the grade route's
+      // committing response. NOTE the deliberate residual: the flashcard
+      // fields on the SAME card payload include the un-blanked
+      // vocab_example_korean (the client's other coin-flip face needs it) —
+      // the client is responsible for keeping example fields off the cloze
+      // face; see SECURITY.md §20 for why this is accepted.
       const { rows } = await query<{
         id: number;
         face: string;
@@ -365,6 +373,7 @@ router.get(
                  AND ge.deleted_at IS NULL
            LEFT JOIN cloze_prompts cp
                   ON cp.vocab_entry_id = c.vocab_entry_id
+                 AND c.face = 'recognition'
           WHERE c.user_id = $1
             AND c.deleted_at IS NULL
             AND c.suspended_at IS NULL
@@ -383,12 +392,15 @@ router.get(
       // idiom `GET /vocab/entries` already uses just above.
       const total = rows.length > 0 ? Number(rows[0]!.total) : 0;
       // F-208: the cloze_* columns are folded into an OPTIONAL `cloze` object
-      // (present ⇔ the entry has a cloze_prompts row — that presence IS the
-      // client's cloze-eligibility signal). `blanked` is built server-side by
-      // replacing [blank_start, blank_end) with the marker, so the sentence
-      // never ships with the answer in place; blankStart/blankEnd are offsets
-      // into the ORIGINAL sentence (in `blanked`, the marker occupies
-      // [blankStart, blankStart + marker.length)).
+      // (present ⇔ the entry has a cloze_prompts row AND the card is the
+      // recognition face — that presence IS the client's cloze-eligibility
+      // signal). `blanked` is built server-side by replacing
+      // [blank_start, blank_end) with the fixed-width marker, so the sentence
+      // never ships with the answer in place. The span offsets are used ONLY
+      // for that server-side substitution and are NOT serialized (fix-pass
+      // M4): blankEnd − blankStart is the answer's length in code units,
+      // which would pre-leak the post-wrong-attempt hint's length reveal —
+      // and the client renders the fixed marker, needing no offsets.
       const cards = rows.map(
         ({ total: _total, cloze_korean, cloze_english, cloze_blank_start, cloze_blank_end, ...c }) => ({
           ...c,
@@ -403,8 +415,6 @@ router.get(
                 cloze: {
                   blanked: blankSentence(cloze_korean, cloze_blank_start, cloze_blank_end),
                   english: cloze_english,
-                  blankStart: cloze_blank_start,
-                  blankEnd: cloze_blank_end,
                 },
               }
             : {}),
@@ -520,6 +530,10 @@ router.post(
  *     INNER JOIN to vocab_entries makes non-vocab-entry cards (grammar/
  *     sentence/topik/hanja) 404 identically — cloze exists only for vocab
  *     recognition cards.
+ *   - Non-RECOGNITION face (fix-pass M3): the cloze-prompt join is gated to
+ *     `c.face = 'recognition'`, so a production card sharing the same
+ *     vocab_entry grades as 404 'no cloze prompt for this card' — mirrors
+ *     the due-queue join gate; the two can never drift apart on eligibility.
  *   - No prompt for the entry → 404 'no cloze prompt for this card' (the
  *     client should not have offered a cloze; distinct message, same code).
  *   - Stale expected_version → 409 (applyCardReview, FU-NF-8) — enforced only
@@ -578,6 +592,7 @@ router.post(
            FROM vocab_cards c
            JOIN vocab_entries ve ON ve.id = c.vocab_entry_id
            LEFT JOIN cloze_prompts cp ON cp.vocab_entry_id = c.vocab_entry_id
+                                     AND c.face = 'recognition'
           WHERE c.id = $1
             AND c.user_id = $2
             AND c.deleted_at IS NULL`,
@@ -647,6 +662,11 @@ router.post(
 async function fetchKrdictClozeExamples(
   headword: string,
 ): Promise<Array<{ korean: string; english: string | null }>> {
+  // TODO(F-208 follow-up): homograph-sense disambiguation — this matches the
+  // headword string across ALL krdict homographs/senses, so a sentence for a
+  // different sense of the same spelling can be picked. Grading stays
+  // surface-anchored (the blanked token is what's graded), so the impact is
+  // pedagogical only — the example may illustrate the wrong sense.
   try {
     const { rows } = await query<{ korean: string; english: string | null }>(
       `SELECT e.korean, e.english

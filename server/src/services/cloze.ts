@@ -82,15 +82,26 @@ export function normalizeAnswer(text: string): string {
 }
 
 /**
- * Find the cloze span for an entry: lemmatize the sentence, take the FIRST
- * token whose lemma equals the entry headword (first occurrence — the
- * canonical reading order), and blank its surface span.
+ * Find the cloze span for an entry: lemmatize the sentence and blank the
+ * surface span of the ONE token whose lemma equals the entry headword.
+ *
+ * EXACTLY-ONE-MATCH RULE (fix-pass M1): a sentence where the headword lemma
+ * appears MORE THAN ONCE is not cloze-eligible — blanking only one occurrence
+ * would leave the other occurrence(s) visible on screen, and (via the grade
+ * route's lemma tolerance) any visible occurrence IS an accepted answer, so
+ * the exercise would show its own solution ('먹고 또 먹었어요.' + headword
+ * 먹다: blanking 먹고 leaves 먹었어요 readable). Same "skip when no clean
+ * prompt" policy the v1 charter applies to no-match sentences.
  *
  * Returns null (→ not cloze-eligible) when:
  *   - headword or sentence is empty after normalization,
  *   - the sentence exceeds Kiwi's input cap (lemmatizer is not even called),
- *   - no token's lemma matches the headword, or
- *   - every matching token fails span verification (upstream offset drift).
+ *   - no token's lemma matches the headword,
+ *   - MORE THAN ONE token's lemma matches the headword (see above — counted
+ *     BEFORE span verification: a second occurrence is on screen whether or
+ *     not its offsets verify), or
+ *   - the single matching token fails span verification (upstream offset
+ *     drift).
  *
  * Never throws for "no match"; a lemmatizer (network) failure DOES propagate —
  * the caller decides whether that aborts a batch or fails a request.
@@ -105,33 +116,34 @@ export async function buildClozePrompt(
   if (sentence.length > MAX_SENTENCE_LEN) return null;
 
   const { tokens } = await lemmatizeFn(sentence);
-  for (const token of tokens) {
-    if (token.lemma.normalize('NFC') !== headword) continue;
-    // Span verification: offsets must address THIS sentence and reproduce the
-    // token's own surface. A mismatch means upstream offset drift — skip the
-    // token (a later occurrence may still verify) rather than blanking a
-    // wrong/garbled span.
-    if (
-      !Number.isInteger(token.start) ||
-      !Number.isInteger(token.end) ||
-      token.start < 0 ||
-      token.end <= token.start ||
-      token.end > sentence.length
-    ) {
-      continue;
-    }
-    const surface = sentence.slice(token.start, token.end);
-    if (surface !== token.surface) continue;
-    const english = entry.english ?? null;
-    return {
-      korean: sentence,
-      english: english !== null && english.trim().length > 0 ? english.trim() : null,
-      blankStart: token.start,
-      blankEnd: token.end,
-      answerSurface: surface,
-    };
+  const matches = tokens.filter((t) => t.lemma.normalize('NFC') === headword);
+  // Multi-occurrence → not eligible (M1). Counted on the raw lemma matches,
+  // not the span-verified subset: even a drifted-offset occurrence is still
+  // physically present in the sentence text the learner sees.
+  const token = matches.length === 1 ? matches[0] : undefined;
+  if (token === undefined) return null;
+  // Span verification: offsets must address THIS sentence and reproduce the
+  // token's own surface. A mismatch means upstream offset drift — reject
+  // rather than blanking a wrong/garbled span.
+  if (
+    !Number.isInteger(token.start) ||
+    !Number.isInteger(token.end) ||
+    token.start < 0 ||
+    token.end <= token.start ||
+    token.end > sentence.length
+  ) {
+    return null;
   }
-  return null;
+  const surface = sentence.slice(token.start, token.end);
+  if (surface !== token.surface) return null;
+  const english = entry.english ?? null;
+  return {
+    korean: sentence,
+    english: english !== null && english.trim().length > 0 ? english.trim() : null,
+    blankStart: token.start,
+    blankEnd: token.end,
+    answerSurface: surface,
+  };
 }
 
 /**

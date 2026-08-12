@@ -1209,9 +1209,9 @@ export interface DueCardCloze {
   blanked: string;
   /** English translation of the sentence, when on file. */
   english: string | null;
-  /** Codepoint offsets of the blanked span in the ORIGINAL sentence. */
-  blankStart: number;
-  blankEnd: number;
+  // NO span offsets on the wire (fix-pass M4): blankEnd − blankStart would be
+  // the answer's length — the post-wrong-attempt hint's reveal, pre-leaked.
+  // The client renders the fixed-width marker and needs no offsets.
 }
 
 /**

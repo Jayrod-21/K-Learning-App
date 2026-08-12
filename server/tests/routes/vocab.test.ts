@@ -36,6 +36,10 @@ let t: TestApp;
 // F-208 (cloze): fake Kiwi upstream for the lemma-tolerance grade leg and the
 // seeder's span finding. Tests program `kiwiTokens` (returned for ANY input);
 // `kiwiCalls` lets a test assert the exact-match fast path skips Kiwi.
+// `kiwiStatusQueue` (fix-pass M6) programs per-REQUEST failure statuses: each
+// incoming request shifts one entry (default 200 when empty), so an outage
+// (500) — including the client's transparent retry — can be scripted
+// mid-sequence to exercise the UpstreamError branches.
 interface FakeKiwiToken {
   surface: string;
   lemma: string;
@@ -47,6 +51,7 @@ let kiwiServer: Server;
 let kiwiUrl = '';
 let kiwiTokens: FakeKiwiToken[] = [];
 let kiwiCalls = 0;
+let kiwiStatusQueue: number[] = [];
 
 beforeAll(async () => {
   pg = await startPostgres();
@@ -54,9 +59,14 @@ beforeAll(async () => {
     req.on('data', () => {});
     req.on('end', () => {
       kiwiCalls += 1;
-      res.statusCode = 200;
+      const status = kiwiStatusQueue.shift() ?? 200;
+      res.statusCode = status;
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ tokens: kiwiTokens }));
+      res.end(
+        status === 200
+          ? JSON.stringify({ tokens: kiwiTokens })
+          : JSON.stringify({ error: 'fake kiwi outage' }),
+      );
     });
   });
   await new Promise<void>((resolve) => kiwiServer.listen(0, '127.0.0.1', resolve));
@@ -81,6 +91,7 @@ beforeEach(async () => {
   resetLimiters();
   kiwiTokens = [];
   kiwiCalls = 0;
+  kiwiStatusQueue = [];
   // A mid-file ephemeral buildTestApp (e.g. the /vocab/series timezone test)
   // rewrites process.env.KIWI_URL to the default 'kiwi.invalid' and re-caches
   // the global config, which would silently break every later Kiwi-dependent
@@ -2433,11 +2444,12 @@ describe('GET /vocab/cards/due — cloze presentation (F-208)', () => {
     expect(card).toBeDefined();
     // The full flashcard fields stay intact (the client's fallback face).
     expect(card!.vocab_korean).toBe('마시다');
+    // Fix-pass M4: no blankStart/blankEnd on the wire — the span length IS
+    // the answer length (the post-wrong-attempt hint's reveal, pre-leaked).
+    // The client renders the fixed-width marker and needs no offsets.
     expect(card!.cloze).toEqual({
       blanked: CLOZE_BLANKED,
       english: 'I drink coffee every day.',
-      blankStart: 10,
-      blankEnd: 13,
     });
     // ANSWER-STRIPPING: the answer surface must not appear ANYWHERE in the
     // response — not as a field, not inside the blanked sentence. (The
@@ -2446,7 +2458,35 @@ describe('GET /vocab/cards/due — cloze presentation (F-208)', () => {
     const bodyText = JSON.stringify(res.body);
     expect(bodyText).not.toContain('answer_surface');
     expect(bodyText).not.toContain('answerSurface');
+    expect(bodyText).not.toContain('blankStart');
+    expect(bodyText).not.toContain('blankEnd');
     expect((card!.cloze as { blanked: string }).blanked).not.toContain(CLOZE_ANSWER);
+  });
+
+  it("a NON-recognition card sharing a cloze-bearing entry gets NO `cloze` (fix-pass M3: cloze is a recognition-face presentation)", async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const { entryId } = await seedClozeCard(userId);
+    await seedClozePrompt(entryId);
+    // A PRODUCTION card on the SAME entry — due now.
+    const { rows } = await pg.pool.query<{ id: string }>(
+      `INSERT INTO vocab_cards (user_id, face, vocab_entry_id, due_at)
+       VALUES ($1, 'production'::card_face, $2, now() - interval '1 minute')
+       RETURNING id`,
+      [userId, entryId],
+    );
+    const productionCardId = Number(rows[0]!.id);
+
+    const res = await agent.get('/vocab/cards/due?limit=200').expect(200);
+    const cards = res.body.cards as Array<Record<string, unknown>>;
+    const production = cards.find((c) => c.id === productionCardId);
+    expect(production).toBeDefined();
+    expect(production).not.toHaveProperty('cloze');
+    // The recognition sibling still carries it — the gate is per-FACE.
+    const recognition = cards.find(
+      (c) => c.vocab_entry_id === entryId && c.face === 'recognition',
+    );
+    expect(recognition).toBeDefined();
+    expect(recognition).toHaveProperty('cloze');
   });
 
   it('a card with no prompt omits `cloze` entirely (always-flashcard fallback)', async () => {
@@ -2621,6 +2661,60 @@ describe('POST /vocab/cards/:cardId/cloze/grade (F-208)', () => {
     expect(res.body.error.message).toMatch(/no cloze prompt/i);
   });
 
+  it("a NON-recognition (production) card → 404 'no cloze prompt' even though its entry HAS one (fix-pass M3)", async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const { entryId } = await seedClozeCard(userId);
+    await seedClozePrompt(entryId);
+    const { rows } = await pg.pool.query<{ id: string }>(
+      `INSERT INTO vocab_cards (user_id, face, vocab_entry_id, due_at)
+       VALUES ($1, 'production'::card_face, $2, now())
+       RETURNING id`,
+      [userId, entryId],
+    );
+    const productionCardId = Number(rows[0]!.id);
+
+    const res = await agent
+      .post(`/vocab/cards/${productionCardId}/cloze/grade`)
+      .send({ answer: CLOZE_ANSWER, expected_version: 1, attempt: 1 });
+    expect(res.status).toBe(404);
+    expect(res.body.error.message).toMatch(/no cloze prompt/i);
+    // Nothing was graded/written against the production card.
+    const log = await pg.pool.query(
+      `SELECT 1 FROM card_reviews WHERE card_id = $1`,
+      [productionCardId],
+    );
+    expect(log.rowCount).toBe(0);
+  });
+
+  it('Kiwi outage on the lemma-tolerance leg → 502 with NOTHING written (fix-pass M6: no card_reviews row, no version bump)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const { entryId, cardId } = await seedClozeCard(userId);
+    await seedClozePrompt(entryId);
+    // A wrong-surface answer forces the lemma leg; the fake Kiwi 500s on the
+    // call AND its transparent retry (services/kiwi.ts attempts twice).
+    kiwiStatusQueue = [500, 500];
+
+    const res = await agent
+      .post(`/vocab/cards/${cardId}/cloze/grade`)
+      .send({ answer: '먹어요', expected_version: 1, attempt: 2 });
+    expect(res.status).toBe(502);
+    expect(kiwiCalls).toBe(2); // the outage really was hit (call + retry)
+    // No half-state: attempt 2 would normally COMMIT 'again', but the 502
+    // fired before any write — the card is untouched and retryable.
+    const card = await pg.pool.query<{ version: number }>(
+      `SELECT version FROM vocab_cards WHERE id = $1`,
+      [cardId],
+    );
+    expect(card.rows[0]!.version).toBe(1);
+    const log = await pg.pool.query(
+      `SELECT 1 FROM card_reviews WHERE card_id = $1`,
+      [cardId],
+    );
+    expect(log.rowCount).toBe(0);
+    // And the outage response leaks no answer material.
+    expect(JSON.stringify(res.body)).not.toContain(CLOZE_ANSWER);
+  });
+
   it('stale expected_version on a COMMITTING call → 409, nothing written', async () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
     const { entryId, cardId } = await seedClozeCard(userId);
@@ -2695,6 +2789,59 @@ describe('POST /vocab/cloze/seed (F-208)', () => {
       [entryId],
     );
     expect(row.rows[0]).toEqual({ source: 'krdict', answer_surface: CLOZE_ANSWER });
+  });
+
+  it('Kiwi outage mid-run → aborted_upstream: true with honest partial counts, partial progress COMMITTED, and an idempotent re-run resumes (fix-pass M6)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // Two eligible entries (ve.id order = seeding order). The fake Kiwi
+    // serves entry 1's span check (200), then 500s entry 2's call AND its
+    // transparent retry — an outage striking mid-run.
+    const { entryId: firstEntryId } = await seedClozeCard(userId);
+    const { entryId: secondEntryId } = await seedClozeCard(userId);
+    kiwiTokens = CLOZE_SENTENCE_TOKENS;
+    kiwiStatusQueue = [200, 500, 500];
+
+    const res = await agent.post('/vocab/cloze/seed').send({});
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      eligible: 2,
+      examined: 1, // honest: entry 2 was never fully examined
+      seeded: 1,
+      skipped_no_span: 0,
+      remaining: 1,
+      aborted_upstream: true,
+    });
+    // Partial progress is COMMITTED (per-row inserts, no wrapping txn): the
+    // first entry's prompt survives the abort…
+    const first = await pg.pool.query(
+      `SELECT 1 FROM cloze_prompts WHERE vocab_entry_id = $1`,
+      [firstEntryId],
+    );
+    expect(first.rowCount).toBe(1);
+    // …and the aborted entry has none.
+    const second = await pg.pool.query(
+      `SELECT 1 FROM cloze_prompts WHERE vocab_entry_id = $1`,
+      [secondEntryId],
+    );
+    expect(second.rowCount).toBe(0);
+
+    // Idempotent resume: with Kiwi healthy again, a re-run picks up EXACTLY
+    // the remaining entry (the seeded one is excluded from the candidate set).
+    const resume = await agent.post('/vocab/cloze/seed').send({});
+    expect(resume.status).toBe(200);
+    expect(resume.body).toEqual({
+      eligible: 1,
+      examined: 1,
+      seeded: 1,
+      skipped_no_span: 0,
+      remaining: 0,
+      aborted_upstream: false,
+    });
+    const secondAfter = await pg.pool.query(
+      `SELECT 1 FROM cloze_prompts WHERE vocab_entry_id = $1`,
+      [secondEntryId],
+    );
+    expect(secondAfter.rowCount).toBe(1);
   });
 
   it('an entry whose sentences never contain the headword is counted skipped_no_span (never cloze-eligible)', async () => {

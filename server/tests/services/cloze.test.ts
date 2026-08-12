@@ -77,8 +77,9 @@ describe('buildClozePrompt — span finding', () => {
     expect(draft).toBeNull();
   });
 
-  it('blanks the FIRST occurrence when the lemma appears twice', async () => {
-    // '먹고 또 먹었어요.' — 먹고 [0,2), 먹었어요 [5,9).
+  it('returns null when the lemma appears MORE THAN ONCE (fix-pass M1: a second occurrence would stay visible AND be an accepted answer)', async () => {
+    // '먹고 또 먹었어요.' — 먹고 [0,2), 먹었어요 [5,9). Blanking either one
+    // leaves the other on screen, and lemma-tolerant grading accepts it.
     const s = '먹고 또 먹었어요.';
     const tokens = [
       tok('먹고', '먹다', 'VV', 0),
@@ -87,24 +88,31 @@ describe('buildClozePrompt — span finding', () => {
       tok('.', '.', 'SF', 9),
     ];
     const draft = await buildClozePrompt({ korean: '먹다', sentence: s }, fakeLemmatize(tokens));
-    expect(draft?.blankStart).toBe(0);
-    expect(draft?.blankEnd).toBe(2);
-    expect(draft?.answerSurface).toBe('먹고');
+    expect(draft).toBeNull();
   });
 
-  it('skips a matching token whose offsets do not reproduce its surface (drift guard), and falls through to a later valid one', async () => {
+  it('multi-occurrence rejection counts RAW lemma matches — a drifted-offset duplicate still voids eligibility', async () => {
+    // The first 먹다 occurrence carries drifted offsets ([1,3) reads '고 '),
+    // but its text is still physically in the sentence — falling through to
+    // blank the later valid occurrence would leave it visible. Null.
     const s = '먹고 또 먹었어요.';
     const tokens = [
-      // Drifted: claims 먹고 at [1,3) where the sentence has '고 '.
       { surface: '먹고', lemma: '먹다', pos: 'VV', start: 1, end: 3 },
       tok('먹었어요', '먹다', 'VV', 5),
     ];
     const draft = await buildClozePrompt({ korean: '먹다', sentence: s }, fakeLemmatize(tokens));
-    expect(draft?.answerSurface).toBe('먹었어요');
-    expect(draft?.blankStart).toBe(5);
+    expect(draft).toBeNull();
   });
 
-  it('returns null when every matching token has out-of-bounds offsets', async () => {
+  it('returns null when the single matching token has a surface-mismatching span (drift guard)', async () => {
+    const s = '밥을 먹었어요.';
+    // Offsets in bounds but addressing the wrong slice ('을 먹었' ≠ 먹었어요).
+    const tokens = [{ surface: '먹었어요', lemma: '먹다', pos: 'VV', start: 1, end: 5 }];
+    const draft = await buildClozePrompt({ korean: '먹다', sentence: s }, fakeLemmatize(tokens));
+    expect(draft).toBeNull();
+  });
+
+  it('returns null when the single matching token has out-of-bounds offsets', async () => {
     const s = '밥을 먹었어요.';
     const tokens = [{ surface: '먹었어요', lemma: '먹다', pos: 'VV', start: 3, end: 99 }];
     const draft = await buildClozePrompt({ korean: '먹다', sentence: s }, fakeLemmatize(tokens));

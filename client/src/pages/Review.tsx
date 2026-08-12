@@ -1859,7 +1859,9 @@ function StudySession({
   } | null = null;
   if (card !== null && card.wire.kind === 'due') {
     const snap = card.wire.snapshot;
-    if (snap.cloze !== undefined && !clozeFallbackKeys.has(card.key)) {
+    // `!= null` (not `!== undefined`): belt-and-suspenders against a server
+    // ever serializing `cloze: null` — either absent form means "no cloze".
+    if (snap.cloze != null && !clozeFallbackKeys.has(card.key)) {
       if (presentationRef.current?.key !== card.key) {
         // First render of this card's appearance — flip the coin and pin it.
         presentationRef.current = {
@@ -2120,21 +2122,29 @@ function StudySession({
         closeDrawer();
       } catch (err) {
         // Honest failure: the card stays in the deck (and in the queue).
+        // F-208 leak guard (fix-pass M2): on a cloze face the headword IS the
+        // answer and the blank is still on screen — the failure copy must not
+        // embed it (same rule as the remove button's accessible name).
         setRemoveError(
           errorMessageFor(
             err,
-            `Couldn't remove “${card.kr}” from review — it's still in your queue.`,
+            isCloze
+              ? "Couldn't remove this card from review — it's still in your queue."
+              : `Couldn't remove “${card.kr}” from review — it's still in your queue.`,
           ),
         );
       } finally {
         setRemovingKey(null);
       }
     })();
-  }, [card, removingKey, closeDrawer]);
+  }, [card, removingKey, closeDrawer, isCloze]);
 
   const restart = useCallback((): void => {
     setIdx(0);
     setFlipped(false);
+    // N1: drop the cached coin flip so "Study again" re-rolls the first
+    // card's face instead of inheriting the last appearance's pin.
+    presentationRef.current = null;
     closeDrawer();
     setBreakdown({ ...EMPTY_BREAKDOWN });
     setResults([]);
