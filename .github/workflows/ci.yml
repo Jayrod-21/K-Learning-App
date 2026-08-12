@@ -156,6 +156,31 @@ jobs:
       - name: Build kiwi image
         run: docker build -t hangugeo-kiwi ./services/kiwi
 
+      # F-218 live-contract coverage. The kiwi live test
+      # (server/tests/services/kiwi.live.test.ts) is skipped in the Server
+      # job's `npm test` (KIWI_LIVE unset) because it needs the km-kiwi image
+      # — a multi-minute build + PyPI flake surface the main suite shouldn't
+      # pay on every run. THIS job just built that exact image, so run the one
+      # test here with KIWI_LIVE=1, reusing it via KIWI_LIVE_IMAGE instead of
+      # a second in-test `fromDockerfile` build. Net cost: an npm ci + one
+      # container boot. Kiwi schema drift therefore still fails CI — here.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install server dependencies
+        working-directory: ./server
+        run: npm ci
+
+      - name: Kiwi live contract test (reuses the image built above)
+        working-directory: ./server
+        env:
+          KIWI_LIVE: '1'
+          KIWI_LIVE_IMAGE: hangugeo-kiwi
+        run: npx vitest run tests/services/kiwi.live.test.ts
+
   security-scan:
     name: Security — Dependency Audit
     runs-on: ubuntu-latest

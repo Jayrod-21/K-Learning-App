@@ -238,7 +238,9 @@ describe('POST /auth/logout — idempotent, always clears the cookie (F-201)', (
     expect(out.status).toBe(204);
     expectClearingCookie(out.headers['set-cookie']);
     // The DB row is still live (revoke failed) — but the browser dropped the
-    // token, and a client retry (once the DB recovers) revokes it for real.
+    // token, so a client retry presents NO cookie and lands as a clean 204
+    // no-op; the un-revoked row dies via idle/absolute expiry (see the
+    // route's logout comment).
     revokeOverride.impl = null;
     const { rows } = await pg.pool.query<{ n: number }>(
       `SELECT count(*)::int AS n FROM sessions WHERE revoked_at IS NULL`,

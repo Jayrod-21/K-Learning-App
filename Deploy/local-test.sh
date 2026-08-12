@@ -20,6 +20,8 @@
 # HARD gates (a failure fails the whole run, exit 1):
 #   1. client : npm ci -> lint -> tsc --noEmit -> build      (ci.yml client-checks)
 #   2. server : npm ci -> lint -> typecheck -> test          (ci.yml server-checks)
+#               + KIWI_LIVE=1 → includes the real-km-kiwi contract test that a
+#               default `npm test` skips (ci.yml runs it in docker-build instead)
 #   3. db     : pytest db/tests  (testcontainers spins its own postgres:16-alpine)
 #   4. kiwi   : pytest --no-slow (fake Kiwi; no 100MB model download)
 #   5. secret scan : the ci.yml security-scan grep (fail if a key is in source)
@@ -116,8 +118,14 @@ server_suite() {
     # the trust boundary is "you already run this repo's tests." It is deliberately
     # NOT the app runtime (the km-* app/service containers never get the socket; the
     # km-backup design avoids it too).
+    # KIWI_LIVE=1: opt into the real km-kiwi contract test (tests/services/
+    # kiwi.live.test.ts), which is skipped in a default `npm test` because it
+    # builds the km-kiwi image. This box has a warm docker layer cache (and the
+    # socket is already mounted), so THIS gate is where kiwi schema drift gets
+    # caught before a deploy.
     docker run --rm \
         --network host \
+        -e KIWI_LIVE=1 \
         -v /var/run/docker.sock:/var/run/docker.sock \
         -v "${REPO_ROOT}":/repo -v /repo/server/node_modules \
         -w /repo/server "$NODE_IMAGE" \
