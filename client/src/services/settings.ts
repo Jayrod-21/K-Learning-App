@@ -79,6 +79,16 @@ export interface Prefs {
    *  screen mounted; `TourProvider` is the only writer that initiates a PUT
    *  *for* this field (read-merge-write). */
   toursSeen: ToursSeen;
+  /** Cloze drills opt-in (F-208 follow-up) — when true the server attaches
+   *  the `cloze` presentation to eligible due vocab cards; when false every
+   *  card is a plain flashcard (default). OWNED by the flashcard study
+   *  flow's toggle, which writes it via the field-scoped
+   *  `patchClozeEnabled` below — the Settings screen only ever RELAYS the
+   *  last server-reported value on its full-object PUTs (the `notif`
+   *  pass-through posture), so it can't originate a change here. A
+   *  pre-feature SERVER mid-rolling-deploy omits the field on GET, so
+   *  readers guard with `=== true` before adopting. */
+  clozeEnabled: boolean;
 }
 
 /**
@@ -136,6 +146,26 @@ export async function patchToursSeen(
   return api.patch<Prefs>(
     '/settings/prefs/tours-seen',
     { toursSeen },
+    signal !== undefined ? { signal } : undefined,
+  );
+}
+
+/**
+ * PATCH /settings/prefs/cloze-enabled → set the cloze-drills opt-in flag and
+ * echo the full prefs view.
+ *
+ * Field-scoped on the server via `jsonb_set` (the tours-seen pattern) — no
+ * other prefs slice is carried, so the flashcard study flow's toggle can
+ * never clobber a palette/textSize change that landed since it last read
+ * prefs. The Review page's cloze toggle is the only caller.
+ */
+export async function patchClozeEnabled(
+  clozeEnabled: boolean,
+  signal?: AbortSignal,
+): Promise<Prefs> {
+  return api.patch<Prefs>(
+    '/settings/prefs/cloze-enabled',
+    { clozeEnabled },
     signal !== undefined ? { signal } : undefined,
   );
 }

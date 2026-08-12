@@ -19,6 +19,7 @@ import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
 import {
   ensureCorpusSource,
   registerUser,
+  type RegisteredAgent,
   seedBookUpload,
   seedHanjaCharacter,
   seedKrdictEntry,
@@ -2420,6 +2421,20 @@ async function seedClozePrompt(entryId: number): Promise<void> {
   );
 }
 
+/**
+ * Turn the user's cloze-drills pref ON through the REAL toggle route (F-208
+ * follow-up: due-serve is gated on `users.preferences.clozeEnabled`, default
+ * off). Going through PATCH /settings/prefs/cloze-enabled — not a direct SQL
+ * write — keeps these due-queue tests an end-to-end proof of the same wire
+ * the client's toggle uses.
+ */
+async function enableClozeDrills(agent: RegisteredAgent['agent']): Promise<void> {
+  await agent
+    .patch('/settings/prefs/cloze-enabled')
+    .send({ clozeEnabled: true })
+    .expect(200);
+}
+
 /** The fake-Kiwi token list for CLOZE_SENTENCE (span-verified offsets). */
 const CLOZE_SENTENCE_TOKENS: FakeKiwiToken[] = [
   { surface: '저', lemma: '저', pos: 'NP', start: 0, end: 1 },
@@ -2432,10 +2447,11 @@ const CLOZE_SENTENCE_TOKENS: FakeKiwiToken[] = [
 ];
 
 describe('GET /vocab/cards/due — cloze presentation (F-208)', () => {
-  it('a card whose entry has a prompt carries `cloze` (blanked, NO answer leak)', async () => {
+  it('a card whose entry has a prompt carries `cloze` when the pref is ON (blanked, NO answer leak)', async () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
     const { entryId, cardId } = await seedClozeCard(userId);
     await seedClozePrompt(entryId);
+    await enableClozeDrills(agent);
 
     const res = await agent.get('/vocab/cards/due?limit=200').expect(200);
     const card = (res.body.cards as Array<Record<string, unknown>>).find(
@@ -2467,6 +2483,7 @@ describe('GET /vocab/cards/due — cloze presentation (F-208)', () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
     const { entryId } = await seedClozeCard(userId);
     await seedClozePrompt(entryId);
+    await enableClozeDrills(agent);
     // A PRODUCTION card on the SAME entry — due now.
     const { rows } = await pg.pool.query<{ id: string }>(
       `INSERT INTO vocab_cards (user_id, face, vocab_entry_id, due_at)
@@ -2489,15 +2506,87 @@ describe('GET /vocab/cards/due — cloze presentation (F-208)', () => {
     expect(recognition).toHaveProperty('cloze');
   });
 
-  it('a card with no prompt omits `cloze` entirely (always-flashcard fallback)', async () => {
+  it('a card with no prompt omits `cloze` entirely even with the pref ON (always-flashcard fallback)', async () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
     const cardId = await seedVocabCard(pg.pool, userId);
+    await enableClozeDrills(agent);
     const res = await agent.get('/vocab/cards/due?limit=200').expect(200);
     const card = (res.body.cards as Array<Record<string, unknown>>).find(
       (c) => c.id === cardId,
     );
     expect(card).toBeDefined();
     expect(card).not.toHaveProperty('cloze');
+  });
+
+  // ── F-208 follow-up — the cloze-drills enable toggle gates due-serve ──
+
+  it('DEFAULT (pref never set): `cloze` is omitted even though a prompt exists — opt-in is off', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const { entryId, cardId } = await seedClozeCard(userId);
+    await seedClozePrompt(entryId);
+
+    const res = await agent.get('/vocab/cards/due?limit=200').expect(200);
+    const card = (res.body.cards as Array<Record<string, unknown>>).find(
+      (c) => c.id === cardId,
+    );
+    expect(card).toBeDefined();
+    expect(card).not.toHaveProperty('cloze');
+    // The flashcard fields are fully intact — disabling costs nothing.
+    expect(card!.vocab_korean).toBe('마시다');
+    // Nothing cloze-shaped ships at all when disabled (no answer material,
+    // no blanked sentence, nothing for a client to accidentally render).
+    expect(JSON.stringify(res.body)).not.toContain('cloze');
+  });
+
+  it('pref OFF after being ON: due stops serving `cloze` again (server-side gate, prompts persist)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const { entryId, cardId } = await seedClozeCard(userId);
+    await seedClozePrompt(entryId);
+    await enableClozeDrills(agent);
+    const on = await agent.get('/vocab/cards/due?limit=200').expect(200);
+    expect(
+      (on.body.cards as Array<Record<string, unknown>>).find((c) => c.id === cardId),
+    ).toHaveProperty('cloze');
+
+    await agent
+      .patch('/settings/prefs/cloze-enabled')
+      .send({ clozeEnabled: false })
+      .expect(200);
+    const off = await agent.get('/vocab/cards/due?limit=200').expect(200);
+    expect(
+      (off.body.cards as Array<Record<string, unknown>>).find((c) => c.id === cardId),
+    ).not.toHaveProperty('cloze');
+    // Disabling never deletes the prepared prompts — re-enabling is instant.
+    const { rows } = await pg.pool.query(
+      `SELECT 1 FROM cloze_prompts WHERE vocab_entry_id = $1`,
+      [entryId],
+    );
+    expect(rows).toHaveLength(1);
+  });
+
+  it("the pref gate is PER-USER: one user's enable never leaks cloze into another's due queue", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    // Both users hold a due recognition card on the SAME cloze-bearing entry.
+    const { entryId, cardId: aCardId } = await seedClozeCard(a.userId);
+    await seedClozePrompt(entryId);
+    const { rows } = await pg.pool.query<{ id: string }>(
+      `INSERT INTO vocab_cards (user_id, face, vocab_entry_id, due_at)
+       VALUES ($1, 'recognition'::card_face, $2, now() - interval '1 minute')
+       RETURNING id`,
+      [b.userId, entryId],
+    );
+    const bCardId = Number(rows[0]!.id);
+    await enableClozeDrills(a.agent);
+
+    const aRes = await a.agent.get('/vocab/cards/due?limit=200').expect(200);
+    expect(
+      (aRes.body.cards as Array<Record<string, unknown>>).find((c) => c.id === aCardId),
+    ).toHaveProperty('cloze');
+    const bRes = await b.agent.get('/vocab/cards/due?limit=200').expect(200);
+    expect(
+      (bRes.body.cards as Array<Record<string, unknown>>).find((c) => c.id === bCardId),
+    ).not.toHaveProperty('cloze');
   });
 });
 

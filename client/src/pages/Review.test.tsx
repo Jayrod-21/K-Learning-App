@@ -119,6 +119,7 @@ vi.mock('../services/vocab', () => ({
   removeListEntry: vi.fn(),
   initCards: vi.fn(),
   getEntry: vi.fn(),
+  seedClozePrompts: vi.fn(),
 }));
 
 vi.mock('../services/progress', () => ({
@@ -128,6 +129,26 @@ vi.mock('../services/progress', () => ({
 }));
 
 vi.mock('../services/define', () => ({ defineEntry: vi.fn() }));
+
+// F-208 follow-up — the cloze toggle's pref read/write. The factory default
+// (pref off) keeps every non-toggle test rendering the landing exactly as
+// before; the toggle tests override per-case with vi.mocked(...).
+vi.mock('../services/settings', () => ({
+  fetchPrefs: vi.fn(async () => ({
+    notif: {
+      channel: { email: false, sms: false },
+      reviewsDue: false,
+      daily: false,
+      weekly: false,
+    },
+    palette: { paper: 'hanji', accent: 'coral', correct: 'moss', wrong: 'vermilion' },
+    languageDisplay: { mode: 'both', primary: 'ko', subScale: 0.7 },
+    textSize: 'md',
+    toursSeen: [],
+    clozeEnabled: false,
+  })),
+  patchClozeEnabled: vi.fn(),
+}));
 
 // F-208 — the flashcard-vs-cloze coin flip is a module seam precisely so
 // tests can force each branch deterministically.
@@ -140,6 +161,11 @@ import * as vocabService from '../services/vocab';
 import * as progressService from '../services/progress';
 import { defineEntry } from '../services/define';
 import { pickPresentation } from '../lib/clozePresentation';
+import {
+  fetchPrefs,
+  patchClozeEnabled,
+  type Prefs,
+} from '../services/settings';
 import { DUE_CLOZE_CARD_FIXTURE } from '../data/mocks/review';
 
 // ── Router probes ────────────────────────────────────────────────────
@@ -2131,5 +2157,198 @@ describe('Review — F-208 cloze presentation (coin flip)', () => {
     ).toBeInTheDocument();
     expect(screen.queryByRole('textbox', { name: 'Your answer' })).toBeNull();
     expect(vocabService.submitReview).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// F-208 follow-up — cloze drills enable toggle (landing)
+// ─────────────────────────────────────────────────────────────
+
+/** Prefs view as `fetchPrefs` resolves it, with the flag under test. */
+function prefsWithCloze(clozeEnabled: boolean): Prefs {
+  return {
+    notif: {
+      channel: { email: false, sms: false },
+      reviewsDue: false,
+      daily: false,
+      weekly: false,
+    },
+    palette: { paper: 'hanji', accent: 'coral', correct: 'moss', wrong: 'vermilion' },
+    languageDisplay: { mode: 'both', primary: 'ko', subScale: 0.7 },
+    textSize: 'md',
+    toursSeen: [],
+    clozeEnabled,
+  };
+}
+
+/** One seed-run response with overridable counts. */
+function seedRun(
+  overrides: Partial<vocabService.ClozeSeedResult> = {},
+): vocabService.ClozeSeedResult {
+  return {
+    eligible: 0,
+    examined: 0,
+    seeded: 0,
+    skipped_no_span: 0,
+    remaining: 0,
+    aborted_upstream: false,
+    ...overrides,
+  };
+}
+
+/** The landing's cloze switch (the page's only `switch` role). */
+function clozeSwitch(): HTMLElement {
+  return screen.getByRole('switch', {
+    name: 'Cloze drills — fill in the blank',
+  });
+}
+
+describe('Review — F-208 follow-up cloze drills toggle', () => {
+  beforeEach(() => {
+    // clearAllMocks wipes call history but keeps stale per-test overrides —
+    // pin the defaults explicitly so each case starts from pref OFF.
+    vi.mocked(fetchPrefs).mockResolvedValue(prefsWithCloze(false));
+    vi.mocked(patchClozeEnabled).mockResolvedValue(prefsWithCloze(true));
+    vi.mocked(vocabService.seedClozePrompts).mockResolvedValue(seedRun());
+  });
+
+  it('reflects the persisted pref on load: OFF stays unchecked, ON hydrates checked', async () => {
+    settleLanding();
+    const { unmount } = renderReview();
+    // Disabled until the pref hydrates — a tap can't race the load.
+    expect(clozeSwitch()).toBeDisabled();
+    await waitFor(() => {
+      expect(clozeSwitch()).not.toBeDisabled();
+    });
+    expect(clozeSwitch()).toHaveAttribute('aria-checked', 'false');
+    unmount();
+
+    vi.mocked(fetchPrefs).mockResolvedValue(prefsWithCloze(true));
+    settleLanding();
+    renderReview();
+    await waitFor(() => {
+      expect(clozeSwitch()).toHaveAttribute('aria-checked', 'true');
+    });
+  });
+
+  it('enable: writes the pref true, then loops the seeder until remaining hits 0, and reports the tally', async () => {
+    vi.mocked(vocabService.seedClozePrompts)
+      .mockResolvedValueOnce(
+        seedRun({ eligible: 700, examined: 500, seeded: 480, remaining: 200 }),
+      )
+      .mockResolvedValueOnce(
+        seedRun({ eligible: 700, examined: 200, seeded: 190, remaining: 0 }),
+      );
+    settleLanding();
+    const user = userEvent.setup();
+    renderReview();
+    await waitFor(() => {
+      expect(clozeSwitch()).not.toBeDisabled();
+    });
+
+    await user.click(clozeSwitch());
+
+    await waitFor(() => {
+      expect(patchClozeEnabled).toHaveBeenCalledExactlyOnceWith(true);
+    });
+    // The loop ran exactly until remaining === 0 — two runs, max batch each.
+    await waitFor(() => {
+      expect(vocabService.seedClozePrompts).toHaveBeenCalledTimes(2);
+    });
+    expect(vocabService.seedClozePrompts).toHaveBeenNthCalledWith(1, 500);
+    expect(vocabService.seedClozePrompts).toHaveBeenNthCalledWith(2, 500);
+    // Accumulated tally (480 + 190) lands in the summary; toggle ends ON.
+    expect(
+      await screen.findByText('Cloze drills are on — 670 drills ready.'),
+    ).toBeInTheDocument();
+    expect(clozeSwitch()).toHaveAttribute('aria-checked', 'true');
+    expect(clozeSwitch()).not.toBeDisabled();
+    // The due feed refetches so the open page picks up cloze presentations.
+    expect(hoisted.refetchCalls.due).toBeGreaterThan(0);
+  });
+
+  it('enable with nothing left to seed reports the already-prepared copy', async () => {
+    settleLanding();
+    const user = userEvent.setup();
+    renderReview();
+    await waitFor(() => {
+      expect(clozeSwitch()).not.toBeDisabled();
+    });
+
+    await user.click(clozeSwitch());
+
+    expect(
+      await screen.findByText(
+        'Cloze drills are on — your cards were already prepared.',
+      ),
+    ).toBeInTheDocument();
+    expect(vocabService.seedClozePrompts).toHaveBeenCalledTimes(1);
+  });
+
+  it('a Kiwi outage (aborted_upstream) stops the loop but KEEPS the pref on — soft retry copy', async () => {
+    vi.mocked(vocabService.seedClozePrompts).mockResolvedValue(
+      seedRun({
+        eligible: 700,
+        examined: 120,
+        seeded: 100,
+        remaining: 580,
+        aborted_upstream: true,
+      }),
+    );
+    settleLanding();
+    const user = userEvent.setup();
+    renderReview();
+    await waitFor(() => {
+      expect(clozeSwitch()).not.toBeDisabled();
+    });
+
+    await user.click(clozeSwitch());
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/some drills couldn’t be prepared/);
+    // No retry hammering against a dead upstream — one run, then stop.
+    expect(vocabService.seedClozePrompts).toHaveBeenCalledTimes(1);
+    // The pref stays true (idempotent seeder — re-enable resumes later).
+    expect(clozeSwitch()).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('disable: writes the pref false and NEVER seeds (prompts persist server-side)', async () => {
+    vi.mocked(fetchPrefs).mockResolvedValue(prefsWithCloze(true));
+    vi.mocked(patchClozeEnabled).mockResolvedValue(prefsWithCloze(false));
+    settleLanding();
+    const user = userEvent.setup();
+    renderReview();
+    await waitFor(() => {
+      expect(clozeSwitch()).toHaveAttribute('aria-checked', 'true');
+    });
+
+    await user.click(clozeSwitch());
+
+    await waitFor(() => {
+      expect(patchClozeEnabled).toHaveBeenCalledExactlyOnceWith(false);
+    });
+    expect(clozeSwitch()).toHaveAttribute('aria-checked', 'false');
+    expect(vocabService.seedClozePrompts).not.toHaveBeenCalled();
+    // Refetch drops the in-memory page's cloze objects too.
+    expect(hoisted.refetchCalls.due).toBeGreaterThan(0);
+  });
+
+  it('a failed pref write leaves the toggle where it was and surfaces an error', async () => {
+    vi.mocked(patchClozeEnabled).mockRejectedValue(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+    settleLanding();
+    const user = userEvent.setup();
+    renderReview();
+    await waitFor(() => {
+      expect(clozeSwitch()).not.toBeDisabled();
+    });
+
+    await user.click(clozeSwitch());
+
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    // Nothing changed server-side, so the switch honestly still reads OFF.
+    expect(clozeSwitch()).toHaveAttribute('aria-checked', 'false');
+    expect(vocabService.seedClozePrompts).not.toHaveBeenCalled();
   });
 });

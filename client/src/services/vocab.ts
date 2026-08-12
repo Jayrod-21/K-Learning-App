@@ -356,6 +356,41 @@ export async function clearDueCards(): Promise<ClearCardsResult> {
   return api.post<ClearCardsResult>('/vocab/cards/clear', {});
 }
 
+/**
+ * Result of one `POST /vocab/cloze/seed` run (F-208 follow-up — the cloze
+ * toggle's auto-seed). Snake_case mirrors the wire verbatim.
+ */
+export interface ClozeSeedResult {
+  /** Total not-yet-seeded eligible entries (unbounded, not just this run). */
+  eligible: number;
+  examined: number;
+  seeded: number;
+  skipped_no_span: number;
+  /** eligible − examined: how many entries a follow-up run would tackle. */
+  remaining: number;
+  /** Kiwi outage — the run stopped early with honest partial counts. */
+  aborted_upstream: boolean;
+}
+
+/**
+ * POST /vocab/cloze/seed — compute + persist cloze prompts for the entries
+ * backing this user's live recognition cards (F-208 seeder). Idempotent and
+ * resumable: already-seeded entries are excluded, so re-running seeds the
+ * NEXT batch — callers loop until `remaining` hits 0 (or `aborted_upstream`
+ * reports a Kiwi outage; everything seeded so far is committed either way).
+ * The Review page's cloze-drills toggle drives this on enable.
+ */
+export async function seedClozePrompts(
+  limit?: number,
+  signal?: AbortSignal,
+): Promise<ClozeSeedResult> {
+  return api.post<ClozeSeedResult>(
+    '/vocab/cloze/seed',
+    limit !== undefined ? { limit } : {},
+    signal !== undefined ? { signal } : undefined,
+  );
+}
+
 /** POST /vocab/cards/init — seed a recognition card slice. Idempotent. */
 export async function initCards(
   body: InitCardsBody,
