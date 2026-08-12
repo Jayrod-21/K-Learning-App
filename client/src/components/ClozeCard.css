@@ -1,0 +1,107 @@
+/* ClozeCard (F-208) — the typed cloze face of a review card. Rendered inside
+ * the Review session's `.km-review__flashcard-wrap`, so it inherits the
+ * signboard tone; these rules only lay out the cloze-specific pieces. */
+
+.km-cloze {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 24px 20px;
+  text-align: center;
+  min-height: 240px;
+  justify-content: center;
+}
+
+.km-cloze__sentence {
+  font-size: 1.25rem;
+  line-height: 1.6;
+  word-break: keep-all;
+}
+
+/* The blank span — a visible slot, not just underscores in running text. */
+.km-cloze__blank {
+  display: inline-block;
+  min-width: 3.5em;
+  margin: 0 0.15em;
+  border-bottom: 2px solid var(--accent, currentColor);
+  color: transparent;
+  user-select: none;
+}
+
+.km-cloze__en {
+  font-size: 0.875rem;
+  color: var(--paper-dim);
+}
+
+.km-cloze__hint {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 1rem;
+}
+
+.km-cloze__hint-label {
+  font-size: 0.75rem;
+  color: var(--paper-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.km-cloze__hint-shape {
+  font-size: 1.25rem;
+  letter-spacing: 0.1em;
+}
+
+.km-cloze__hint-count {
+  font-size: 0.75rem;
+  color: var(--paper-mute);
+}
+
+.km-cloze__form {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.km-cloze__input {
+  width: min(320px, 100%);
+  padding: 10px 14px;
+  font-size: 1.125rem;
+  text-align: center;
+  border: 1px solid var(--line, currentColor);
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+}
+
+.km-cloze__actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.km-cloze__verdict {
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.km-cloze__verdict--correct {
+  color: var(--ok, inherit);
+}
+
+.km-cloze__verdict--wrong {
+  color: var(--paper-dim);
+}
+
+.km-cloze__answer {
+  font-size: 2rem;
+}
+
+.km-cloze__error {
+  font-size: 0.8125rem;
+  color: var(--paper-dim);
+}

@@ -1191,7 +1191,77 @@ export interface DueCard {
    * round-trip is only exact once the server exposes this field.
    */
   grammarPatternKey?: string;
+  /**
+   * Cloze presentation for this card's vocab entry (F-208). Present ⇔ the
+   * entry has a pre-computed `cloze_prompts` row — that presence IS the
+   * client's cloze-eligibility signal (absence ⇒ flashcard only). The server
+   * folds its `cloze_*` JOIN columns into this object at the route boundary
+   * (already camelCase on the wire — no snake_case mapping needed here).
+   * `answer_surface` is NEVER sent with the due card; the answer is revealed
+   * only by a committing response from the grade route.
+   */
+  cloze?: DueCardCloze;
 }
+
+/** The optional cloze presentation carried on a due card (F-208). */
+export interface DueCardCloze {
+  /** The example sentence with the answer span replaced by `______` (6 underscores). */
+  blanked: string;
+  /** English translation of the sentence, when on file. */
+  english: string | null;
+  // NO span offsets on the wire (fix-pass M4): blankEnd − blankStart would be
+  // the answer's length — the post-wrong-attempt hint's reveal, pre-leaked.
+  // The client renders the fixed-width marker and needs no offsets.
+}
+
+/**
+ * Body for `POST /vocab/cards/:cardId/cloze/grade` (F-208). `answer` is
+ * required unless `giveUp` is true (the server 400s otherwise); `attempt`
+ * drives the hint-then-reveal flow and the committed rating (attempt 1
+ * correct → 'good', attempt 2 correct → 'hard', wrong-out/give-up → 'again').
+ */
+export interface ClozeGradeRequest {
+  answer?: string;
+  expected_version: number;
+  attempt: 1 | 2;
+  giveUp?: boolean;
+}
+
+/** Partial hint from a NON-committing wrong-attempt-1 grade (F-208). */
+export interface ClozeGradeHint {
+  /** First character of the answer surface. */
+  firstChar: string;
+  /** Character count of the answer surface. */
+  length: number;
+}
+
+/**
+ * Wrong on attempt 1 without surrender — NON-committing: no FSRS write, no
+ * version change, and NO answer reveal. Hint only.
+ */
+export interface ClozeGradeHintResponse {
+  correct: false;
+  hint: ClozeGradeHint;
+}
+
+/**
+ * A COMMITTING grade outcome (correct on any attempt, wrong on attempt 2, or
+ * give-up): the server has ALREADY advanced the same card's FSRS schedule —
+ * the client must NOT also call `submitReview` for this card. Carries the
+ * reveal (`answerSurface` + `fullSentence`) and the fresh version snapshot.
+ */
+export interface ClozeGradeCommittedResponse {
+  correct: boolean;
+  answerSurface: string;
+  fullSentence: string;
+  rating: 'good' | 'hard' | 'again';
+  version: number;
+  due_at: string;
+  scheduled_days: number;
+}
+
+/** Union of the grade route's two 200 shapes — discriminate on `'hint' in r`. */
+export type ClozeGradeResponse = ClozeGradeHintResponse | ClozeGradeCommittedResponse;
 
 /** FSRS rating button. */
 export type FsrsRating = 'again' | 'hard' | 'good' | 'easy';
