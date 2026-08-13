@@ -847,11 +847,16 @@ export async function seedGeneratedStory(
     bodyKo?: string;
     level?: 'L1' | 'L2' | 'L3' | 'L4' | 'L5+';
     prompt?: string | null;
+    /** F-210 v2 — the multi-voice turns JSONB. Omit/null for a v1 flat story.
+     *  Typed loose (unknown[]) on purpose so tests can seed malformed shapes
+     *  and prove the runner's single-narrator fallback; 081's CHECK only
+     *  demands JSON array-ness. */
+    turns?: unknown[] | null;
   } = {},
 ): Promise<number> {
   const { rows } = await pool.query<{ id: string }>(
-    `INSERT INTO generated_stories (user_id, title, body_ko, level, prompt)
-     VALUES ($1, $2, $3, $4::proficiency_level, $5)
+    `INSERT INTO generated_stories (user_id, title, body_ko, level, prompt, turns)
+     VALUES ($1, $2, $3, $4::proficiency_level, $5, $6::jsonb)
      RETURNING id`,
     [
       userId,
@@ -859,6 +864,7 @@ export async function seedGeneratedStory(
       opts.bodyKo ?? '옛날 옛적에 이야기가 있었습니다.',
       opts.level ?? 'L3',
       opts.prompt ?? null,
+      opts.turns != null ? JSON.stringify(opts.turns) : null,
     ],
   );
   return Number(rows[0]!.id);
