@@ -26,6 +26,12 @@
  *                                              returns it (F-068)
  *   GET /reading/generated                   → the user's generated-story
  *                                              library, newest first
+ *   GET /reading/generated/audio             → the caller's VOICED story
+ *                                              library (F-210 surfaced on the
+ *                                              Listen landing): only stories
+ *                                              with a completed narration,
+ *                                              newest first, each carrying its
+ *                                              streamUrl + durationMs
  *   GET /reading/generated/:id               → one generated story (full body)
  *   POST /reading/generated/:id/audio        → request TTS narration of an
  *                                              owned story (F-210): idempotent
@@ -688,6 +694,60 @@ router.get('/generated', cheapLimiter(), async (req, res, next) => {
         level: r.level,
         prompt: r.prompt,
         createdAt: r.created_at,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /reading/generated/audio — the caller's VOICED story library, newest
+ * first (the Listen tab's "Generated Audio" section). One row per owned
+ * story that has a completed narration: the voiced set — audio_sources
+ * (kind 'generated_story') joined to its single track — is the authority
+ * for "voiced", exactly as buildStoryAudioDto below treats it (a 'done'
+ * job row whose set was deleted out-of-band is NOT voiced and must not
+ * list). `streamUrl` is the existing hardened byte route
+ * (/audio/tracks/:id/stream — Range, IDOR-404, cookie auth); nothing new
+ * is exposed. IDOR: user-scoped on generated_stories AND the source join
+ * is owner-pinned (s.user_id = g.user_id, the 081 composite-FK invariant),
+ * so a foreign track id can never ride a caller's row. Single query;
+ * LIMIT 200 mirrors GET /generated's bound.
+ *
+ * REGISTRATION ORDER MATTERS: this literal path must be registered BEFORE
+ * GET /generated/:id, whose id param would otherwise capture "audio" and
+ * 400 on the numeric coercion.
+ */
+router.get('/generated/audio', cheapLimiter(), async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const { rows } = await query<{
+      id: string;
+      title: string;
+      level: string;
+      track_id: string;
+      duration_ms: number | null;
+    }>(
+      `SELECT g.id::text AS id, g.title, g.level::text AS level,
+              t.id::text AS track_id, t.duration_ms
+         FROM generated_stories g
+         JOIN audio_sources s
+           ON s.generated_story_id = g.id AND s.user_id = g.user_id
+         JOIN audio_tracks t
+           ON t.source_id = s.id AND t.track_number = 1
+        WHERE g.user_id = $1
+        ORDER BY g.created_at DESC, g.id DESC
+        LIMIT 200`,
+      [userId],
+    );
+    res.status(200).json({
+      stories: rows.map((r) => ({
+        id: Number(r.id),
+        title: r.title,
+        level: r.level,
+        streamUrl: `/audio/tracks/${Number(r.track_id)}/stream`,
+        durationMs: r.duration_ms,
       })),
     });
   } catch (err) {

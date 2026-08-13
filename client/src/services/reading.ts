@@ -13,7 +13,9 @@
  *     `POST /reading/attempts`, `GET /reading/attempts`.
  *   - Story TTS audio (F-210; `story_audio_jobs` + audio tables, migration
  *     081): `POST`/`GET /reading/generated/:id/audio` — request narration,
- *     then poll the status envelope until done/failed.
+ *     then poll the status envelope until done/failed — plus
+ *     `GET /reading/generated/audio`, the voiced-story list the Listen tab's
+ *     "Generated Audio" section renders.
  *
  * Threat model:
  *   - Auth + session: every route is `requireAuth` server-side; the session
@@ -488,6 +490,43 @@ export async function getStoryAudio(
     signal !== undefined ? { signal } : undefined,
   );
   return res.audio;
+}
+
+/**
+ * One row of the caller's VOICED story library (`GET /reading/generated/
+ * audio` — the Listen tab's "Generated Audio" section). Only stories with a
+ * COMPLETED narration appear, so `streamUrl` is always present: the same
+ * app-relative byte route as `StoryAudioTrack.streamUrl`
+ * (`/audio/tracks/:id/stream`) — resolve it through `buildAudioSrc`
+ * (services/ttmik.ts) before handing it to an `<audio>` element, never raw.
+ * `level` stays a plain display string (same stance as
+ * `GeneratedStorySummary`).
+ */
+export interface GeneratedAudioItem {
+  id: number;
+  title: string;
+  level: string;
+  streamUrl: string;
+  durationMs: number | null;
+}
+
+interface GeneratedAudioEnvelope {
+  stories: GeneratedAudioItem[];
+}
+
+/**
+ * GET /reading/generated/audio — the caller's voiced stories, newest first
+ * (already camelCase on the wire — no mapping needed). Empty array is the
+ * normal "nothing voiced yet" state, not an error.
+ */
+export async function listGeneratedAudio(
+  signal?: AbortSignal,
+): Promise<GeneratedAudioItem[]> {
+  const res = await api.get<GeneratedAudioEnvelope>(
+    '/reading/generated/audio',
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.stories;
 }
 
 // ─────────────────────────────────────────────────────────────
