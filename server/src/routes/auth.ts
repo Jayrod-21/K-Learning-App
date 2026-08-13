@@ -68,6 +68,7 @@ import { authLimiter, cheapLimiter } from '../middleware/rateLimits.js';
 import { hashPassword, safeDummyVerify, verifyPassword } from '../auth/passwords.js';
 import {
   clearSessionCookie,
+  getActiveSession,
   issueSession,
   revokeSessionById,
   setSessionCookie,
@@ -1193,21 +1194,47 @@ router.post(
   },
 );
 
-// F-UP-018 (rate-limit ordering): /logout and /me previously mounted NO
-// limiter, so an unauthenticated flood (bogus session cookies → one session
-// lookup each) was unbounded. authLimiter counts only FAILED requests
-// (skipSuccessfulRequests), so legitimate authenticated traffic is never
-// throttled; it runs BEFORE requireAuth, matching the /mfa/status pattern.
-router.post('/logout', authLimiter(), requireAuth, async (req, res, next) => {
+// F-201: logout is IDEMPOTENT and always succeeds — a failed or repeated
+// logout must never strand a usable session on the client.
+//   - No requireAuth: a retry after a successful-but-response-lost logout
+//     presents an already-revoked cookie; 401-ing that retry told the client
+//     "logout failed" when the server row was already clean. Instead the
+//     handler resolves the cookie's session best-effort and revokes it when
+//     it is still live (getActiveSession → revokeSessionById, both no-ops on
+//     a revoked/expired/absent session).
+//   - The cookie is cleared and 204 returned even when the DB revoke hits a
+//     transient error: the browser must stop presenting the token either
+//     way. The un-revoked row is logged loudly and dies via expiry/idle
+//     timeout; a client retry (cookie now gone) is a clean 204 no-op.
+//   - IDOR-safe: the only session that can be revoked is the one the
+//     presented cookie's token hashes to — no caller-supplied id exists.
+// Rate limiting (F-UP-018 heritage): the route previously relied on
+// authLimiter counting its 401s (skipSuccessfulRequests) to bound
+// bogus-cookie floods (one session lookup each). Now that every request
+// succeeds, that bucket would never count — so logout moves to cheapLimiter,
+// which counts ALL requests per-IP. Legitimate logouts (roughly one per
+// session) sit far below the cheap ceiling.
+router.post('/logout', cheapLimiter(), async (req, res) => {
   try {
-    if (req.session) {
-      await revokeSessionById(req.session.id, 'user_logout');
+    const cfg = loadConfig();
+    const cookies = (req.cookies ?? {}) as Record<string, string | undefined>;
+    const raw = cookies[cfg.SESSION_COOKIE_NAME];
+    if (raw) {
+      const active = await getActiveSession(raw);
+      if (active) {
+        await revokeSessionById(active.session.id, 'user_logout');
+      }
     }
-    clearSessionCookie(res);
-    res.status(204).send();
   } catch (err) {
-    next(err);
+    // Transient DB failure — the cookie still gets cleared below so the
+    // browser cannot keep presenting the token; the row expires on its own.
+    req.log.error(
+      { err: (err as Error).message },
+      'logout: session revoke failed — cookie cleared anyway, row will expire',
+    );
   }
+  clearSessionCookie(res);
+  res.status(204).send();
 });
 
 /**

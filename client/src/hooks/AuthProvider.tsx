@@ -38,6 +38,7 @@
  */
 import {
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -60,6 +61,7 @@ import {
   type PendingChallenge,
   type User,
 } from './auth-context';
+import { ToastContext } from '../components/toast-context';
 import type { RegisterOutcome, RegisterResponse } from '../types/domain';
 
 interface AuthState {
@@ -86,6 +88,10 @@ export function AuthProvider({
   // Coalesce concurrent probes — the initial mount and any post-logout
   // refresh can race; only the latest controller's response applies.
   const probeRef = useRef<AbortController | null>(null);
+  // Optional (read directly, not via useToast, so unit tests can mount
+  // AuthProvider without a ToastProvider): used to surface a logout that
+  // could not reach the server (F-201).
+  const toastCtx = useContext(ToastContext);
 
   const probe = useCallback(async (): Promise<void> => {
     probeRef.current?.abort();
@@ -286,48 +292,46 @@ export function AuthProvider({
   );
 
   /**
-   * Best-effort logout: POST the server, then unconditionally clear local
-   * state, then re-probe. The re-probe is defence in depth — if the server
-   * revoked the session, the probe returns 401 and confirms `guest`.
+   * Best-effort logout: POST the server (with one retry), then
+   * unconditionally clear local state, then re-probe. The re-probe is
+   * defence in depth — if the server revoked the session, the probe returns
+   * 401 and confirms `guest`.
    *
-   * Known edge (accepted here; tracked as **F-201** in BUGS_AND_FEATURES.md):
-   *   - **Server-side 5xx during logout**: the POST throws, we clear local
-   *     state, then `probe()` re-runs and the *cookie is still valid* on the
-   *     server. The probe succeeds → state flips back to `authenticated`,
-   *     which is correct (the session genuinely still exists) but the UI
-   *     flashes "logged out" for the duration of the POST→probe window. The
-   *     user is effectively *not* logged out, with no feedback beyond the
-   *     `console.warn` in the catch below. A real fix needs server work
-   *     (idempotent revoke so a client retry always lands, and/or a
-   *     short-lived rolling cookie so an un-revoked session dies on its
-   *     own) plus a surfaced client warning ("we couldn't reach the server
-   *     to end your session — try again or close all tabs") — that bundle
-   *     is F-201, deliberately out of scope for this client-only branch.
-   *   - **Network down during logout**: same shape — local clear, probe
-   *     also fails, state stays `guest` (a previously-network-down session
-   *     can't be reached anyway). Acceptable.
+   * F-201: the server's /auth/logout is now idempotent and always clears the
+   * session cookie (204 even for an already-revoked cookie, and even when
+   * the DB revoke hits a transient error), so:
+   *   - a retry of a network-lost logout always lands as a clean success;
+   *   - a genuine failure here means the POST never reached the server at
+   *     all (network down / gateway 5xx). We retry ONCE, and if that also
+   *     fails we surface a visible toast — not a console.warn — because the
+   *     server session may still be live and the post-clear `probe()` below
+   *     can legitimately bounce the user back to `authenticated`.
+   * The local clear below runs REGARDLESS of the POST outcome ("never
+   * stuck" invariant — see AuthProvider.test.tsx).
    */
   const logout = useCallback(async (): Promise<void> => {
     try {
       await logoutRequest();
-    } catch (err) {
-      // Best-effort — if the server can't reach us we still drop local
-      // state so the UI redirects to login. Next probe will reconcile.
-      // Surfaced as a warning (never a throw — the local clear below MUST
-      // run): on a 5xx the server session is still live and the re-probe
-      // will bounce the user back in with zero visible feedback. Tracked
-      // as F-201 (user-facing warning + idempotent server revoke).
-      console.warn(
-        'logout: POST /auth/logout failed — server session may still be live (F-201)',
-        err,
-      );
+    } catch {
+      try {
+        await logoutRequest();
+      } catch {
+        // Both attempts failed — the request never reached the server (or it
+        // 5xx'd before the route ran), so the server session may still be
+        // live. Fixed copy, never an echo of the error (toast contract).
+        toastCtx?.toast({
+          message:
+            "We couldn't fully end your session on the server — try again, or close all browser tabs.",
+          tone: 'error',
+        });
+      }
     }
     // Drop any half-finished 2FA challenge too — a stale `pending` would
     // otherwise stick the Login screen on the code/enroll step after a logout.
     setPending(null);
     setState({ status: 'guest', user: null });
     await probe();
-  }, [probe]);
+  }, [probe, toastCtx]);
 
   const value = useMemo<AuthContextValue>(
     () => ({

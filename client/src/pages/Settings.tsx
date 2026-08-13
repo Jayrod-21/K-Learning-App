@@ -1115,9 +1115,11 @@ export default function Settings(): JSX.Element {
   // so the redirect can never race or disagree with the auth state.
   // `loggingOut` single-flights the click and drives the disabled/aria-busy
   // presentation. It is never reset on the happy path because the gate
-  // unmounts this page; the documented server-5xx edge (cookie survives, the
-  // re-probe re-authenticates — tracked as F-201) round-trips through /login
-  // back here as a fresh mount, which starts un-disabled again.
+  // unmounts this page; in the rare both-attempts-failed edge (F-201: logout
+  // now retries once and toasts on final failure — the server request never
+  // arrived, the cookie survives, and the re-probe re-authenticates) the
+  // round-trip through /login lands back here as a fresh mount, which starts
+  // un-disabled again.
   const [loggingOut, setLoggingOut] = useState(false);
   const onLogout = useCallback((): void => {
     if (loggingOut) return;

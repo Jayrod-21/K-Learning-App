@@ -194,6 +194,53 @@ describe('POST /diagnostic — glyph-option items excluded (data sweep D-4)', ()
   });
 });
 
+describe('POST /diagnostic — placeholder-stem listening items excluded (B-038)', () => {
+  it('a no-transcript placeholder item is never served', async () => {
+    // The live corpus has listening items whose stem is the curator
+    // placeholder "[듣기 지문 없음 — …]" (no transcript was available at
+    // ingest). topik.ts excludes them (NO_TRANSCRIPT_STEM_PREFIX) but the
+    // diagnostic's pickTopikRow historically did not, so the diagnostic could
+    // serve an item whose "transcript" is the placeholder notice — nothing to
+    // answer against. The diagnostic renders NO audio playback (its audio
+    // block is transcript-only), so the exclusion is unconditional here.
+    // Setup mirrors the glyph-exclusion test above: the ONLY topik row is a
+    // placeholder listening item, so the listening dimension must be skipped
+    // entirely rather than serve it.
+    await seedTopikItem(pg.pool, {
+      section: 'listening',
+      proficiency: 'L4',
+      answer: 1,
+      stem: '[듣기 지문 없음 — 대화/담화가 오디오로만 제공됨(전사 파일 없음)]',
+    });
+    // vocab + grammar seeds so the generated dimensions can serve items.
+    await seedVocabEntry(pg.pool, { proficiency: 'L4', korean: '단어' });
+    await seedKgiuEntry(pg.pool, { proficiency: 'L4', pattern: '-는 바람에' });
+
+    const { agent } = await registerUser(t.app, pg.pool);
+    // Drive the whole run (runAllSkip protocol), asserting no served item is
+    // ever a listening/topik row — the only candidate is the placeholder.
+    const start = await agent.post('/diagnostic').send({});
+    expect(start.status).toBe(201);
+    const runId = start.body.runId as number;
+    let current: { responseId: number; section?: string } | null = start.body.item;
+    while (current !== null) {
+      expect(current.section).not.toBe('listening');
+      const ans = await agent
+        .post(`/diagnostic/${runId}/answer`)
+        .send({ responseId: current.responseId, picked: null });
+      expect(ans.status).toBe(200);
+      if (ans.body.done === true) break;
+      const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
+      expect(nxt.status).toBe(200);
+      current = nxt.body.next;
+    }
+    const served = await pg.pool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM diagnostic_responses WHERE source_kind = 'topik'`,
+    );
+    expect(served.rows[0]!.n).toBe(0);
+  });
+});
+
 describe('POST /diagnostic — shared reading passage (F4)', () => {
   it('serves the test-shared passage on an item whose own stem is empty', async () => {
     // A reading item whose body lives in the parent test's `passages` JSONB

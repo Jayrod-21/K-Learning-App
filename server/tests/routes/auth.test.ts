@@ -7,12 +7,29 @@
  * this file goes deeper on the explicit ticket axes (validation matrix,
  * DB-failure path, /me cookie precondition) without duplicating.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { z } from 'zod';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
+
+// F-201: pass-through partial mock of the sessions module so a single test
+// can inject a transient revoke failure. `impl` is null (real behavior) for
+// every other test in the file.
+const revokeOverride = vi.hoisted(() => ({
+  impl: null as null | (() => Promise<void>),
+}));
+vi.mock('../../src/auth/sessions.js', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../../src/auth/sessions.js')>();
+  return {
+    ...mod,
+    revokeSessionById: async (id: number, reason: string): Promise<void> => {
+      if (revokeOverride.impl) return revokeOverride.impl();
+      return mod.revokeSessionById(id, reason);
+    },
+  };
+});
 
 let pg: PgHandle;
 let t: TestApp;
@@ -32,6 +49,7 @@ beforeEach(async () => {
     'TRUNCATE TABLE sessions, users RESTART IDENTITY CASCADE',
   );
   resetLimiters();
+  revokeOverride.impl = null;
 });
 
 // Zod schema of the success response, used so the test asserts the SHAPE,
@@ -145,12 +163,20 @@ describe('GET /auth/me + POST /auth/logout — unauthenticated flood is limited 
     expect(got429).toBe(true);
   });
 
-  it('unauthenticated /logout attempts count toward the auth bucket → 429', async () => {
+  it('unauthenticated /logout flood is bounded by the cheap per-IP bucket → 429', async () => {
+    // F-201 made logout idempotent-success (204 even without a live session),
+    // so the failure-counting auth bucket (skipSuccessfulRequests) never sees
+    // it. The route now mounts cheapLimiter — which counts ALL requests
+    // per-IP — so a bogus-cookie flood (one session lookup each) stays
+    // bounded. RATE_LIMIT_CHEAP_MAX is 120 in the test env.
     let got429 = false;
-    for (let i = 0; i < 25; i++) {
-      const res = await request(t.app).post('/auth/logout');
-      expect([401, 429]).toContain(res.status);
+    for (let i = 0; i < 130; i++) {
+      const res = await request(t.app)
+        .post('/auth/logout')
+        .set('Cookie', 'km_sid=bogus-flood-token');
+      expect([204, 429]).toContain(res.status);
       if (res.status === 429) {
+        expect(res.body.error.code).toBe('rate_limited');
         got429 = true;
         break;
       }
@@ -172,22 +198,54 @@ describe('GET /auth/me + POST /auth/logout — unauthenticated flood is limited 
   });
 });
 
-describe('POST /auth/logout — auth required', () => {
-  it('unauthenticated → 401', async () => {
+describe('POST /auth/logout — idempotent, always clears the cookie (F-201)', () => {
+  /** The Set-Cookie header that clears km_sid (Expires in the past / empty value). */
+  function expectClearingCookie(setCookie: string | string[] | undefined): void {
+    const headers = Array.isArray(setCookie) ? setCookie : setCookie ? [setCookie] : [];
+    const clearing = headers.find((h) => h.startsWith('km_sid=;'));
+    expect(clearing).toBeDefined();
+  }
+
+  it('no cookie at all → 204 (no-op logout succeeds)', async () => {
     const res = await request(t.app).post('/auth/logout');
-    expect(res.status).toBe(401);
-    expect(res.body.error.code).toBe('unauthorized');
+    expect(res.status).toBe(204);
+    expectClearingCookie(res.headers['set-cookie']);
   });
 
-  it('valid session → 204 and subsequent /me → 401', async () => {
+  it('valid session → 204, /me → 401, and a REPEAT logout with the revoked cookie → 204', async () => {
     const agent = request.agent(t.app);
     await agent
       .post('/auth/register')
       .send({ email: 'lo@b.com', password: 'correct horse battery staple' });
     const out = await agent.post('/auth/logout');
     expect(out.status).toBe(204);
+    expectClearingCookie(out.headers['set-cookie']);
     const me = await agent.get('/auth/me');
     expect(me.status).toBe(401);
+    // The retry case a lost 204 forces on the client: the same (now revoked)
+    // cookie must land as a clean success, not a 401/5xx.
+    const again = await agent.post('/auth/logout');
+    expect(again.status).toBe(204);
+  });
+
+  it('a transient revoke failure still returns 204 AND clears the cookie', async () => {
+    const agent = request.agent(t.app);
+    await agent
+      .post('/auth/register')
+      .send({ email: 'lo-fail@b.com', password: 'correct horse battery staple' });
+    revokeOverride.impl = () => Promise.reject(new Error('db down'));
+    const out = await agent.post('/auth/logout');
+    expect(out.status).toBe(204);
+    expectClearingCookie(out.headers['set-cookie']);
+    // The DB row is still live (revoke failed) — but the browser dropped the
+    // token, so a client retry presents NO cookie and lands as a clean 204
+    // no-op; the un-revoked row dies via idle/absolute expiry (see the
+    // route's logout comment).
+    revokeOverride.impl = null;
+    const { rows } = await pg.pool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM sessions WHERE revoked_at IS NULL`,
+    );
+    expect(rows[0]!.n).toBe(1);
   });
 });
 

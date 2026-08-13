@@ -47,6 +47,7 @@ import { validateBody, validateParams } from '../middleware/validate.js';
 import { query, withTransaction } from '../db/pool.js';
 import { ConflictError, NotFoundError, UpstreamError, mapClaudeError } from '../middleware/errors.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
+import { NO_TRANSCRIPT_STEM_PREFIX } from './topik.js';
 import type { DiagnosticTargetLevel, ProficiencyLevel } from '../services/claude/index.js';
 import {
   SEED_THETA,
@@ -217,6 +218,15 @@ function paperForBand(band: DiagnosticBand): TopikPaper {
  * ①②③④ glyphs (tester sweep P2-1 / data sweep D-4) — those render four
  * identical choices with no image asset, so the item is unanswerable and must
  * not move θ.
+ *
+ * B-038: also excludes listening items whose stem is the no-transcript
+ * curator placeholder (NO_TRANSCRIPT_STEM_PREFIX, shared with topik.ts).
+ * Unlike topik.ts's gate — which RE-ADMITS a placeholder-stem item once it
+ * carries a mapped audio span (F-119: the learner listens instead of
+ * reading) — the exclusion here is UNCONDITIONAL: the diagnostic serves no
+ * audio playback (its `audio` block is transcript-only), so a placeholder
+ * stem always surfaces as unanswerable placeholder text regardless of
+ * whether the underlying recording exists.
  */
 async function pickTopikRow(
   section: 'reading' | 'listening',
@@ -252,7 +262,8 @@ async function pickTopikRow(
                   AND i.options IS NOT NULL
                   AND jsonb_array_length(i.options) >= 2
                   AND i.answer IS NOT NULL
-                  AND i.options->>0 NOT IN ('①','②','③','④')`;
+                  AND i.options->>0 NOT IN ('①','②','③','④')
+                  AND coalesce(i.stem, '') NOT LIKE '${NO_TRANSCRIPT_STEM_PREFIX}%'`;
     if (attempt.proficiency !== null) {
       params.push(attempt.proficiency);
       sql += ` AND i.proficiency = $${params.length}::proficiency_level`;
