@@ -444,6 +444,15 @@ export async function runStoryAudioTick(log: Logger): Promise<StoryAudioTickResu
   //    failure ANYWHERE in here (a per-turn synthesis, ffprobe, the concat)
   //    settles the job failed with nothing written: no blob exists yet.
   const turns = parseStoryTurns(claimed.turns);
+  if (claimed.turns != null && turns === null) {
+    // The graceful degrade is correct (never fail a job over bad turns), but
+    // it must be VISIBLE: without this line a malformed stored script is
+    // indistinguishable in logs from a genuinely flat v1 story.
+    log.warn(
+      { jobId, storyId },
+      'storyAudio: turns present but unparseable — falling back to single-narrator',
+    );
+  }
   log.info(
     { jobId, storyId, chars: bodyKo.length, multiVoice: turns !== null },
     'storyAudio: job claimed',

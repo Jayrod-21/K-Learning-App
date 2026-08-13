@@ -27,13 +27,15 @@
  *     assignment via the palette (recorded by a mock provider); per-turn
  *     segments with CUMULATIVE probed-duration offsets; ONE concatenated
  *     blob; exact char_count settle; synth-mid-run and concat failures →
- *     'failed' with no half-state; malformed turns → the v1 narrator path.
+ *     'failed' with no half-state; a single-turn script runs the full
+ *     pipeline (one part, one segment); malformed turns → the v1 narrator
+ *     path WITH a warn log (never silent).
  *     ffmpeg is NEVER required here — audioConcat is injected (setMp3Concat).
  */
 import os from 'node:os';
 import path from 'node:path';
 import { readdir, rm } from 'node:fs/promises';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
 import { registerUser, seedGeneratedStory, seedStoryAudio, seedStoryAudioJob } from '../helpers/seed.js';
@@ -580,6 +582,69 @@ describe('runStoryAudioTick — multi-voice (v2)', () => {
     expect(job.rows[0]!.char_count).toBe(SCRIPT.reduce((a, t2) => a + t2.text.length, 0));
   });
 
+  it('a SINGLE-turn script runs the full multi-voice pipeline: one part, one segment [0, dur)', async () => {
+    const { userId } = await registerUser(t.app, pg.pool);
+    const turn = { speaker: '민수', text: '"혼자 왔어요."', gender: 'male' } as const;
+    const storyId = await seedGeneratedStory(pg.pool, userId, {
+      title: '독백',
+      turns: [turn],
+    });
+    const jobId = await seedStoryAudioJob(pg.pool, userId, storyId, {
+      status: 'pending',
+      charCount: 999, // stale enqueue snapshot — the settle must correct it
+    });
+    const synthCalls: Array<{ text: string; voiceId: string | undefined }> = [];
+    setTtsProvider(recordingProvider(synthCalls));
+    const { helper, concatCalls } = mockConcat();
+    setMp3Concat(helper);
+
+    await expect(runStoryAudioTick(getLogger())).resolves.toBe('done');
+
+    // ONE synthesis, with the first male palette voice (no narrator turn).
+    expect(synthCalls).toEqual([{ text: turn.text, voiceId: MALE_VOICE_POOL[0] }]);
+    // The concat ran over exactly the one part (the real ffmpeg impl
+    // short-circuits a single buffer — the contract is the same bytes out).
+    expect(concatCalls).toHaveLength(1);
+    expect(concatCalls[0]!.map((b) => b.toString('utf8'))).toEqual([turn.text]);
+
+    // ONE blob on disk = that part's bytes.
+    const expectedBlob = Buffer.from(turn.text, 'utf8');
+    const files = await userBlobFiles(userId);
+    expect(files).toHaveLength(1);
+    const { readFile } = await import('node:fs/promises');
+    const trk = await pg.pool.query<{ blob_ref: string; duration_ms: number }>(
+      `SELECT blob_ref, duration_ms FROM audio_tracks`,
+    );
+    expect(trk.rows).toHaveLength(1);
+    const onDisk = await readFile(
+      path.join(process.env.AUDIO_UPLOAD_STORAGE_DIR!, trk.rows[0]!.blob_ref),
+    );
+    expect(Buffer.compare(onDisk, expectedBlob)).toBe(0);
+
+    // Exactly one segment spanning [0, probed duration); track duration = it.
+    const dur = turnDurMs(turn.text);
+    const segs = await pg.pool.query<{
+      segment_number: number;
+      start_ms: number;
+      end_ms: number;
+      body: string;
+    }>(
+      `SELECT segment_number, start_ms, end_ms, body FROM audio_transcript_segments`,
+    );
+    expect(segs.rows).toEqual([
+      { segment_number: 1, start_ms: 0, end_ms: dur, body: turn.text },
+    ]);
+    expect(trk.rows[0]!.duration_ms).toBe(dur);
+
+    // Job done, char_count settled to the exact single-turn spend.
+    const job = await pg.pool.query<{ status: string; char_count: number }>(
+      `SELECT status, char_count FROM story_audio_jobs WHERE id = $1`,
+      [jobId],
+    );
+    expect(job.rows[0]!.status).toBe('done');
+    expect(job.rows[0]!.char_count).toBe(turn.text.length);
+  });
+
   it('a synthesis failure MID-SCRIPT → job failed, NO rows, NO blob', async () => {
     const { userId } = await registerUser(t.app, pg.pool);
     const storyId = await seedGeneratedStory(pg.pool, userId, { turns: [...SCRIPT] });
@@ -652,8 +717,20 @@ describe('runStoryAudioTick — multi-voice (v2)', () => {
     });
     const { helper, concatCalls } = mockConcat();
     setMp3Concat(helper);
+    const logger = getLogger();
+    const warnSpy = vi.spyOn(logger, 'warn');
 
-    await expect(runStoryAudioTick(getLogger())).resolves.toBe('done');
+    try {
+      await expect(runStoryAudioTick(logger)).resolves.toBe('done');
+
+      // The degrade is silent to the USER but never to the logs: a stored-but-
+      // unparseable turns array must be distinguishable from a flat story.
+      expect(
+        warnSpy.mock.calls.some((c) => String(c[1]).includes('turns present but unparseable')),
+      ).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
 
     // ONE whole-body synthesis with NO voice override; no concat involved.
     expect(synthCalls).toEqual([{ text: body, voiceId: undefined }]);
