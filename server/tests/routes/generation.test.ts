@@ -181,10 +181,11 @@ describe('POST /reading/generate — story generation + persistence (F-068)', ()
     expect(res.body.story.bodyKo).toContain('고양이가 운영하는 카페');
     expect(res.body.story.level).toBe('L4');
     expect(res.body.story.prompt).toBe('고양이가 운영하는 카페');
-    // F-210 groundwork: the stub emits turns — they ride the DTO verbatim.
+    // F-210: the stub emits gender-tagged turns — they ride the DTO verbatim
+    // (the v2 multi-voice runner consumes the gender tag downstream).
     expect(res.body.story.turns).toEqual([
-      { speaker: 'narrator', text: '옛날 옛적에 이야기가 시작되었습니다.' },
-      { speaker: '주인공', text: '"안녕하세요."' },
+      { speaker: 'narrator', text: '옛날 옛적에 이야기가 시작되었습니다.', gender: 'narrator' },
+      { speaker: '주인공', text: '"안녕하세요."', gender: 'female' },
     ]);
 
     // The persisted row is user-scoped and carries the SERVER-chosen level +

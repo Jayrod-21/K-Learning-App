@@ -253,4 +253,68 @@ describe('generateStory — tool-use parse + topic handling', () => {
       ClaudeOutputSchemaError,
     );
   });
+
+  // F-210 v2: gender rides each turn. REQUIRED by the tool schema (every new
+  // generation carries it) yet OPTIONAL in the Zod result schema (pre-v2
+  // cached results without it still parse — the test above this block).
+  it('parses gender-tagged turns and REQUIRES gender in the tool schema', async () => {
+    const { proxy, sdk } = setupProxy([
+      {
+        toolUse: {
+          name: 'submit_story',
+          input: {
+            title: '두 사람',
+            bodyKo: '민수가 말했다. "안녕." 지은이 답했다. "반가워."',
+            turns: [
+              { speaker: 'narrator', text: '민수가 말했다.', gender: 'narrator' },
+              { speaker: '민수', text: '"안녕."', gender: 'male' },
+              { speaker: 'narrator', text: '지은이 답했다.', gender: 'narrator' },
+              { speaker: '지은', text: '"반가워."', gender: 'female' },
+            ],
+          },
+        },
+      },
+    ]);
+    const r = await proxy.generateStory({ level: 'L3' });
+    expect(r.result.turns).toEqual([
+      { speaker: 'narrator', text: '민수가 말했다.', gender: 'narrator' },
+      { speaker: '민수', text: '"안녕."', gender: 'male' },
+      { speaker: 'narrator', text: '지은이 답했다.', gender: 'narrator' },
+      { speaker: '지은', text: '"반가워."', gender: 'female' },
+    ]);
+
+    const req = sdk.calls[0]!.req as {
+      tools: Array<{
+        input_schema: {
+          properties: {
+            turns: { items: { required: string[]; properties: Record<string, unknown> } };
+          };
+        };
+      }>;
+    };
+    const items = req.tools[0]!.input_schema.properties.turns.items;
+    expect(items.required).toEqual(['speaker', 'text', 'gender']);
+    expect(items.properties.gender).toEqual({
+      type: 'string',
+      enum: ['male', 'female', 'narrator'],
+    });
+  });
+
+  it('an out-of-enum gender → ClaudeOutputSchemaError (never a malformed row)', async () => {
+    const { proxy } = setupProxy([
+      {
+        toolUse: {
+          name: 'submit_story',
+          input: {
+            title: '제목',
+            bodyKo: '이야기입니다.',
+            turns: [{ speaker: 'narrator', text: '이야기입니다.', gender: 'robot' }],
+          },
+        },
+      },
+    ]);
+    await expect(proxy.generateStory({ level: 'L2' })).rejects.toBeInstanceOf(
+      ClaudeOutputSchemaError,
+    );
+  });
 });

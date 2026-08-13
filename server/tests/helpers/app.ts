@@ -256,8 +256,8 @@ export function makeStubProxy(overrides: Partial<ClaudeProxy> = {}): ClaudeProxy
             ? `${input.topic}에 대한 모의 이야기입니다. 옛날 옛적에 이야기가 시작되었습니다.`
             : '모의 이야기입니다. 옛날 옛적에 이야기가 시작되었습니다.',
         turns: [
-          { speaker: 'narrator', text: '옛날 옛적에 이야기가 시작되었습니다.' },
-          { speaker: '주인공', text: '"안녕하세요."' },
+          { speaker: 'narrator', text: '옛날 옛적에 이야기가 시작되었습니다.', gender: 'narrator' as const },
+          { speaker: '주인공', text: '"안녕하세요."', gender: 'female' as const },
         ],
       },
       metadata: { ...baseMeta, requestId: randomUUID() },

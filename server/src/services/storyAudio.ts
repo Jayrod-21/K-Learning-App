@@ -13,14 +13,26 @@
  *
  * PIPELINE (one job):
  *   claim (tx: pending → running)
- *     → tts.synthesize(body_ko)                 [outside any tx — minutes]
+ *     → synthesize                              [outside any tx — minutes]
+ *         MULTI-VOICE (v2) when the story carries a usable `turns` array:
+ *           one tts.synthesize per turn, each with the voice the palette
+ *           assigned that turn's speaker (services/voicePalette.ts), then
+ *           ffprobe each part's exact duration and ffmpeg-concat the parts
+ *           into ONE mp3 (services/audioConcat.ts — injectable, mocked in
+ *           tests). Each turn becomes ONE transcript segment whose window is
+ *           the CUMULATIVE timeline: startMs = sum of all prior turns'
+ *           probed durations, endMs = startMs + this turn's duration — so
+ *           the read-along highlights exactly the line being spoken.
+ *         SINGLE-NARRATOR (v1, unchanged) otherwise: one tts.synthesize of
+ *           body_ko with the narrator voice; per-sentence segments windowed
+ *           from the per-character alignment.
  *     → audioStore.saveBlob (mp3)               [outside the persist tx —
  *                                                blob-before-rows, 041's
  *                                                ordering: a later failure
  *                                                orphans only a FILE]
  *     → ONE tx: audio_sources (kind 'generated_story', owner-pinned story
  *       link) + audio_tracks (blob_ref, byte_size, duration_ms) +
- *       audio_transcript_segments (per-sentence windows) + job → 'done'.
+ *       audio_transcript_segments + job → 'done'.
  *   ANY failure → job 'failed' with a bounded, server-authored error;
  *   best-effort blob unlink; NOTHING half-written (the persist tx is atomic).
  *
@@ -35,16 +47,20 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { Logger } from 'pino';
+import { z } from 'zod';
 import { loadConfig } from '../config/index.js';
 import { query, withTransaction } from '../db/pool.js';
 import { AppError } from '../middleware/errors.js';
+import { getMp3Concat } from './audioConcat.js';
 import { deleteBlob, saveBlob } from './audioStore.js';
+import { StoryTurnSchema, type StoryTurn } from './claude/models.js';
 import {
   getTtsProvider,
   TtsNotConfiguredError,
   TtsUpstreamError,
   type TtsCharAlignment,
 } from './tts.js';
+import { assignVoices } from './voicePalette.js';
 
 /** 503 for a keyless deploy (story TTS dormant — no ELEVENLABS_API_KEY).
  *  Thrown by the enqueue route BEFORE any job row is written, so a
@@ -211,6 +227,109 @@ export function deriveSegmentWindows(
 }
 
 // ---------------------------------------------------------------------------
+// Multi-voice synthesis (F-210 v2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate a story's stored `turns` JSONB into a usable multi-voice script.
+ * Returns null — meaning "use the single-narrator path" — for NULL/absent
+ * turns (pre-081 stories, turn-less generations) AND for anything that fails
+ * the schema (a hand-edited row, a pre-Zod shape): degrading to the v1 read
+ * of body_ko is always correct, so malformed turns must never fail a job.
+ * StoryTurnSchema trims each text, so every parsed turn is non-empty.
+ */
+export function parseStoryTurns(raw: unknown): StoryTurn[] | null {
+  if (raw === null || raw === undefined) return null;
+  const parsed = z.array(StoryTurnSchema).min(1).max(200).safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+
+/** What either synthesis path hands the shared persist step. */
+interface SynthesizedStory {
+  audio: Buffer;
+  segments: StorySegmentWindow[];
+  durationMs: number | null;
+  /** Exact chars synthesized on the multi-voice path (sum of turn texts) —
+   *  settles into the job's char_count ledger; null = keep the enqueue
+   *  snapshot (the single-narrator path, where body_ko.length already IS
+   *  the exact spend). */
+  actualCharCount: number | null;
+}
+
+/**
+ * v2 multi-voice: one synthesis per turn with the palette-assigned voice,
+ * exact per-part durations via ffprobe, one concatenated mp3 via ffmpeg.
+ *
+ * OFFSET MATH (the read-along contract): the concatenated file's timeline is
+ * the parts laid end to end, so turn i's segment window is
+ *   startMs(i) = Σ durations[0..i-1],  endMs(i) = startMs(i) + durations[i]
+ * with durations PROBED from the real per-turn audio — NOT taken from the
+ * TTS char alignments, whose last endMs can undershoot the true file length
+ * (trailing silence/padding) and would drift every later boundary.
+ * segment_number is the 1-based turn index; segment body is the turn's text.
+ */
+async function synthesizeMultiVoice(
+  turns: StoryTurn[],
+  narratorVoiceId: string,
+  log: Logger,
+  jobId: number,
+): Promise<SynthesizedStory> {
+  const voices = assignVoices(turns, narratorVoiceId);
+  const tts = getTtsProvider();
+  const concat = getMp3Concat();
+
+  const parts: Buffer[] = [];
+  let actualCharCount = 0;
+  for (const turn of turns) {
+    // Sequential on purpose: parallel calls would burst the TTS API and the
+    // parts must land in story order anyway.
+    const part = await tts.synthesize(turn.text, { voiceId: voices.get(turn.speaker)! });
+    parts.push(part.audio);
+    actualCharCount += turn.text.length;
+  }
+
+  const durations: number[] = [];
+  for (const part of parts) {
+    durations.push(await concat.probeDurationMs(part));
+  }
+  const audio = await concat.concatMp3(parts);
+
+  const segments: StorySegmentWindow[] = [];
+  let cursorMs = 0;
+  for (let i = 0; i < turns.length; i++) {
+    const startMs = cursorMs;
+    cursorMs += durations[i]!;
+    segments.push({
+      segmentNumber: i + 1,
+      startMs,
+      endMs: cursorMs,
+      body: turns[i]!.text,
+    });
+  }
+  log.info(
+    { jobId, turns: turns.length, speakers: voices.size, durationMs: cursorMs },
+    'storyAudio: multi-voice synthesis complete',
+  );
+  return { audio, segments, durationMs: cursorMs, actualCharCount };
+}
+
+/** v1 single-narrator read of body_ko (default voice, per-sentence segments
+ *  windowed from the char alignment) — byte-for-byte the original behavior. */
+async function synthesizeSingleNarrator(bodyKo: string): Promise<SynthesizedStory> {
+  const synthesis = await getTtsProvider().synthesize(bodyKo);
+  const segments = deriveSegmentWindows(
+    segmentStoryBody(bodyKo),
+    synthesis.charAlignments,
+    bodyKo.length,
+  );
+  const durationMs =
+    synthesis.charAlignments.length > 0
+      ? Math.max(0, synthesis.charAlignments[synthesis.charAlignments.length - 1]!.endMs)
+      : null;
+  return { audio: synthesis.audio, segments, durationMs, actualCharCount: null };
+}
+
+// ---------------------------------------------------------------------------
 // The job runner
 // ---------------------------------------------------------------------------
 
@@ -222,6 +341,8 @@ interface ClaimedJob {
   userId: number;
   title: string;
   bodyKo: string;
+  /** Raw JSONB from generated_stories.turns — validated by parseStoryTurns. */
+  turns: unknown;
 }
 
 /** Bounded, user-visible failure copy. TTS-layer errors carry OUR whitelisted
@@ -287,8 +408,9 @@ export async function runStoryAudioTick(log: Logger): Promise<StoryAudioTickResu
       user_id: string;
       title: string;
       body_ko: string;
+      turns: unknown;
     }>(
-      `SELECT j.id, j.generated_story_id, j.user_id, s.title, s.body_ko
+      `SELECT j.id, j.generated_story_id, j.user_id, s.title, s.body_ko, s.turns
          FROM story_audio_jobs j
          JOIN generated_stories s
            ON s.id = j.generated_story_id AND s.user_id = j.user_id
@@ -309,39 +431,51 @@ export async function runStoryAudioTick(log: Logger): Promise<StoryAudioTickResu
       userId: Number(row.user_id),
       title: row.title,
       bodyKo: row.body_ko,
+      turns: row.turns,
     };
   });
   if (claimed === null) return 'idle';
 
   const { jobId, storyId, userId, title, bodyKo } = claimed;
-  log.info({ jobId, storyId, chars: bodyKo.length }, 'storyAudio: job claimed');
 
-  // 3. Synthesize (minutes-long external call; no tx held).
-  let synthesis;
+  // 3. Synthesize (minutes-long external calls; no tx held). Multi-voice
+  //    when the story carries a usable turns array, else the v1 narrator
+  //    read — old/flat/malformed-turns stories keep working unchanged. A
+  //    failure ANYWHERE in here (a per-turn synthesis, ffprobe, the concat)
+  //    settles the job failed with nothing written: no blob exists yet.
+  const turns = parseStoryTurns(claimed.turns);
+  if (claimed.turns != null && turns === null) {
+    // The graceful degrade is correct (never fail a job over bad turns), but
+    // it must be VISIBLE: without this line a malformed stored script is
+    // indistinguishable in logs from a genuinely flat v1 story.
+    log.warn(
+      { jobId, storyId },
+      'storyAudio: turns present but unparseable — falling back to single-narrator',
+    );
+  }
+  log.info(
+    { jobId, storyId, chars: bodyKo.length, multiVoice: turns !== null },
+    'storyAudio: job claimed',
+  );
+  let synthesized: SynthesizedStory;
   try {
-    synthesis = await getTtsProvider().synthesize(bodyKo);
+    synthesized =
+      turns !== null
+        ? await synthesizeMultiVoice(turns, cfg.ELEVENLABS_VOICE_ID, log, jobId)
+        : await synthesizeSingleNarrator(bodyKo);
   } catch (err) {
     log.warn({ jobId, storyId, err: String(err) }, 'storyAudio: synthesis failed');
     await settleFailed(jobId, failureMessage(err));
     return 'failed';
   }
+  const { audio, segments, durationMs, actualCharCount } = synthesized;
 
   // 4. Blob first (041's blob-before-rows ordering): a failure after this
   //    point can only orphan a FILE — which the catch below best-effort
   //    unlinks — never commit a row pointing at missing bytes.
   let blobRef: string | null = null;
   try {
-    blobRef = await saveBlob(userId, randomUUID(), 'mp3', synthesis.audio);
-
-    const segments = deriveSegmentWindows(
-      segmentStoryBody(bodyKo),
-      synthesis.charAlignments,
-      bodyKo.length,
-    );
-    const durationMs =
-      synthesis.charAlignments.length > 0
-        ? Math.max(0, synthesis.charAlignments[synthesis.charAlignments.length - 1]!.endMs)
-        : null;
+    blobRef = await saveBlob(userId, randomUUID(), 'mp3', audio);
 
     // 5. ONE transaction: set + track + segments + job settle. The
     //    status-guarded job UPDATE returning 0 rows means a reaper settled
@@ -368,8 +502,8 @@ export async function runStoryAudioTick(log: Logger): Promise<StoryAudioTickResu
          VALUES ($1, $2, 1, $3, $4, $5, $6, 'done')
          RETURNING id`,
         // transcript_status 'done': the segments land in this same tx (they
-        // come from TTS alignment, not Whisper — nothing further is pending).
-        [sourceId, userId, title, blobRef, synthesis.audio.length, durationMs],
+        // come from TTS timing, not Whisper — nothing further is pending).
+        [sourceId, userId, title, blobRef, audio.length, durationMs],
       );
       const trackId = trk.rows[0]!.id;
 
@@ -389,10 +523,15 @@ export async function runStoryAudioTick(log: Logger): Promise<StoryAudioTickResu
       }
 
       const settled = await client.query(
+        // char_count: the multi-voice path settles the EXACT synthesized
+        // spend (sum of turn-text lengths — can differ from the enqueue-time
+        // body_ko snapshot); the single-narrator path passes NULL and keeps
+        // the snapshot, which already equals its exact spend.
         `UPDATE story_audio_jobs
-            SET status = 'done', audio_source_id = $2, finished_at = now()
+            SET status = 'done', audio_source_id = $2, finished_at = now(),
+                char_count = COALESCE($3, char_count)
           WHERE id = $1 AND status = 'running'`,
-        [jobId, sourceId],
+        [jobId, sourceId, actualCharCount],
       );
       if (settled.rowCount === 0) {
         throw new Error('storyAudio: job was reaped mid-run — discarding synthesis result');

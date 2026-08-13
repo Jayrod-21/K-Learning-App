@@ -45,7 +45,13 @@ ENV NODE_ENV=production
 # tooling already leans on for PDF handling (see Deploy/loader.Dockerfile's
 # header comment), just needed here at RUNTIME instead of at a one-off
 # loader-image build time.
-RUN apk add --no-cache poppler-utils
+#
+# ffmpeg — F-210 v2 multi-voice story audio: services/audioConcat.ts shells
+# out to `ffmpeg` (concat-demuxer stream-copy join of the per-turn TTS mp3s)
+# and `ffprobe` (exact per-turn durations for the cumulative segment
+# timeline). The single Alpine `ffmpeg` package installs BOTH binaries on
+# PATH (/usr/bin/ffmpeg, /usr/bin/ffprobe — verified on node:22-alpine).
+RUN apk add --no-cache poppler-utils ffmpeg
 
 # Production dependencies only (drops typescript, eslint, vitest, @types, …).
 COPY package.json package-lock.json ./

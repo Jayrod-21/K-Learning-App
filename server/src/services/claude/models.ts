@@ -511,12 +511,22 @@ export const StoryGenInputSchema = z.object({
 });
 export type StoryGenInput = z.infer<typeof StoryGenInputSchema>;
 
-/** One spoken unit of a story (F-210 multi-voice groundwork): `speaker` is
- *  the literal string 'narrator' for narration or a short character label for
- *  quoted dialogue; `text` is that unit's Korean text, in story order. */
+/** The gender tag on one story turn (F-210 v2 multi-voice): drives which
+ *  voice pool the speaker draws from. 'narrator' marks narration turns. */
+export const StoryTurnGenderSchema = z.enum(['male', 'female', 'narrator']);
+export type StoryTurnGender = z.infer<typeof StoryTurnGenderSchema>;
+
+/** One spoken unit of a story (F-210 multi-voice): `speaker` is the literal
+ *  string 'narrator' for narration or a short character label for quoted
+ *  dialogue; `text` is that unit's Korean text, in story order. `gender` is
+ *  OPTIONAL for back-compat — pre-v2 rows and cached generations omit it, and
+ *  the voice palette treats an untagged turn as narrator (v1 behavior), so an
+ *  old story can never fail to parse or crash the runner. The tool schema
+ *  REQUIRES it, so new generations always carry it. */
 export const StoryTurnSchema = z.object({
   speaker: NonEmptyText.max(100),
   text: NonEmptyText.max(2000),
+  gender: StoryTurnGenderSchema.optional(),
 });
 export type StoryTurn = z.infer<typeof StoryTurnSchema>;
 
