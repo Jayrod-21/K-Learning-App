@@ -187,6 +187,15 @@
  * `set` search param narrows against the manifest's CLOSED slug set and
  * `track` through `parsePositiveId` — malformed input falls back UP the
  * hierarchy (track→set→landing) exactly like every other param here.
+ *
+ * F-210 Listen surfacing — the landing ADDITIONALLY renders a self-contained
+ * "Generated Audio" section BELOW the tile carousel: the caller's voiced
+ * generated stories (`GET /reading/generated/audio`), each with an inline
+ * player (src through the same `buildAudioSrc` allow-list) and an "Open in
+ * reader" action into `/learn/reading?story=<id>` for the read-along
+ * experience. Additive only — the carousel, tiles, and every existing view
+ * are untouched, and the section's own load/error/empty states can never
+ * wedge the landing (see `GeneratedAudioSection`).
  */
 import {
   useCallback,
@@ -236,6 +245,10 @@ import {
   listMyAudio,
   uploadAudio,
 } from '../services/audio';
+import {
+  listGeneratedAudio,
+  type GeneratedAudioItem,
+} from '../services/reading';
 import {
   buildAudioSrc,
   getIyagiEpisode,
@@ -839,7 +852,14 @@ export default function Ttmik(): JSX.Element {
         }
         heading={<Bilingual en="Listen" kr="듣기" />}
       />
-      {view.kind === 'landing' ? <CollectionTiles /> : null}
+      {view.kind === 'landing' ? (
+        // F-210 Listen surfacing: the tile carousel is untouched; the
+        // Generated Audio section is purely ADDITIVE below it.
+        <>
+          <CollectionTiles />
+          <GeneratedAudioSection />
+        </>
+      ) : null}
       {view.kind === 'list' && view.corpus === 'ttmik' ? (
         <TtmikListing />
       ) : null}
@@ -1108,6 +1128,174 @@ function CollectionTiles(): JSX.Element {
     <ScrollSnapCarousel ariaLabel="Listen collections">
       {pages}
     </ScrollSnapCarousel>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// F-210 — landing: "Generated Audio" (voiced stories, surfaced in Listen)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * The landing's "Generated Audio" section — the caller's VOICED generated
+ * stories (F-210), listed below the tile carousel. Purely ADDITIVE: it owns
+ * its own fetch (`GET /reading/generated/audio` via services/reading) and
+ * its own load/error/empty states, so it can never wedge or reshape the
+ * carousel above it. Each row plays in place through an inline
+ * `<audio controls>` whose src goes through the SAME strict `buildAudioSrc`
+ * allow-list every other player on this page uses (a tampered streamUrl
+ * resolves to null and that row simply renders without a player — never a
+ * broken one), plus an "Open in reader" action into the story reader
+ * (`/learn/reading?story=<id>`) for the read-along experience — the reader's
+ * own F-210 player stays the canonical read-along surface. The empty state
+ * is a discoverability hint (voicing happens in Reading), not an error.
+ */
+/**
+ * An audio duration as `m:ss` for the Generated Audio rows (204000 →
+ * "3:24"). An unknown length (null / non-finite / negative) renders
+ * nothing — never a misleading "0:00".
+ */
+function formatDurationMs(ms: number | null): string | null {
+  if (ms === null || !Number.isFinite(ms) || ms < 0) return null;
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes)}:${String(seconds).padStart(2, '0')}`;
+}
+
+function GeneratedAudioSection(): JSX.Element {
+  const navigate = useNavigate();
+  const [items, setItems] = useState<GeneratedAudioItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
+  const ctrlRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    ctrlRef.current?.abort();
+    ctrlRef.current = ctrl;
+    // Sync-to-external-system (network fetch) — same documented exception
+    // the listings above use for their kickoff setState.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setLoading(true);
+    setError(null);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    listGeneratedAudio(ctrl.signal)
+      .then((rows) => {
+        if (ctrl.signal.aborted) return;
+        setItems(rows);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setError(
+          errorMessageFor(err, 'Could not load your generated audio.'),
+        );
+        setLoading(false);
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [reloadTick]);
+
+  const refetch = useCallback(() => {
+    setReloadTick((t) => t + 1);
+  }, []);
+
+  return (
+    <section
+      aria-labelledby="km-ttmik-generated-heading"
+      style={{ marginTop: 18 }}
+    >
+      <Eyebrow id="km-ttmik-generated-heading">
+        <Bilingual en="Generated Audio" kr="생성된 오디오" />
+      </Eyebrow>
+      {loading ? (
+        <div className="km-grammar__state" role="status">
+          <Bilingual
+            en="Loading generated audio…"
+            kr="생성된 오디오를 불러오는 중…"
+          />
+        </div>
+      ) : error !== null ? (
+        // ErrorCard carries role="alert" itself; a failed section fetch
+        // never blanks the landing — the carousel above is independent.
+        <ErrorCard message={error} onRetry={refetch} />
+      ) : items.length === 0 ? (
+        // Discoverability hint, not an error: voicing lives on the Reading
+        // page (the F-210 "Generate audio" flow) — and no player renders
+        // until there is genuinely something to play.
+        <p className="km-reference__empty" role="note">
+          <Bilingual
+            en="No voiced stories yet — voice a story in Reading to hear it here."
+            kr="아직 음성 이야기가 없어요 — 읽기에서 이야기에 음성을 만들면 여기서 들을 수 있어요."
+          />
+        </p>
+      ) : (
+        <Card className="km-reference__list" variant="flat">
+          <ul aria-label="Generated audio" style={{ margin: 0, padding: 0 }}>
+            {items.map((item) => {
+              // The strict allow-list resolver — the ONLY path to the
+              // <audio> src (same contract as every player on this page).
+              const audioSrc = buildAudioSrc(item.streamUrl);
+              const duration = formatDurationMs(item.durationMs);
+              return (
+                <li
+                  key={`generated:${String(item.id)}`}
+                  className="km-reference__row"
+                  style={{ display: 'block', padding: '10px 0' }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    {/* Story title is user/model-authored text — rendered
+                        through React text children (escaped), as always. */}
+                    <span className="kr km-reference__row-kr">
+                      {item.title}
+                    </span>
+                    <Pill tone="gold">{item.level}</Pill>
+                    {duration !== null ? (
+                      <span className="km-reference__row-en">{duration}</span>
+                    ) : null}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        void navigate(
+                          `/learn/reading?story=${String(item.id)}`,
+                        );
+                      }}
+                      aria-label={`Open ${item.title} in reader`}
+                    >
+                      <Bilingual en="Open in reader" kr="읽기로 열기" compact />
+                    </Button>
+                  </div>
+                  {audioSrc !== null ? (
+                    /* Narrated TTS audio; the read-along transcript lives in
+                       the reader — same a11y exemption as the players above.
+                       Range-enabled server-side, so seeking works. */
+                    /* eslint-disable-next-line jsx-a11y/media-has-caption */
+                    <audio
+                      controls
+                      preload="metadata"
+                      src={audioSrc}
+                      aria-label={`Audio for ${item.title}`}
+                      style={{ width: '100%', marginTop: 6 }}
+                    />
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        </Card>
+      )}
+    </section>
   );
 }
 

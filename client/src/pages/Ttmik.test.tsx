@@ -8,6 +8,8 @@
  * The four fetchers in `services/ttmik` are mocked per test; `buildAudioSrc`
  * stays REAL so the assertions cover the actual src the page hands to the
  * `<audio>` element (empty API base in the test env → app-relative path).
+ * F-210: `services/reading`'s `listGeneratedAudio` is likewise mocked (the
+ * landing's "Generated Audio" section fetches it; default: nothing voiced).
  * The tap chain services (lemmatize/define/enrich) are mocked as modules —
  * the page goes through `lib/tapChain.resolveWordPopover`, which calls them.
  * The audio element has no ARIA role, so identity/presence is asserted via
@@ -43,6 +45,8 @@ import {
   logTtmikAttempt,
 } from '../services/ttmik';
 import { getAudioTrack, getSharedAudio, listMyAudio } from '../services/audio';
+import { listGeneratedAudio } from '../services/reading';
+import type { GeneratedAudioItem } from '../services/reading';
 import { mineWord } from '../services/vocab';
 import type {
   AudioTrackDetail,
@@ -81,6 +85,15 @@ vi.mock('../services/audio', async (importOriginal) => {
     getAudioTrack: vi.fn(),
     // F-207: the landing + shared views fetch the curated corpus.
     getSharedAudio: vi.fn(),
+  };
+});
+// F-210: the landing's "Generated Audio" section fetches the voiced-story
+// list; mocked so every landing test is hermetic (default: nothing voiced).
+vi.mock('../services/reading', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/reading')>();
+  return {
+    ...actual,
+    listGeneratedAudio: vi.fn(),
   };
 });
 
@@ -234,6 +247,26 @@ const SHARED_TRACK_DETAIL: AudioTrackDetail = {
   ],
 };
 
+/** F-210 fixture — two voiced stories as `listGeneratedAudio` returns them
+ *  (newest first; streamUrls match the REAL `buildAudioSrc` allow-list, which
+ *  stays unmocked so the src assertions cover the actual player wiring). */
+const GENERATED_AUDIO: GeneratedAudioItem[] = [
+  {
+    id: 41,
+    title: '겨울 산책',
+    level: 'L4',
+    streamUrl: '/audio/tracks/900/stream',
+    durationMs: 204_000, // → "3:24"
+  },
+  {
+    id: 7,
+    title: '바닷가 이야기',
+    level: 'L2',
+    streamUrl: '/audio/tracks/901/stream',
+    durationMs: 5000,
+  },
+];
+
 /** F-207: surfaces the router location so Read-button navigation (into the
  *  reading routes this page doesn't render) is assertable. */
 function LocationProbe(): JSX.Element {
@@ -319,6 +352,8 @@ beforeEach(() => {
   vi.mocked(listMyAudio).mockReset().mockResolvedValue([]);
   vi.mocked(getSharedAudio).mockReset().mockResolvedValue(SHARED_SETS);
   vi.mocked(getAudioTrack).mockReset().mockResolvedValue(SHARED_TRACK_DETAIL);
+  // F-210: default = nothing voiced yet — the landing renders the hint.
+  vi.mocked(listGeneratedAudio).mockReset().mockResolvedValue([]);
   // F-162: each test gets a clean scroll-restore slate — a saved position
   // from one test must never leak into the next.
   window.sessionStorage.clear();
@@ -504,6 +539,128 @@ describe('Ttmik page — landing (F-071 / F-207 swipe pages)', () => {
   });
 });
 
+describe('Ttmik page — landing "Generated Audio" section (F-210)', () => {
+  it('renders each voiced story with title, level, an inline player (REAL allow-list src), and Open in reader', async () => {
+    vi.mocked(listGeneratedAudio).mockResolvedValue(GENERATED_AUDIO);
+    const user = userEvent.setup();
+    renderPage();
+
+    const section = await screen.findByRole('region', {
+      name: /Generated Audio/,
+    });
+    const list = within(section).getByRole('list', {
+      name: 'Generated audio',
+    });
+    const rows = within(list).getAllByRole('listitem');
+    expect(rows).toHaveLength(2);
+
+    // Row content: title + level pill, served order preserved (newest first
+    // is the SERVER's contract — this client renders as-is).
+    expect(within(rows[0]!).getByText('겨울 산책')).toBeInTheDocument();
+    expect(within(rows[0]!).getByText('L4')).toBeInTheDocument();
+    expect(within(rows[1]!).getByText('바닷가 이야기')).toBeInTheDocument();
+    expect(within(rows[1]!).getByText('L2')).toBeInTheDocument();
+
+    // Durations render as m:ss — a padded sub-minute length and a
+    // minutes-scale one, straight from durationMs.
+    expect(within(rows[0]!).getByText('3:24')).toBeInTheDocument();
+    expect(within(rows[1]!).getByText('0:05')).toBeInTheDocument();
+
+    // Inline players: src through the REAL buildAudioSrc (empty API base in
+    // tests → the app-relative allow-listed byte route), with controls.
+    const players = section.querySelectorAll('audio');
+    expect(players).toHaveLength(2);
+    expect(players[0]!.getAttribute('src')).toBe('/audio/tracks/900/stream');
+    expect(players[1]!.getAttribute('src')).toBe('/audio/tracks/901/stream');
+    expect(players[0]!.hasAttribute('controls')).toBe(true);
+
+    // Open in reader → the story reader's existing deep link.
+    await user.click(
+      within(rows[0]!).getByRole('button', { name: 'Open 겨울 산책 in reader' }),
+    );
+    expect(screen.getByTestId('location')).toHaveTextContent(
+      '/learn/reading?story=41',
+    );
+  });
+
+  it('a tampered off-allow-list streamUrl renders the row WITHOUT a player (never a broken one)', async () => {
+    vi.mocked(listGeneratedAudio).mockResolvedValue([
+      {
+        id: 9,
+        title: '나쁜 이야기',
+        level: 'L1',
+        streamUrl: 'https://evil.example/a.mp3',
+        durationMs: null,
+      },
+    ]);
+    renderPage();
+
+    const list = await screen.findByRole('list', { name: 'Generated audio' });
+    const row = within(list).getAllByRole('listitem')[0]!;
+    expect(within(row).getByText('나쁜 이야기')).toBeInTheDocument();
+    // buildAudioSrc rejected the src — no <audio> element at all.
+    expect(row.querySelector('audio')).toBeNull();
+    // A null durationMs renders NO duration text (never "0:00").
+    expect(within(row).queryByText(/^\d+:\d{2}$/)).toBeNull();
+    // The reader action still works for the row.
+    expect(
+      within(row).getByRole('button', { name: 'Open 나쁜 이야기 in reader' }),
+    ).toBeInTheDocument();
+  });
+
+  it('empty state: the discoverability hint renders — no list, no player — and the carousel is untouched', async () => {
+    renderPage(); // beforeEach default: nothing voiced
+
+    expect(
+      await screen.findByText(/voice a story in Reading to hear it here/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('list', { name: 'Generated audio' }),
+    ).toBeNull();
+    expect(document.querySelector('audio')).toBeNull();
+
+    // Regression pin: the section never disturbs the existing landing —
+    // the F-207 carousel and its Lessons grid render exactly as before.
+    expect(
+      screen.getByRole('region', { name: 'Listen collections' }),
+    ).toBeInTheDocument();
+    const grid = await screen.findByRole('list', {
+      name: 'Lessons collections',
+    });
+    expect(
+      within(grid).getByRole('button', { name: /TTMIK Lessons/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('fetch failure: a scoped alert with Retry — the landing is never wedged, and Retry recovers', async () => {
+    vi.mocked(listGeneratedAudio)
+      .mockRejectedValueOnce(
+        new ApiError('boom internal', { status: 500, code: 'server_error' }),
+      )
+      .mockResolvedValueOnce(GENERATED_AUDIO);
+    const user = userEvent.setup();
+    renderPage();
+
+    const section = await screen.findByRole('region', {
+      name: /Generated Audio/,
+    });
+    const alert = await within(section).findByRole('alert');
+    // Fixed copy, never the server's prose.
+    expect(alert).not.toHaveTextContent('boom internal');
+
+    // The carousel above rendered independently of the failed section fetch.
+    expect(
+      screen.getByRole('region', { name: 'Listen collections' }),
+    ).toBeInTheDocument();
+
+    await user.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(
+      await within(section).findByRole('list', { name: 'Generated audio' }),
+    ).toBeInTheDocument();
+    expect(vi.mocked(listGeneratedAudio)).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('Ttmik page — TTMIK listing (F-072 window + F-024 back)', () => {
   it('renders lessons grouped by level with audio indicators', async () => {
     const user = userEvent.setup();
@@ -525,6 +682,12 @@ describe('Ttmik page — TTMIK listing (F-072 window + F-024 back)', () => {
       name: 'Open lesson 21: More / -(으)ㄴ 것 같다 (no audio)',
     });
     expect(within(lesson21).getByText('No audio')).toBeInTheDocument();
+
+    // Mutation pin (F-210): the Generated Audio section is landing-ONLY —
+    // rendering it unconditionally must fail here on the listing view.
+    expect(
+      screen.queryByRole('region', { name: /Generated Audio/i }),
+    ).toBeNull();
   });
 
   it('F-072: windows the listing to 15 rows and reveals 15 more per Show more', async () => {

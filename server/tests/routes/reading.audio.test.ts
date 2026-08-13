@@ -5,6 +5,11 @@
  *                                        TTS enqueue
  *   GET  /reading/generated/:id/audio  — status envelope (+ streamUrl and
  *                                        read-along segments when done)
+ *   GET  /reading/generated/audio      — the voiced-story list (the Listen
+ *                                        tab's "Generated Audio" section):
+ *                                        voiced-only filter, full item shape,
+ *                                        newest first, IDOR, and the
+ *                                        literal-before-:id registration order
  *
  * Pure ROUTE tests: no filesystem and no real TTS network call — the "voiced"
  * state is seeded at rest (seedStoryAudio), the runner pipeline itself is
@@ -396,6 +401,130 @@ describe('GET /reading/generated/:id/audio — status envelope', () => {
     expect(res.body.audio.jobId).toBeNull();
     expect(res.body.audio.track).toBeNull();
     expect(res.body.audio.segments).toEqual([]);
+  });
+});
+
+describe('GET /reading/generated/audio — the voiced-story list (Listen "Generated Audio")', () => {
+  it('unauthenticated → 401', async () => {
+    const res = await request(t.app).get('/reading/generated/audio');
+    expect(res.status).toBe(401);
+  });
+
+  it('no voiced stories → 200 with an empty list (and the literal path is NOT captured by /generated/:id)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await seedGeneratedStory(pg.pool, userId); // unvoiced — must not list
+    const res = await agent.get('/reading/generated/audio');
+    // A 400 here would mean /generated/:id captured "audio" as its id —
+    // the registration-order regression this test pins against.
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ stories: [] });
+  });
+
+  it('lists ONLY voiced stories — full shape, most recently voiced first; pending/failed/unvoiced excluded', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+
+    const oldVoiced = await seedGeneratedStory(pg.pool, userId, {
+      title: '바닷가 이야기',
+      level: 'L2',
+    });
+    const oldTrack = await seedStoryAudio(pg.pool, userId, oldVoiced, {
+      durationMs: 5000,
+    });
+
+    const pendingStory = await seedGeneratedStory(pg.pool, userId);
+    await seedStoryAudioJob(pg.pool, userId, pendingStory, { status: 'pending' });
+    const failedStory = await seedGeneratedStory(pg.pool, userId);
+    await seedStoryAudioJob(pg.pool, userId, failedStory, { status: 'failed' });
+    await seedGeneratedStory(pg.pool, userId); // never requested
+
+    const newVoiced = await seedGeneratedStory(pg.pool, userId, {
+      title: '겨울 산책',
+      level: 'L4',
+    });
+    const newTrack = await seedStoryAudio(pg.pool, userId, newVoiced, {
+      durationMs: 12000,
+    });
+
+    const res = await agent.get('/reading/generated/audio');
+    expect(res.status).toBe(200);
+    expect(res.body.stories).toEqual([
+      {
+        id: newVoiced,
+        title: '겨울 산책',
+        level: 'L4',
+        streamUrl: `/audio/tracks/${newTrack.trackId}/stream`,
+        durationMs: 12000,
+      },
+      {
+        id: oldVoiced,
+        title: '바닷가 이야기',
+        level: 'L2',
+        streamUrl: `/audio/tracks/${oldTrack.trackId}/stream`,
+        durationMs: 5000,
+      },
+    ]);
+  });
+
+  it('orders by VOICED recency, not story age — an old story voiced just now lists FIRST', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+
+    // Two stories with pinned, unambiguous ages: oldStory predates newStory.
+    const oldStory = await seedGeneratedStory(pg.pool, userId, {
+      title: '오래된 이야기',
+    });
+    const newStory = await seedGeneratedStory(pg.pool, userId, {
+      title: '새 이야기',
+    });
+    await pg.pool.query(
+      `UPDATE generated_stories SET created_at = now() - interval '2 days'
+        WHERE id = $1`,
+      [oldStory],
+    );
+
+    // The NEW story was voiced yesterday; the OLD story was voiced just now.
+    const newSet = await seedStoryAudio(pg.pool, userId, newStory);
+    await seedStoryAudio(pg.pool, userId, oldStory);
+    await pg.pool.query(
+      `UPDATE audio_sources SET created_at = now() - interval '1 day'
+        WHERE id = $1`,
+      [newSet.sourceId],
+    );
+
+    // The freshly-voiced OLD story must list first — the list orders by the
+    // voiced set's created_at, not the story's (which would invert this).
+    const res = await agent.get('/reading/generated/audio');
+    expect(res.status).toBe(200);
+    expect(res.body.stories.map((s: { id: number }) => s.id)).toEqual([
+      oldStory,
+      newStory,
+    ]);
+  });
+
+  it("IDOR: user B never sees user A's voiced stories", async () => {
+    const owner = await registerUser(t.app, pg.pool);
+    const other = await registerUser(t.app, pg.pool);
+    const storyId = await seedGeneratedStory(pg.pool, owner.userId);
+    await seedStoryAudio(pg.pool, owner.userId, storyId);
+
+    const foreign = await other.agent.get('/reading/generated/audio');
+    expect(foreign.status).toBe(200);
+    expect(foreign.body.stories).toEqual([]);
+
+    // …while the owner's own list serves it.
+    const own = await owner.agent.get('/reading/generated/audio');
+    expect(own.body.stories).toHaveLength(1);
+    expect(own.body.stories[0].id).toBe(storyId);
+  });
+
+  it("a 'done' JOB whose voiced set was deleted out-of-band does not list (the set is the authority)", async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const storyId = await seedGeneratedStory(pg.pool, userId);
+    await seedStoryAudioJob(pg.pool, userId, storyId, { status: 'done' });
+    const res = await agent.get('/reading/generated/audio');
+    expect(res.status).toBe(200);
+    // Same honest answer the per-story GET gives ('none'): no track exists
+    // to stream, so no row — a broken player must never render.
+    expect(res.body.stories).toEqual([]);
   });
 });
 

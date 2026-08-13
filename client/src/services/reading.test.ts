@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   getGeneratedStory,
   getStoryAudio,
+  listGeneratedAudio,
   requestStoryAudio,
 } from './reading';
 import type { StoryAudio } from './reading';
@@ -139,6 +140,65 @@ describe('getStoryAudio', () => {
     // UI treats that as "shown" (forward-compat default-true).
     vi.spyOn(api, 'get').mockResolvedValueOnce({ audio: PENDING_AUDIO });
     expect((await getStoryAudio(7)).ttsConfigured).toBeUndefined();
+  });
+});
+
+describe('listGeneratedAudio', () => {
+  const VOICED = [
+    {
+      id: 41,
+      title: '겨울 산책',
+      level: 'L4',
+      streamUrl: '/audio/tracks/900/stream',
+      durationMs: 12000,
+    },
+    {
+      id: 7,
+      title: '바닷가 이야기',
+      level: 'L2',
+      streamUrl: '/audio/tracks/901/stream',
+      durationMs: null,
+    },
+  ];
+
+  it('GETs /reading/generated/audio and unwraps the stories envelope untouched', async () => {
+    const spy = vi
+      .spyOn(api, 'get')
+      .mockResolvedValueOnce({ stories: VOICED });
+
+    const got = await listGeneratedAudio();
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    // The LITERAL list path — never a /generated/:id shape.
+    expect(spy.mock.calls[0][0]).toBe('/reading/generated/audio');
+    expect(got).toEqual(VOICED);
+    expect(got[0]?.streamUrl).toBe('/audio/tracks/900/stream');
+  });
+
+  it('an empty list (nothing voiced yet) resolves to [] — a normal state, not an error', async () => {
+    vi.spyOn(api, 'get').mockResolvedValueOnce({ stories: [] });
+    expect(await listGeneratedAudio()).toEqual([]);
+  });
+
+  it('threads an AbortSignal into the request config', async () => {
+    const spy = vi
+      .spyOn(api, 'get')
+      .mockResolvedValueOnce({ stories: [] });
+    const ctrl = new AbortController();
+
+    await listGeneratedAudio(ctrl.signal);
+
+    expect(spy.mock.calls[0][1]?.signal).toBe(ctrl.signal);
+  });
+
+  it('re-throws an ApiError untouched', async () => {
+    const boom = new ApiError('boom internal', {
+      status: 500,
+      code: 'server_error',
+    });
+    vi.spyOn(api, 'get').mockRejectedValueOnce(boom);
+
+    await expect(listGeneratedAudio()).rejects.toBe(boom);
   });
 });
 
