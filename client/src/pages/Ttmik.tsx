@@ -1149,6 +1149,19 @@ function CollectionTiles(): JSX.Element {
  * own F-210 player stays the canonical read-along surface. The empty state
  * is a discoverability hint (voicing happens in Reading), not an error.
  */
+/**
+ * An audio duration as `m:ss` for the Generated Audio rows (204000 →
+ * "3:24"). An unknown length (null / non-finite / negative) renders
+ * nothing — never a misleading "0:00".
+ */
+function formatDurationMs(ms: number | null): string | null {
+  if (ms === null || !Number.isFinite(ms) || ms < 0) return null;
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes)}:${String(seconds).padStart(2, '0')}`;
+}
+
 function GeneratedAudioSection(): JSX.Element {
   const navigate = useNavigate();
   const [items, setItems] = useState<GeneratedAudioItem[]>([]);
@@ -1226,6 +1239,7 @@ function GeneratedAudioSection(): JSX.Element {
               // The strict allow-list resolver — the ONLY path to the
               // <audio> src (same contract as every player on this page).
               const audioSrc = buildAudioSrc(item.streamUrl);
+              const duration = formatDurationMs(item.durationMs);
               return (
                 <li
                   key={`generated:${String(item.id)}`}
@@ -1246,6 +1260,9 @@ function GeneratedAudioSection(): JSX.Element {
                       {item.title}
                     </span>
                     <Pill tone="gold">{item.level}</Pill>
+                    {duration !== null ? (
+                      <span className="km-reference__row-en">{duration}</span>
+                    ) : null}
                     <Button
                       variant="ghost"
                       size="sm"

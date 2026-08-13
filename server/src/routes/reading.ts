@@ -702,8 +702,11 @@ router.get('/generated', cheapLimiter(), async (req, res, next) => {
 });
 
 /**
- * GET /reading/generated/audio — the caller's VOICED story library, newest
- * first (the Listen tab's "Generated Audio" section). One row per owned
+ * GET /reading/generated/audio — the caller's VOICED story library, most
+ * recently VOICED first (the Listen tab's "Generated Audio" section): the
+ * list is about the audio, so ordering follows the voiced set's created_at
+ * (s.created_at), not the story's — voicing an old story surfaces it at the
+ * top. One row per owned
  * story that has a completed narration: the voiced set — audio_sources
  * (kind 'generated_story') joined to its single track — is the authority
  * for "voiced", exactly as buildStoryAudioDto below treats it (a 'done'
@@ -737,7 +740,7 @@ router.get('/generated/audio', cheapLimiter(), async (req, res, next) => {
          JOIN audio_tracks t
            ON t.source_id = s.id AND t.track_number = 1
         WHERE g.user_id = $1
-        ORDER BY g.created_at DESC, g.id DESC
+        ORDER BY s.created_at DESC, g.id DESC
         LIMIT 200`,
       [userId],
     );

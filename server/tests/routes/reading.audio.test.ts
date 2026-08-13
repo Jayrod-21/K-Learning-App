@@ -420,7 +420,7 @@ describe('GET /reading/generated/audio — the voiced-story list (Listen "Genera
     expect(res.body).toEqual({ stories: [] });
   });
 
-  it('lists ONLY voiced stories — full shape, newest first; pending/failed/unvoiced excluded', async () => {
+  it('lists ONLY voiced stories — full shape, most recently voiced first; pending/failed/unvoiced excluded', async () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
 
     const oldVoiced = await seedGeneratedStory(pg.pool, userId, {
@@ -462,6 +462,41 @@ describe('GET /reading/generated/audio — the voiced-story list (Listen "Genera
         streamUrl: `/audio/tracks/${oldTrack.trackId}/stream`,
         durationMs: 5000,
       },
+    ]);
+  });
+
+  it('orders by VOICED recency, not story age — an old story voiced just now lists FIRST', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+
+    // Two stories with pinned, unambiguous ages: oldStory predates newStory.
+    const oldStory = await seedGeneratedStory(pg.pool, userId, {
+      title: '오래된 이야기',
+    });
+    const newStory = await seedGeneratedStory(pg.pool, userId, {
+      title: '새 이야기',
+    });
+    await pg.pool.query(
+      `UPDATE generated_stories SET created_at = now() - interval '2 days'
+        WHERE id = $1`,
+      [oldStory],
+    );
+
+    // The NEW story was voiced yesterday; the OLD story was voiced just now.
+    const newSet = await seedStoryAudio(pg.pool, userId, newStory);
+    await seedStoryAudio(pg.pool, userId, oldStory);
+    await pg.pool.query(
+      `UPDATE audio_sources SET created_at = now() - interval '1 day'
+        WHERE id = $1`,
+      [newSet.sourceId],
+    );
+
+    // The freshly-voiced OLD story must list first — the list orders by the
+    // voiced set's created_at, not the story's (which would invert this).
+    const res = await agent.get('/reading/generated/audio');
+    expect(res.status).toBe(200);
+    expect(res.body.stories.map((s: { id: number }) => s.id)).toEqual([
+      oldStory,
+      newStory,
     ]);
   });
 

@@ -256,7 +256,7 @@ const GENERATED_AUDIO: GeneratedAudioItem[] = [
     title: '겨울 산책',
     level: 'L4',
     streamUrl: '/audio/tracks/900/stream',
-    durationMs: 12000,
+    durationMs: 204_000, // → "3:24"
   },
   {
     id: 7,
@@ -561,6 +561,11 @@ describe('Ttmik page — landing "Generated Audio" section (F-210)', () => {
     expect(within(rows[1]!).getByText('바닷가 이야기')).toBeInTheDocument();
     expect(within(rows[1]!).getByText('L2')).toBeInTheDocument();
 
+    // Durations render as m:ss — a padded sub-minute length and a
+    // minutes-scale one, straight from durationMs.
+    expect(within(rows[0]!).getByText('3:24')).toBeInTheDocument();
+    expect(within(rows[1]!).getByText('0:05')).toBeInTheDocument();
+
     // Inline players: src through the REAL buildAudioSrc (empty API base in
     // tests → the app-relative allow-listed byte route), with controls.
     const players = section.querySelectorAll('audio');
@@ -595,6 +600,8 @@ describe('Ttmik page — landing "Generated Audio" section (F-210)', () => {
     expect(within(row).getByText('나쁜 이야기')).toBeInTheDocument();
     // buildAudioSrc rejected the src — no <audio> element at all.
     expect(row.querySelector('audio')).toBeNull();
+    // A null durationMs renders NO duration text (never "0:00").
+    expect(within(row).queryByText(/^\d+:\d{2}$/)).toBeNull();
     // The reader action still works for the row.
     expect(
       within(row).getByRole('button', { name: 'Open 나쁜 이야기 in reader' }),
@@ -675,6 +682,12 @@ describe('Ttmik page — TTMIK listing (F-072 window + F-024 back)', () => {
       name: 'Open lesson 21: More / -(으)ㄴ 것 같다 (no audio)',
     });
     expect(within(lesson21).getByText('No audio')).toBeInTheDocument();
+
+    // Mutation pin (F-210): the Generated Audio section is landing-ONLY —
+    // rendering it unconditionally must fail here on the listing view.
+    expect(
+      screen.queryByRole('region', { name: /Generated Audio/i }),
+    ).toBeNull();
   });
 
   it('F-072: windows the listing to 15 rows and reveals 15 more per Show more', async () => {
