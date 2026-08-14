@@ -60,6 +60,10 @@ const EnvSchema = z.object({
   // sonnet-grade Korean reading comprehension by default (mirrors
   // recognize_grammar/grade_writing, not the haiku-tier trivial-lookup routes).
   CLAUDE_DEFAULT_MODEL_TRANSLATE_PASSAGE: ModelEnum.default('claude-sonnet-4-6'),
+  // F-211 story-illustration prompt sets: reading a whole Korean story,
+  // picking its key beats, and authoring consistent English image prompts is
+  // sonnet-grade comprehension + authoring work.
+  CLAUDE_DEFAULT_MODEL_STORY_IMAGE_PROMPTS: ModelEnum.default('claude-sonnet-4-6'),
 
   // Input length caps (in characters) — prompt-injection defense.
   CLAUDE_MAX_INPUT_ENRICH: z.coerce.number().int().positive().default(2_000),
@@ -95,6 +99,11 @@ const EnvSchema = z.object({
   // at 6000 (under this ceiling) — this cap is the hard injection/cost
   // backstop, not the working size.
   CLAUDE_MAX_INPUT_TRANSLATE_PASSAGE: z.coerce.number().int().positive().default(8_000),
+  // F-211: the story title + body ride the prompt (generated_stories rows —
+  // StoryResultSchema caps bodyKo at 6000/title at 200, and the input schema
+  // re-asserts those bounds); 8000 is the hard injection/cost backstop, not
+  // the working size.
+  CLAUDE_MAX_INPUT_STORY_IMAGE_PROMPTS: z.coerce.number().int().positive().default(8_000),
 
   // Cache TTLs (seconds). 0 = DO NOT cache (the CacheStore skips the write and
   // every lookup misses). Forever-caching requires the explicit
@@ -137,6 +146,13 @@ const EnvSchema = z.object({
   // 30 days caches the working set (a single-user's re-tapped passages)
   // without the operational cost of a forever cache.
   CLAUDE_CACHE_TTL_TRANSLATE_PASSAGE_S: z.coerce.number().int().nonnegative().default(60 * 60 * 24 * 30),
+  // F-211 story_image_prompts: STABLE per story (translate_passage's "same
+  // input, same answer" posture, NOT generate_story's variety stance) — the
+  // prompt set is deterministic-by-cache per (title, body, sceneCount), so a
+  // re-illustration retry after a provider failure re-uses the cached set at
+  // $0 instead of re-rolling different scenes. 30 days covers the working
+  // set without the operational cost of a forever cache.
+  CLAUDE_CACHE_TTL_STORY_IMAGE_PROMPTS_S: z.coerce.number().int().nonnegative().default(60 * 60 * 24 * 30),
 
   // Rate-limit (per-minute, per-bucket-key).
   CLAUDE_RATE_LIMIT_ENRICH: z.coerce.number().int().positive().default(60),
@@ -166,6 +182,9 @@ const EnvSchema = z.object({
   // covers a real reading session (mirrors recognize_grammar's ceiling) while
   // capping a runaway loop against the paid upstream.
   CLAUDE_RATE_LIMIT_TRANSLATE_PASSAGE: z.coerce.number().int().positive().default(30),
+  // F-211: the runner calls this once per illustration job, and the per-user
+  // daily job cap is the real cost lever — 10/min bounds a runaway loop.
+  CLAUDE_RATE_LIMIT_STORY_IMAGE_PROMPTS: z.coerce.number().int().positive().default(10),
 
   // Logging. 'silent' is a valid pino level (disables all output) and is what
   // the test harness sets; include it so loadConfig() accepts it rather than
@@ -188,7 +207,8 @@ export type RouteName =
   | 'generate_writing_prompt'
   | 'generate_story'
   | 'name_conversation'
-  | 'translate_passage';
+  | 'translate_passage'
+  | 'story_image_prompts';
 
 /**
  * Every `RouteName`, as a runtime array — the canonical source of truth for the
@@ -220,6 +240,7 @@ export const ROUTE_NAMES = [
   'generate_story',
   'name_conversation',
   'translate_passage',
+  'story_image_prompts',
 ] as const satisfies readonly RouteName[];
 
 // Compile-time exhaustiveness: if a RouteName is added to the union above but
@@ -299,6 +320,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicClaudeCo
       generate_story: e.CLAUDE_DEFAULT_MODEL_GENERATE_STORY,
       name_conversation: e.CLAUDE_DEFAULT_MODEL_NAME_CONVERSATION,
       translate_passage: e.CLAUDE_DEFAULT_MODEL_TRANSLATE_PASSAGE,
+      story_image_prompts: e.CLAUDE_DEFAULT_MODEL_STORY_IMAGE_PROMPTS,
     },
     inputCaps: {
       enrich: e.CLAUDE_MAX_INPUT_ENRICH,
@@ -313,6 +335,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicClaudeCo
       generate_story: e.CLAUDE_MAX_INPUT_GENERATE_STORY,
       name_conversation: e.CLAUDE_MAX_INPUT_NAME_CONVERSATION,
       translate_passage: e.CLAUDE_MAX_INPUT_TRANSLATE_PASSAGE,
+      story_image_prompts: e.CLAUDE_MAX_INPUT_STORY_IMAGE_PROMPTS,
     },
     cacheTtlSeconds: {
       enrich: e.CLAUDE_CACHE_TTL_ENRICH_S,
@@ -327,6 +350,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicClaudeCo
       generate_story: e.CLAUDE_CACHE_TTL_GENERATE_STORY_S,
       name_conversation: e.CLAUDE_CACHE_TTL_NAME_CONVERSATION_S,
       translate_passage: e.CLAUDE_CACHE_TTL_TRANSLATE_PASSAGE_S,
+      story_image_prompts: e.CLAUDE_CACHE_TTL_STORY_IMAGE_PROMPTS_S,
     },
     rateLimitPerMinute: {
       enrich: e.CLAUDE_RATE_LIMIT_ENRICH,
@@ -341,6 +365,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicClaudeCo
       generate_story: e.CLAUDE_RATE_LIMIT_GENERATE_STORY,
       name_conversation: e.CLAUDE_RATE_LIMIT_NAME_CONVERSATION,
       translate_passage: e.CLAUDE_RATE_LIMIT_TRANSLATE_PASSAGE,
+      story_image_prompts: e.CLAUDE_RATE_LIMIT_STORY_IMAGE_PROMPTS,
     },
     logLevel: e.LOG_LEVEL,
     nodeEnv: e.NODE_ENV,

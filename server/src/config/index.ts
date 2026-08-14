@@ -193,6 +193,61 @@ const EnvSchema = z.object({
   // posture; 'pending' is never reaped — it is the healthy backlog).
   STORY_TTS_STALE_RUN_MINUTES: z.coerce.number().int().positive().default(15),
 
+  // ---------------------------------------------------------------------------
+  // Story illustrations (F-211 — AI images for generated stories, OpenAI
+  // gpt-image-1). The generated images land in the SAME image blob store as
+  // OCR uploads (IMAGE_STORAGE_DIR above) and serve through a byte route on
+  // /reading — no new storage or nginx knobs.
+  // ---------------------------------------------------------------------------
+  // OpenAI API key. OPTIONAL in EVERY environment — including production — so
+  // story illustrations can ship DORMANT without coupling unrelated deploys
+  // to a vendor key: with no key the app boots normally, the routes answer
+  // `imageGenConfigured: false`, the enqueue POST refuses with 503
+  // `image_gen_unavailable` before writing a job, POST /reading/generate
+  // skips the batch-at-creation enqueue, and the keyless provider fails any
+  // in-flight job with a clear "not configured" message
+  // (services/imageGen.ts). Going live later is a Deploy/.env edit +
+  // redeploy — zero code change. index.ts logs a startup warning when the
+  // key is absent so a deploy that MEANT to enable illustrations is
+  // diagnosable at boot. Secrets policy (SECURITY.md §1): no default, and
+  // the value is never logged (services/imageGen.ts never places it
+  // anywhere but the Authorization header). EMPTY STRING ⇒ unset: the
+  // deploy compose passes `OPENAI_API_KEY=${OPENAI_API_KEY:-}` so the
+  // plumbing exists before the key does (ELEVENLABS_API_KEY's exact
+  // preprocess).
+  OPENAI_API_KEY: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().min(1).optional(),
+  ),
+
+  // Per-user DAILY cap on story-illustration ENQUEUES (→ 429 BEFORE any job
+  // row is written). The provider bills per image, but a per-JOB cap is the
+  // right lever because a job's image count is already hard-bounded
+  // (STORY_IMAGE_SCENE_COUNT clamps 2-4), so jobs/day × 4 bounds spend; the
+  // story_image_jobs.image_count ledger still records exact usage. Failed
+  // jobs count (cost control — a failed run spent quota too; 069/076/081's
+  // stance).
+  STORY_IMAGE_DAILY_CAP: z.coerce.number().int().positive().default(10),
+
+  // How often the in-server runner polls story_image_jobs for pending work.
+  // In-process (the same posture as the story-TTS runner — the blob store is
+  // writable only here); the interval is unref'd so it never holds the
+  // process open.
+  STORY_IMAGE_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
+
+  // A 'running' job older than this is presumed crashed (server restart
+  // mid-generation) and reaped 'failed' at the next poll, un-bricking the
+  // story's one-live-job slot. Sized past the worst plausible run: one
+  // prompt-set Claude call + 4 sequential image generations at ~90s each
+  // ('pending' is never reaped — it is the healthy backlog).
+  STORY_IMAGE_STALE_RUN_MINUTES: z.coerce.number().int().positive().default(20),
+
+  // How many key-scene illustrations one job generates (the sceneCount the
+  // prompt-set route is asked for). LOCKED to 2..4 (F-211's charter) — an
+  // out-of-range value fails config parse at startup (bad config is a
+  // deploy-time problem, SECURITY.md §1), it is never silently clamped.
+  STORY_IMAGE_SCENE_COUNT: z.coerce.number().int().min(2).max(4).default(3),
+
   // Corpus audio root (F-012 — TTMIK/Iyagi mp3 streaming). Read-only tree the
   // audio routes stream from; DB rows store paths RELATIVE to this root (e.g.
   // 'TTMIK/이야기들/이야기/143 TTMIK Iyagi 143.mp3'). In the deploy compose this
@@ -332,6 +387,8 @@ const EnvSchema = z.object({
   // F-210 note: ELEVENLABS_API_KEY is deliberately NOT refined to be
   // required in production — story TTS ships dormant (see the field's doc
   // comment) and a missing key must never block an unrelated deploy.
+  // F-211 note: OPENAI_API_KEY takes the identical stance for the same
+  // reason (story illustrations ship dormant).
 });
 
 export type Config = z.infer<typeof EnvSchema>;

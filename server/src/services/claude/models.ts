@@ -575,6 +575,67 @@ export const TranslatePassageResultSchema = z.object({
 });
 export type TranslatePassageResult = z.infer<typeof TranslatePassageResultSchema>;
 
+// ---- 3g. generateStoryImagePrompts ------------------------------------------
+// F-211: given a generated story, author the illustration prompt set the
+// story-image runner feeds the image provider — a fixed Korean-webtoon style
+// directive, a shared character sheet (each main character's consistent
+// visual description), and 2-4 scene prompts. Each scene prompt is a
+// SELF-CONTAINED English image prompt that bakes in the style directive, the
+// relevant characters' descriptions, and the copyright-clean guardrails (no
+// in-image text, no real/named people, no copyrighted characters) — the
+// image model has no seed lock, so cross-image character consistency comes
+// entirely from the carried descriptions. Cached with a long TTL (config.ts):
+// the set is deliberately STABLE per story so a retry after a provider
+// failure reuses the same scenes at $0.
+
+export const StoryImagePromptsInputSchema = z.object({
+  /** The story's title, verbatim from generated_stories.title (DB CHECK caps
+   *  at 300). Free text — sanitized + wrapped as untrusted data by the proxy. */
+  title: NonEmptyText.max(300),
+  /** The story body, verbatim from generated_stories.body_ko. Bounded at the
+   *  generation schema's own ceiling (StoryResultSchema caps at 6000). Free
+   *  text — sanitized + wrapped as untrusted data by the proxy. */
+  bodyKo: NonEmptyText.max(6000),
+  /** The story's multi-voice turns when it has them (F-210's shape) — the
+   *  builder derives the speaking-character roster (names + genders) from
+   *  these to anchor the character sheet; turn TEXT is never sent (bodyKo
+   *  already carries it). Optional: flat/pre-081 stories omit it. */
+  turns: z.array(StoryTurnSchema).min(1).max(200).optional(),
+  /** How many key-scene prompts to author (F-211 locks 2-4; the route passes
+   *  the STORY_IMAGE_SCENE_COUNT config snapshot). */
+  sceneCount: z.number().int().min(2).max(4),
+  /** Optional model override. */
+  model: z.enum(['haiku', 'sonnet', 'opus']).optional(),
+});
+export type StoryImagePromptsInput = z.infer<typeof StoryImagePromptsInputSchema>;
+
+/** One entry of the shared character sheet: a consistent visual description
+ *  carried verbatim into every scene prompt that character appears in. */
+export const StoryImageCharacterSchema = z.object({
+  /** The character's name as used in the story (Korean OK). */
+  name: NonEmptyText.max(100),
+  /** The consistent visual description (English) — appearance, age band,
+   *  hair, clothing — identical across scenes. */
+  description: NonEmptyText.max(400),
+});
+export type StoryImageCharacter = z.infer<typeof StoryImageCharacterSchema>;
+
+export const StoryImagePromptsResultSchema = z.object({
+  /** The fixed art-style line every scene prompt embeds (Korean
+   *  webtoon/manhwa digital illustration). Returned for observability — the
+   *  scene prompts already bake it in. */
+  styleDirective: NonEmptyText.max(600),
+  /** The shared character sheet. May be empty for a character-less story
+   *  (e.g. a pure landscape/mood piece). */
+  characters: z.array(StoryImageCharacterSchema).max(8).default([]),
+  /** The 2-4 scene prompts, in story order. Each is COMPLETE on its own
+   *  (style + characters + guardrails baked in) — the runner sends it to the
+   *  image provider verbatim and persists it to story_images.prompt, whose
+   *  DB CHECK ceiling (4000) sits above this cap. */
+  scenePrompts: z.array(NonEmptyText.max(3800)).min(2).max(4),
+});
+export type StoryImagePromptsResult = z.infer<typeof StoryImagePromptsResultSchema>;
+
 // ---- 4. generateConversation -----------------------------------------------
 // Streamed conversation turns. Register-aware. Optional vocab focus.
 

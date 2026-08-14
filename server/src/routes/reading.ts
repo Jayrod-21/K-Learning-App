@@ -46,6 +46,27 @@
  *                                              existing /audio/tracks/:id/
  *                                              stream route) + the read-along
  *                                              segments (F-210)
+ *   POST /reading/generated/:id/images       → request AI illustrations of an
+ *                                              owned story (F-211): idempotent
+ *                                              generate-once enqueue of a
+ *                                              story_image_jobs row (083) the
+ *                                              in-server runner processes
+ *                                              async (services/storyImage.ts);
+ *                                              202 while working, 200 when
+ *                                              already illustrated. New
+ *                                              stories are ALSO auto-enqueued
+ *                                              at creation when the image
+ *                                              provider is configured
+ *                                              (batch-at-creation); this
+ *                                              on-demand POST covers
+ *                                              dormant-era/pre-083 stories.
+ *   GET /reading/generated/:id/images        → the story's illustration
+ *                                              status; when done, the ordered
+ *                                              image list (blobUrl + prompt +
+ *                                              dimensions) (F-211)
+ *   GET /reading/generated/:id/image/:n/blob → one illustration's bytes
+ *                                              (IDOR-404, nosniff, cookie
+ *                                              auth) (F-211)
  *   POST /reading/translate                  → Claude authors a natural-
  *                                              English translation of a
  *                                              selected Korean passage or
@@ -135,6 +156,23 @@
  *     /audio/tracks/:id/stream route (Range, nosniff, IDOR-404). The
  *     job `error` shown to the client is always server-authored whitelisted
  *     copy (services/tts.ts), never TTS-provider response text.
+ *   - STORY IMAGES (F-211): POST /generated/:id/images is the COST surface (a
+ *     paid per-image provider call per scene) → expensiveLimiter PLUS a
+ *     per-user daily enqueue cap (STORY_IMAGE_DAILY_CAP → 429 BEFORE any
+ *     write, checked under a per-user advisory xact lock) PLUS generate-once
+ *     idempotency (an already-illustrated story or a live job
+ *     short-circuits with NO new job; migration 083's partial-unique
+ *     live-job index and per-(story,slot) unique make both structural).
+ *     The batch-at-creation enqueue inside POST /generate goes through the
+ *     SAME gate (capability + cap + lock) and is best-effort: its failure
+ *     can never fail story creation. IDOR: the story is ownership-checked
+ *     first (uniform 404); the 083 composite FKs pin every image/job row's
+ *     ownership structurally. Image BYTES serve via the sibling blob route
+ *     below — user-scoped lookup (uniform 404), Content-Type from the
+ *     stored extension, nosniff, Cache-Control private (the /images/:id/blob
+ *     posture; no Range — these are small static images). The job `error`
+ *     shown to the client is always server-authored whitelisted copy
+ *     (services/imageGen.ts), never provider response text.
  *   - READING ATTEMPTS (F-172): POST /attempts is a plain, cheap DB write (no
  *     Claude call) — cheapLimiter, not expensiveLimiter. IDOR: the named
  *     chapter/story is looked up SCOPED to the caller in the same query that
@@ -157,6 +195,9 @@ import { mapClaudeError, NotFoundError } from '../middleware/errors.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
 import { StoryTtsDailyCapError, TtsUnavailableError } from '../services/storyAudio.js';
 import { isTtsConfigured } from '../services/tts.js';
+import { ImageGenUnavailableError, StoryImageDailyCapError } from '../services/storyImage.js';
+import { isImageGenConfigured } from '../services/imageGen.js';
+import { readBlob } from '../services/imageStore.js';
 import type { StoryTurn } from '../services/claude/index.js';
 
 const router = Router();
@@ -658,6 +699,26 @@ router.post(
         ],
       );
 
+      const storyId = Number(rows[0]!.id);
+
+      // 3. F-211 batch-at-creation: auto-enqueue the illustration job so a
+      //    new story starts illustrating immediately — but ONLY on a
+      //    configured deploy (a dormant deploy skips silently; the on-demand
+      //    POST /generated/:id/images serves those stories once the key
+      //    lands), and STRICTLY best-effort: the story is already committed,
+      //    so an enqueue failure (cap hit, race, DB hiccup) logs and moves
+      //    on — it must never turn a successful generation into an error.
+      if (isImageGenConfigured()) {
+        try {
+          await enqueueStoryImages(storyId, userId);
+        } catch (enqueueErr) {
+          req.log.warn(
+            { storyId, err: String(enqueueErr) },
+            'reading: batch-at-creation illustration enqueue skipped',
+          );
+        }
+      }
+
       res.status(201).json({ story: toStoryDto(rows[0]!) });
     } catch (err) {
       next(mapClaudeError(err));
@@ -1083,6 +1144,372 @@ router.get(
         throw new NotFoundError('story not found');
       }
       res.status(200).json({ audio: await buildStoryAudioDto(id, userId) });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/* ---------- Story images (F-211; story_images + story_image_jobs, 083) ---------- */
+
+/** One illustration as served: `blobUrl` is the byte-serve sibling route
+ *  below (same-origin — the session cookie rides an <img src> request);
+ *  `prompt` is the server-derived scene prompt (safe to display). */
+interface StoryImageDto {
+  imageNumber: number;
+  blobUrl: string;
+  prompt: string;
+  width: number;
+  height: number;
+}
+
+/**
+ * The story-images status envelope both image routes return.
+ *   status: 'none'    — never requested (client shows "Illustrate story")
+ *           'pending' — enqueued, awaiting the runner
+ *           'running' — generation in flight
+ *           'failed'  — last attempt failed (error carries the reason; a new
+ *                       POST re-enqueues)
+ *           'done'    — illustrated: images[] is populated, in story order
+ *   imageGenConfigured tells the client whether this server can generate AT
+ *   ALL (dormant-deploy posture: no OPENAI_API_KEY → false → the client
+ *   hides the feature instead of offering a button that can only 503).
+ */
+interface StoryImagesDto {
+  status: 'none' | 'pending' | 'running' | 'failed' | 'done';
+  jobId: number | null;
+  error: string | null;
+  images: StoryImageDto[];
+  imageGenConfigured: boolean;
+}
+
+/**
+ * Resolve a story's current illustration state. The story_images rows — not
+ * the job row — are the authority for 'done' (generate-once: the rows are
+ * the cache; the runner writes them tx-atomically with the settle, so they
+ * are all-or-nothing); job rows supply the in-flight/failed states. Caller
+ * has ALREADY ownership-checked the story (uniform 404); the 083 composite
+ * FKs pin every image/job row to the story's owner. Mirrors
+ * buildStoryAudioDto's structure exactly.
+ */
+async function buildStoryImagesDto(storyId: number, userId: number): Promise<StoryImagesDto> {
+  const imageGenConfigured = isImageGenConfigured();
+  const imgRes = await query<{
+    image_number: number;
+    prompt: string;
+    width: number;
+    height: number;
+  }>(
+    `SELECT image_number, prompt, width, height
+       FROM story_images
+      WHERE generated_story_id = $1 AND user_id = $2
+      ORDER BY image_number`,
+    [storyId, userId],
+  );
+  if (imgRes.rows.length > 0) {
+    const jobRes = await query<{ id: string }>(
+      `SELECT id FROM story_image_jobs
+        WHERE generated_story_id = $1 AND user_id = $2 AND status = 'done'
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1`,
+      [storyId, userId],
+    );
+    return {
+      status: 'done',
+      jobId: jobRes.rows[0] !== undefined ? Number(jobRes.rows[0].id) : null,
+      error: null,
+      images: imgRes.rows.map((r) => ({
+        imageNumber: r.image_number,
+        blobUrl: `/reading/generated/${storyId}/image/${r.image_number}/blob`,
+        prompt: r.prompt,
+        width: r.width,
+        height: r.height,
+      })),
+      imageGenConfigured,
+    };
+  }
+
+  const jobRes = await query<{ id: string; status: string; error: string | null }>(
+    `SELECT id, status, error
+       FROM story_image_jobs
+      WHERE generated_story_id = $1
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1`,
+    [storyId],
+  );
+  const job = jobRes.rows[0];
+  if (job === undefined) {
+    return { status: 'none', jobId: null, error: null, images: [], imageGenConfigured };
+  }
+  if (job.status === 'pending' || job.status === 'running') {
+    return {
+      status: job.status,
+      jobId: Number(job.id),
+      error: null,
+      images: [],
+      imageGenConfigured,
+    };
+  }
+  if (job.status === 'failed') {
+    // `error` is server-authored whitelisted copy (services/imageGen.ts /
+    // storyImage.ts) — safe to show verbatim.
+    return {
+      status: 'failed',
+      jobId: Number(job.id),
+      error: job.error,
+      images: [],
+      imageGenConfigured,
+    };
+  }
+  // 'done' job whose rows are gone (out-of-band deletion / partial restore):
+  // report 'none' so the client can simply re-generate.
+  return { status: 'none', jobId: null, error: null, images: [], imageGenConfigured };
+}
+
+/**
+ * The shared illustration-enqueue gate (the F-210 audio-enqueue transaction,
+ * provider-swapped). Used by BOTH triggers — the on-demand POST below (which
+ * maps the outcome/errors onto HTTP) and the batch-at-creation call inside
+ * POST /generate (which swallows errors — best-effort). The check-then-insert
+ * runs inside ONE transaction under a per-user advisory xact lock so two
+ * concurrent requests serialize: they cannot both pass the cap, and they
+ * cannot both enqueue (belt: the lock; braces: 083's partial-unique live-job
+ * index). Caller has ALREADY ownership-checked the story.
+ *
+ * @returns 'done' (already illustrated — the rows are a permanent cache),
+ *          'live' (a pending/running job exists), or 'enqueued'.
+ * @throws ImageGenUnavailableError on a keyless deploy (BEFORE the cap check
+ *         and any write — a guaranteed-to-fail job must never spend a
+ *         daily-cap slot; the keyless provider failing the job stays as
+ *         defense-in-depth for a key removed mid-flight).
+ * @throws StoryImageDailyCapError over STORY_IMAGE_DAILY_CAP (BEFORE any
+ *         write; failed jobs count — the failure already spent quota, but a
+ *         `failed` job does NOT hold the live slot, so a retry enqueues).
+ */
+async function enqueueStoryImages(
+  storyId: number,
+  userId: number,
+): Promise<'done' | 'live' | 'enqueued'> {
+  const cfg = loadConfig();
+  return withTransaction(async (client) => {
+    // Per-user advisory xact lock: two concurrent enqueues by one user would
+    // otherwise both read pre-spend cap totals under READ COMMITTED
+    // (audio.ts / the F-210 enqueue's exact reasoning). Released at
+    // commit/rollback.
+    await client.query(
+      `SELECT pg_advisory_xact_lock(hashtextextended('story_image_daily_cap:' || $1::text, 0))`,
+      [userId],
+    );
+
+    // 1. Generate-once cache hit: the story already has its images.
+    const illustrated = await client.query(
+      `SELECT 1 FROM story_images WHERE generated_story_id = $1 LIMIT 1`,
+      [storyId],
+    );
+    if (illustrated.rows.length > 0) return 'done' as const;
+
+    // 2. A live job already exists — return it rather than duplicating
+    //    (083's partial UNIQUE would reject the INSERT anyway; checking
+    //    first keeps the response a clean 202 instead of a mapped 23505).
+    const live = await client.query(
+      `SELECT 1 FROM story_image_jobs
+        WHERE generated_story_id = $1 AND status IN ('pending', 'running')
+        LIMIT 1`,
+      [storyId],
+    );
+    if (live.rows.length > 0) return 'live' as const;
+
+    // 3. Capability gate — a keyless deploy refuses HERE, after the
+    //    read-only short-circuits (existing images still serve; an in-flight
+    //    job still reports) but BEFORE the cap check and the INSERT.
+    if (!isImageGenConfigured()) {
+      throw new ImageGenUnavailableError();
+    }
+
+    // 4. Daily cap — count of today's enqueues, ALL statuses (a failed run
+    //    spent quota too; 069/076/081's cost stance), BEFORE any write.
+    const cap = await client.query<{ n: string }>(
+      `SELECT count(*)::text AS n
+         FROM story_image_jobs
+        WHERE user_id = $1
+          AND created_at >= date_trunc('day', now())`,
+      [userId],
+    );
+    const usedToday = Number(cap.rows[0]?.n ?? '0');
+    if (usedToday >= cfg.STORY_IMAGE_DAILY_CAP) {
+      throw new StoryImageDailyCapError(cfg.STORY_IMAGE_DAILY_CAP, usedToday);
+    }
+
+    // 5. Enqueue. image_count is the cost snapshot at enqueue (083's ledger
+    //    contract — the scene count this job will request); user_id is the
+    //    session user, and the 083 composite FK would reject any
+    //    (story, user) mismatch anyway.
+    await client.query(
+      `INSERT INTO story_image_jobs (generated_story_id, user_id, status, image_count)
+       VALUES ($1, $2, 'pending', $3)`,
+      [storyId, userId, cfg.STORY_IMAGE_SCENE_COUNT],
+    );
+    return 'enqueued' as const;
+  });
+}
+
+/**
+ * POST /reading/generated/:id/images — request AI illustrations of an owned
+ * story (F-211): the ON-DEMAND trigger, covering stories that predate the
+ * feature or were created on a dormant deploy (new stories on a configured
+ * deploy are batch-enqueued at creation by POST /generate).
+ *
+ * IDEMPOTENT, GENERATE-ONCE, COST-BOUNDED (the F-210 audio POST's exact
+ * contract):
+ *   already illustrated       → 200 { images: done-envelope } (no new job)
+ *   live pending/running      → 202 { images: that job's envelope } (no dup)
+ *   provider not configured   → 503 image_gen_unavailable BEFORE any write
+ *   else, under the cap       → enqueue 'pending' → 202 (the in-server
+ *                               runner picks it up; the client polls the
+ *                               GET sibling)
+ *   over STORY_IMAGE_DAILY_CAP → 429 rate_limited BEFORE any write
+ */
+router.post(
+  '/generated/:id/images',
+  expensiveLimiter(),
+  validateParams(StoryParamsSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const { id } = (
+        req as typeof req & { validatedParams: z.infer<typeof StoryParamsSchema> }
+      ).validatedParams;
+
+      // IDOR gate first: a missing id and another user's story are the same
+      // uniform 404 (mirrors GET /generated/:id).
+      const owned = await query<{ id: string }>(
+        `SELECT id FROM generated_stories WHERE id = $1 AND user_id = $2 LIMIT 1`,
+        [id, userId],
+      );
+      if (owned.rows.length === 0) {
+        throw new NotFoundError('story not found');
+      }
+
+      let outcome: 'done' | 'live' | 'enqueued';
+      try {
+        outcome = await enqueueStoryImages(id, userId);
+      } catch (err) {
+        if (err instanceof StoryImageDailyCapError) {
+          req.log.warn(
+            { userId, cap: loadConfig().STORY_IMAGE_DAILY_CAP },
+            'storyImage: daily cap hit — enqueue refused before any write',
+          );
+        }
+        throw err;
+      }
+
+      // One envelope for every outcome (the client renders off `status`
+      // alone): 200 when the images already exist, 202 while work is queued
+      // or in flight.
+      const dto = await buildStoryImagesDto(id, userId);
+      res.status(outcome === 'done' ? 200 : 202).json({ images: dto });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/**
+ * GET /reading/generated/:id/images — the story's illustration status (the
+ * client's polling surface while a job runs; poll every ~2s until status is
+ * 'done' or 'failed'). When 'done', the envelope carries the ordered image
+ * list (blobUrl + prompt + dimensions). IDOR: story ownership is asserted
+ * first — a missing or foreign story id is a uniform 404.
+ */
+router.get(
+  '/generated/:id/images',
+  cheapLimiter(),
+  validateParams(StoryParamsSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const { id } = (
+        req as typeof req & { validatedParams: z.infer<typeof StoryParamsSchema> }
+      ).validatedParams;
+      const owned = await query<{ id: string }>(
+        `SELECT id FROM generated_stories WHERE id = $1 AND user_id = $2 LIMIT 1`,
+        [id, userId],
+      );
+      if (owned.rows.length === 0) {
+        throw new NotFoundError('story not found');
+      }
+      res.status(200).json({ images: await buildStoryImagesDto(id, userId) });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+const StoryImageBlobParamsSchema = z.object({
+  id: z.coerce.number().int().positive().max(MAX_ID),
+  // image_number binds to an INTEGER column — bound at the column max so an
+  // overlarge value 400s at the boundary instead of 22003 → 500 at the cast.
+  n: z.coerce.number().int().positive().max(MAX_INT4),
+});
+
+/** Map a stored blob_ref extension to its Content-Type. Closed set — the
+ *  runner only ever writes imageStore's allow-listed extensions; an unknown
+ *  suffix (a hand-mutated row) degrades to octet-stream + nosniff, never a
+ *  sniffable type. */
+const EXT_TO_MIME: Readonly<Record<string, string>> = {
+  jpg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+};
+
+/**
+ * GET /reading/generated/:id/image/:n/blob — one illustration's bytes
+ * (F-211). The /images/:id/blob serving posture: authed (the same-origin
+ * <img src> sends the session cookie), Cache-Control private,
+ * X-Content-Type-Options nosniff, Content-Type from the STORED extension
+ * (server-written, closed set — never client input). No Range support —
+ * these are small static images, not streamed media. IDOR: the row lookup
+ * is user-scoped in one query (the 083 composite FK pins user_id to the
+ * story's owner), so a missing story, a foreign story, and a missing image
+ * number are all the same uniform 404; a row whose FILE is gone
+ * (out-of-band cleanup) is also a 404, not a 500.
+ */
+router.get(
+  '/generated/:id/image/:n/blob',
+  cheapLimiter(),
+  validateParams(StoryImageBlobParamsSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const { id, n } = (
+        req as typeof req & { validatedParams: z.infer<typeof StoryImageBlobParamsSchema> }
+      ).validatedParams;
+
+      const { rows } = await query<{ blob_ref: string }>(
+        `SELECT blob_ref FROM story_images
+          WHERE generated_story_id = $1 AND user_id = $2 AND image_number = $3
+          LIMIT 1`,
+        [id, userId, n],
+      );
+      const row = rows[0];
+      if (row === undefined) {
+        throw new NotFoundError('image not found');
+      }
+
+      let buffer: Buffer;
+      try {
+        buffer = await readBlob(row.blob_ref);
+      } catch {
+        // Missing/unreadable file (or a traversal-guard rejection on a
+        // corrupt row): the row exists but the bytes are gone — 404, not 500.
+        throw new NotFoundError('image not found');
+      }
+
+      const ext = row.blob_ref.slice(row.blob_ref.lastIndexOf('.') + 1).toLowerCase();
+      res.setHeader('Content-Type', EXT_TO_MIME[ext] ?? 'application/octet-stream');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Cache-Control', 'private, max-age=3600');
+      res.status(200).send(buffer);
     } catch (err) {
       next(err);
     }
