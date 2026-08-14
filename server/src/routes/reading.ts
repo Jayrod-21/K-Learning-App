@@ -25,7 +25,11 @@
  *                                              generated_stories (054), and
  *                                              returns it (F-068)
  *   GET /reading/generated                   → the user's generated-story
- *                                              library, newest first
+ *                                              library, newest first — each
+ *                                              row also carries its F-216
+ *                                              audioStatus/imageStatus
+ *                                              aggregates (the library's
+ *                                              per-story asset badges)
  *   GET /reading/generated/audio             → the caller's VOICED story
  *                                              library (F-210 surfaced on the
  *                                              Listen landing): only stories
@@ -67,6 +71,18 @@
  *   GET /reading/generated/:id/image/:n/blob → one illustration's bytes
  *                                              (IDOR-404, nosniff, cookie
  *                                              auth) (F-211)
+ *   POST /reading/generated/:id/experience   → one-tap FULL experience
+ *                                              (F-216): attempt the F-210
+ *                                              narration enqueue AND the
+ *                                              F-211 illustration enqueue
+ *                                              together, each half
+ *                                              independently — a dormant or
+ *                                              capped half reports itself in
+ *                                              the payload (enqueueBlocked)
+ *                                              instead of failing the other
+ *                                              half; 202 while either half
+ *                                              works, 200 once both are
+ *                                              settled
  *   POST /reading/translate                  → Claude authors a natural-
  *                                              English translation of a
  *                                              selected Korean passage or
@@ -173,6 +189,16 @@
  *     posture; no Range — these are small static images). The job `error`
  *     shown to the client is always server-authored whitelisted copy
  *     (services/imageGen.ts), never provider response text.
+ *   - STORY EXPERIENCE (F-216): POST /generated/:id/experience is BOTH cost
+ *     surfaces in one tap → expensiveLimiter, and each half runs the SAME
+ *     shared enqueue gate its dedicated POST uses (enqueueStoryAudio /
+ *     enqueueStoryImages: capability gate, advisory-locked daily cap,
+ *     once-only idempotency) — combining them loosens nothing. The only new
+ *     behavior is ERROR SHAPE: a KNOWN refusal (dormant provider / daily
+ *     cap) degrades to that half's `enqueueBlocked` flag in the payload
+ *     instead of an HTTP error, so one refused half can never block the
+ *     other; unexpected errors still fail the route. IDOR: the story is
+ *     ownership-checked first (uniform 404) before either gate runs.
  *   - READING ATTEMPTS (F-172): POST /attempts is a plain, cheap DB write (no
  *     Claude call) — cheapLimiter, not expensiveLimiter. IDOR: the named
  *     chapter/story is looked up SCOPED to the caller in the same query that
@@ -727,6 +753,15 @@ router.post(
 );
 
 /**
+ * One asset's library aggregate (F-216) — the same closed status set the
+ * per-story envelopes use (StoryAudioDto.status / StoryImagesDto.status).
+ * The list resolves it in SQL with the builders' exact precedence: the done
+ * authority (the voiced set / the image rows) wins outright, else the latest
+ * job's in-flight/failed state, else 'none'.
+ */
+type AssetStatus = 'none' | 'pending' | 'running' | 'failed' | 'done';
+
+/**
  * GET /reading/generated — the user's generated-story library, newest first.
  * List items carry metadata only (no body_ko — a story body can be multi-KB
  * and the library screen never renders it); GET /generated/:id serves the
@@ -734,27 +769,87 @@ router.post(
  * (user_id, created_at DESC); LIMIT 200 bounds the payload (single-user app —
  * far beyond any realistic library size, and a paging param can come later
  * without breaking the shape).
+ *
+ * F-216: each row also carries audioStatus + imageStatus so the library can
+ * badge every story WITHOUT a per-story status call (no N+1 — one query).
+ * Two LEFT JOIN LATERAL probes resolve, per story, EXACTLY the status the
+ * per-story builders would: 'done' when the done authority exists (the
+ * voiced audio_sources set with its track-1 row / any story_images rows —
+ * so, as in the builders, a 'done' JOB whose artifacts are gone reads
+ * 'none', and a done authority beats any newer failed job), else the latest
+ * job's pending/running/failed, else 'none'. ttsConfigured/imageGenConfigured
+ * ride the envelope once (not per row) so the client can hide a dormant
+ * half's badges entirely.
  */
 router.get('/generated', cheapLimiter(), async (req, res, next) => {
   try {
     const userId = getUserId(req);
     // Metadata only — neither the multi-KB body nor the turns array rides
     // the list (GET /generated/:id serves both).
-    const { rows } = await query<Omit<GeneratedStoryRow, 'body_ko' | 'turns'>>(
-      `SELECT id::text AS id, title, level::text AS level, prompt, created_at
-         FROM generated_stories
-        WHERE user_id = $1
-        ORDER BY created_at DESC, id DESC
+    const { rows } = await query<
+      Omit<GeneratedStoryRow, 'body_ko' | 'turns'> & {
+        audio_status: AssetStatus;
+        image_status: AssetStatus;
+      }
+    >(
+      `SELECT g.id::text AS id, g.title, g.level::text AS level, g.prompt, g.created_at,
+              audio.status AS audio_status,
+              images.status AS image_status
+         FROM generated_stories g
+         LEFT JOIN LATERAL (
+           SELECT CASE
+                    WHEN EXISTS (
+                      SELECT 1
+                        FROM audio_sources s
+                        JOIN audio_tracks t ON t.source_id = s.id AND t.track_number = 1
+                       WHERE s.generated_story_id = g.id AND s.user_id = g.user_id
+                    ) THEN 'done'
+                    ELSE COALESCE(
+                      (SELECT CASE
+                                WHEN j.status IN ('pending', 'running', 'failed') THEN j.status
+                                ELSE 'none'
+                              END
+                         FROM story_audio_jobs j
+                        WHERE j.generated_story_id = g.id
+                        ORDER BY j.created_at DESC, j.id DESC
+                        LIMIT 1),
+                      'none')
+                  END AS status
+         ) audio ON true
+         LEFT JOIN LATERAL (
+           SELECT CASE
+                    WHEN EXISTS (
+                      SELECT 1 FROM story_images i
+                       WHERE i.generated_story_id = g.id AND i.user_id = g.user_id
+                    ) THEN 'done'
+                    ELSE COALESCE(
+                      (SELECT CASE
+                                WHEN j.status IN ('pending', 'running', 'failed') THEN j.status
+                                ELSE 'none'
+                              END
+                         FROM story_image_jobs j
+                        WHERE j.generated_story_id = g.id
+                        ORDER BY j.created_at DESC, j.id DESC
+                        LIMIT 1),
+                      'none')
+                  END AS status
+         ) images ON true
+        WHERE g.user_id = $1
+        ORDER BY g.created_at DESC, g.id DESC
         LIMIT 200`,
       [userId],
     );
     res.status(200).json({
+      ttsConfigured: isTtsConfigured(),
+      imageGenConfigured: isImageGenConfigured(),
       stories: rows.map((r) => ({
         id: Number(r.id),
         title: r.title,
         level: r.level,
         prompt: r.prompt,
         createdAt: r.created_at,
+        audioStatus: r.audio_status,
+        imageStatus: r.image_status,
       })),
     });
   } catch (err) {
@@ -993,8 +1088,108 @@ async function buildStoryAudioDto(storyId: number, userId: number): Promise<Stor
 }
 
 /**
+ * The shared narration-enqueue gate (F-210's transaction, factored out for
+ * F-216 — enqueueStoryImages' exact shape, provider-swapped back). Used by
+ * BOTH triggers — the on-demand POST below (which maps the outcome/errors
+ * onto HTTP) and the F-216 combined POST /generated/:id/experience (which
+ * degrades a known refusal to that half's `enqueueBlocked` flag). The
+ * check-then-insert runs inside ONE transaction under a per-user advisory
+ * xact lock so two concurrent requests serialize: they cannot both pass the
+ * cap, and they cannot both enqueue (belt: the lock; braces: 081's
+ * partial-unique live-job index). Caller has ALREADY ownership-checked the
+ * story.
+ *
+ * @returns 'done' (already voiced — the voiced set is a permanent cache),
+ *          'live' (a pending/running job exists), or 'enqueued'.
+ * @throws TtsUnavailableError on a keyless deploy (BEFORE the cap check and
+ *         any write — a guaranteed-to-fail job must never spend a daily-cap
+ *         slot; the keyless provider failing the job stays as
+ *         defense-in-depth for a key removed mid-flight).
+ * @throws StoryTtsDailyCapError over STORY_TTS_DAILY_CAP (BEFORE any write;
+ *         failed jobs count — the failure already spent quota, but a
+ *         `failed` job does NOT hold the live slot, so a retry enqueues).
+ */
+async function enqueueStoryAudio(
+  storyId: number,
+  userId: number,
+): Promise<'done' | 'live' | 'enqueued'> {
+  const cfg = loadConfig();
+  return withTransaction(async (client) => {
+    // Per-user advisory xact lock: two concurrent enqueues by one user
+    // would otherwise both read pre-spend cap totals under READ COMMITTED
+    // (audio.ts / uploadExtract.ts's exact reasoning). Released at
+    // commit/rollback. Cross-user requests never contend (per-user key),
+    // and cross-user same-story is impossible (stories are user-owned).
+    await client.query(
+      `SELECT pg_advisory_xact_lock(hashtextextended('story_tts_daily_cap:' || $1::text, 0))`,
+      [userId],
+    );
+
+    // 1. Voice-once cache hit: the story already has its audio set.
+    const voiced = await client.query(
+      `SELECT 1 FROM audio_sources WHERE generated_story_id = $1 LIMIT 1`,
+      [storyId],
+    );
+    if (voiced.rows.length > 0) return 'done' as const;
+
+    // 2. A live job already exists — return it rather than duplicating
+    //    (081's partial UNIQUE would reject the INSERT anyway; checking
+    //    first keeps the response a clean 202 instead of a mapped 23505).
+    const live = await client.query(
+      `SELECT 1 FROM story_audio_jobs
+        WHERE generated_story_id = $1 AND status IN ('pending', 'running')
+        LIMIT 1`,
+      [storyId],
+    );
+    if (live.rows.length > 0) return 'live' as const;
+
+    // 3. Capability gate — a keyless deploy (story TTS dormant) refuses
+    //    the enqueue HERE, after the read-only short-circuits (existing
+    //    audio still serves; an in-flight job still reports) but BEFORE
+    //    the cap check and the INSERT: a job that can only fail must
+    //    never spend a daily-cap slot. The keyless provider failing the
+    //    job stays as defense-in-depth for a key removed mid-flight.
+    if (!isTtsConfigured()) {
+      throw new TtsUnavailableError();
+    }
+
+    // 4. Daily cap — count of today's enqueues, ALL statuses (a failed
+    //    run spent quota too; 069/076's cost stance), BEFORE any write.
+    const cap = await client.query<{ n: string }>(
+      `SELECT count(*)::text AS n
+         FROM story_audio_jobs
+        WHERE user_id = $1
+          AND created_at >= date_trunc('day', now())`,
+      [userId],
+    );
+    const usedToday = Number(cap.rows[0]?.n ?? '0');
+    if (usedToday >= cfg.STORY_TTS_DAILY_CAP) {
+      throw new StoryTtsDailyCapError(cfg.STORY_TTS_DAILY_CAP, usedToday);
+    }
+
+    // 5. Enqueue. char_count is the cost snapshot at enqueue (081's ledger
+    //    contract) — body_ko is read here, at the single point that bills
+    //    it, and measured with the SAME JS string length the runner uses;
+    //    user_id is the session user, and the 081 composite FK would
+    //    reject any (story, user) mismatch anyway.
+    const story = await client.query<{ body_ko: string }>(
+      `SELECT body_ko FROM generated_stories WHERE id = $1 LIMIT 1`,
+      [storyId],
+    );
+    await client.query(
+      `INSERT INTO story_audio_jobs (generated_story_id, user_id, status, char_count)
+       VALUES ($1, $2, 'pending', $3)`,
+      [storyId, userId, story.rows[0]!.body_ko.length],
+    );
+    return 'enqueued' as const;
+  });
+}
+
+/**
  * POST /reading/generated/:id/audio — request TTS narration of an owned story
- * (F-210 v1: single narrator voice over body_ko).
+ * (F-210 v1: single narrator voice over body_ko). The gate itself lives in
+ * enqueueStoryAudio above (shared with the F-216 experience route); this
+ * route maps its outcome/errors onto HTTP.
  *
  * IDEMPOTENT, VOICE-ONCE, COST-BOUNDED:
  *   already voiced        → 200 { audio: done-envelope } (no new job — the
@@ -1008,13 +1203,6 @@ async function buildStoryAudioDto(storyId: number, userId: number): Promise<Stor
  *   else, under the cap   → enqueue 'pending' → 202 (the in-server runner
  *                           picks it up; the client polls the GET sibling)
  *   over STORY_TTS_DAILY_CAP → 429 rate_limited BEFORE any write
- *
- * The check-then-insert runs inside ONE transaction under a per-user
- * advisory xact lock (audio.ts's exact cap pattern), so two concurrent
- * requests serialize: they cannot both pass the cap, and they cannot both
- * enqueue (belt: the lock; braces: 081's partial-unique live-job index).
- * A `failed` job does NOT block a retry — the failure already spent today's
- * quota (its row still counts toward the cap), but the slot is free.
  */
 router.post(
   '/generated/:id/audio',
@@ -1026,87 +1214,29 @@ router.post(
       const { id } = (
         req as typeof req & { validatedParams: z.infer<typeof StoryParamsSchema> }
       ).validatedParams;
-      const cfg = loadConfig();
 
       // IDOR gate first: a missing id and another user's story are the same
-      // uniform 404 (mirrors GET /generated/:id). body_ko rides along for the
-      // char_count cost snapshot.
-      const storyRes = await query<{ body_ko: string }>(
-        `SELECT body_ko FROM generated_stories WHERE id = $1 AND user_id = $2 LIMIT 1`,
+      // uniform 404 (mirrors GET /generated/:id).
+      const owned = await query<{ id: string }>(
+        `SELECT id FROM generated_stories WHERE id = $1 AND user_id = $2 LIMIT 1`,
         [id, userId],
       );
-      const story = storyRes.rows[0];
-      if (story === undefined) {
+      if (owned.rows.length === 0) {
         throw new NotFoundError('story not found');
       }
 
-      const outcome = await withTransaction(async (client) => {
-        // Per-user advisory xact lock: two concurrent enqueues by one user
-        // would otherwise both read pre-spend cap totals under READ COMMITTED
-        // (audio.ts / uploadExtract.ts's exact reasoning). Released at
-        // commit/rollback. Cross-user requests never contend (per-user key),
-        // and cross-user same-story is impossible (stories are user-owned).
-        await client.query(
-          `SELECT pg_advisory_xact_lock(hashtextextended('story_tts_daily_cap:' || $1::text, 0))`,
-          [userId],
-        );
-
-        // 1. Voice-once cache hit: the story already has its audio set.
-        const voiced = await client.query(
-          `SELECT 1 FROM audio_sources WHERE generated_story_id = $1 LIMIT 1`,
-          [id],
-        );
-        if (voiced.rows.length > 0) return 'done' as const;
-
-        // 2. A live job already exists — return it rather than duplicating
-        //    (081's partial UNIQUE would reject the INSERT anyway; checking
-        //    first keeps the response a clean 202 instead of a mapped 23505).
-        const live = await client.query(
-          `SELECT 1 FROM story_audio_jobs
-            WHERE generated_story_id = $1 AND status IN ('pending', 'running')
-            LIMIT 1`,
-          [id],
-        );
-        if (live.rows.length > 0) return 'live' as const;
-
-        // 3. Capability gate — a keyless deploy (story TTS dormant) refuses
-        //    the enqueue HERE, after the read-only short-circuits (existing
-        //    audio still serves; an in-flight job still reports) but BEFORE
-        //    the cap check and the INSERT: a job that can only fail must
-        //    never spend a daily-cap slot. The keyless provider failing the
-        //    job stays as defense-in-depth for a key removed mid-flight.
-        if (!isTtsConfigured()) {
-          throw new TtsUnavailableError();
-        }
-
-        // 4. Daily cap — count of today's enqueues, ALL statuses (a failed
-        //    run spent quota too; 069/076's cost stance), BEFORE any write.
-        const cap = await client.query<{ n: string }>(
-          `SELECT count(*)::text AS n
-             FROM story_audio_jobs
-            WHERE user_id = $1
-              AND created_at >= date_trunc('day', now())`,
-          [userId],
-        );
-        const usedToday = Number(cap.rows[0]?.n ?? '0');
-        if (usedToday >= cfg.STORY_TTS_DAILY_CAP) {
+      let outcome: 'done' | 'live' | 'enqueued';
+      try {
+        outcome = await enqueueStoryAudio(id, userId);
+      } catch (err) {
+        if (err instanceof StoryTtsDailyCapError) {
           req.log.warn(
-            { userId, usedToday, cap: cfg.STORY_TTS_DAILY_CAP },
+            { userId, cap: loadConfig().STORY_TTS_DAILY_CAP },
             'storyAudio: daily cap hit — enqueue refused before any write',
           );
-          throw new StoryTtsDailyCapError(cfg.STORY_TTS_DAILY_CAP, usedToday);
         }
-
-        // 5. Enqueue. char_count is the cost snapshot at enqueue (081's
-        //    ledger contract); user_id is the session user, and the 081
-        //    composite FK would reject any (story, user) mismatch anyway.
-        await client.query(
-          `INSERT INTO story_audio_jobs (generated_story_id, user_id, status, char_count)
-           VALUES ($1, $2, 'pending', $3)`,
-          [id, userId, story.body_ko.length],
-        );
-        return 'enqueued' as const;
-      });
+        throw err;
+      }
 
       // One envelope for every outcome (the client renders off `status`
       // alone): 200 when the audio already exists, 202 while work is queued
@@ -1510,6 +1640,114 @@ router.get(
       res.setHeader('X-Content-Type-Options', 'nosniff');
       res.setHeader('Cache-Control', 'private, max-age=3600');
       res.status(200).send(buffer);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/* ---------- Story experience (F-216; the one-tap combined enqueue) ---------- */
+
+/**
+ * Why a half's enqueue was refused, surfaced PER HALF in the experience
+ * payload instead of as an HTTP error: 'dormant' (that provider is not
+ * configured on this deploy — the half's capability flag is false too) or
+ * 'daily_cap' (today's budget for that asset is spent). null = the half is
+ * fine (enqueued now, already live, or already done). Wrapper-only — the
+ * base StoryAudioDto/StoryImagesDto shapes are untouched.
+ */
+type EnqueueBlocked = 'dormant' | 'daily_cap' | null;
+
+/** True while an asset half still has work in flight — the experience
+ *  route's 202-vs-200 discriminator. */
+function isAssetWorking(status: StoryAudioDto['status']): boolean {
+  return status === 'pending' || status === 'running';
+}
+
+/**
+ * POST /reading/generated/:id/experience — one tap requests the story's FULL
+ * experience (F-216): narration (F-210) AND illustrations (F-211) together.
+ *
+ * Each half runs the SAME hardened gate its dedicated POST uses
+ * (enqueueStoryAudio / enqueueStoryImages: advisory-locked daily cap,
+ * capability gate, voice-/generate-once idempotency) — but INDEPENDENTLY: a
+ * dormant or capped half reports itself via `enqueueBlocked` on its own
+ * envelope and the OTHER half still enqueues. Unlike the dedicated POSTs,
+ * a KNOWN refusal here is never an HTTP error — with two halves there is no
+ * single honest status line, so refusals ride the payload; unexpected
+ * errors still fail the route.
+ *
+ * Both DTOs are built AFTER the attempts, so each half reflects the state
+ * this request produced (a fresh 'pending', the pre-existing 'done', or the
+ * untouched state behind a refusal). HTTP: 202 while EITHER half is
+ * pending/running, else 200 (both halves settled: done/none/failed).
+ * IDOR: the story is ownership-checked first — a missing or foreign id is a
+ * uniform 404, and a probe never reaches either enqueue gate.
+ */
+router.post(
+  '/generated/:id/experience',
+  expensiveLimiter(),
+  validateParams(StoryParamsSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const { id } = (
+        req as typeof req & { validatedParams: z.infer<typeof StoryParamsSchema> }
+      ).validatedParams;
+
+      // IDOR gate first: a missing id and another user's story are the same
+      // uniform 404 (mirrors GET /generated/:id).
+      const owned = await query<{ id: string }>(
+        `SELECT id FROM generated_stories WHERE id = $1 AND user_id = $2 LIMIT 1`,
+        [id, userId],
+      );
+      if (owned.rows.length === 0) {
+        throw new NotFoundError('story not found');
+      }
+
+      let audioBlocked: EnqueueBlocked = null;
+      try {
+        await enqueueStoryAudio(id, userId);
+      } catch (err) {
+        if (err instanceof TtsUnavailableError) {
+          audioBlocked = 'dormant';
+        } else if (err instanceof StoryTtsDailyCapError) {
+          audioBlocked = 'daily_cap';
+          req.log.warn(
+            { userId, cap: loadConfig().STORY_TTS_DAILY_CAP },
+            'storyAudio: daily cap hit — experience audio half refused',
+          );
+        } else {
+          throw err;
+        }
+      }
+
+      let imagesBlocked: EnqueueBlocked = null;
+      try {
+        await enqueueStoryImages(id, userId);
+      } catch (err) {
+        if (err instanceof ImageGenUnavailableError) {
+          imagesBlocked = 'dormant';
+        } else if (err instanceof StoryImageDailyCapError) {
+          imagesBlocked = 'daily_cap';
+          req.log.warn(
+            { userId, cap: loadConfig().STORY_IMAGE_DAILY_CAP },
+            'storyImage: daily cap hit — experience images half refused',
+          );
+        } else {
+          throw err;
+        }
+      }
+
+      const audio = await buildStoryAudioDto(id, userId);
+      const images = await buildStoryImagesDto(id, userId);
+      const working = isAssetWorking(audio.status) || isAssetWorking(images.status);
+      res.status(working ? 202 : 200).json({
+        experience: {
+          audio: { ...audio, enqueueBlocked: audioBlocked },
+          images: { ...images, enqueueBlocked: imagesBlocked },
+        },
+      });
     } catch (err) {
       next(err);
     }
