@@ -16,6 +16,11 @@
  *     then poll the status envelope until done/failed — plus
  *     `GET /reading/generated/audio`, the voiced-story list the Listen tab's
  *     "Generated Audio" section renders.
+ *   - Story illustrations (F-211; `story_image_jobs` + `story_images`):
+ *     `POST`/`GET /reading/generated/:id/images` — the same request/poll
+ *     envelope shape as F-210, with the byte-serve sibling
+ *     `GET /reading/generated/:id/image/:n/blob` consumed via `<img>`
+ *     through `buildStoryImageSrc` (services/ttmik.ts).
  *
  * Threat model:
  *   - Auth + session: every route is `requireAuth` server-side; the session
@@ -527,6 +532,114 @@ export async function listGeneratedAudio(
     signal !== undefined ? { signal } : undefined,
   );
   return res.stories;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Story illustrations (F-211 — story_image_jobs + story_images)
+// ─────────────────────────────────────────────────────────────
+
+/** Lifecycle of a story's AI illustrations — same state machine shape as
+ *  `StoryAudioStatus` (see routes/reading.ts's StoryImagesDto). */
+export type StoryImagesStatus =
+  | 'none'
+  | 'pending'
+  | 'running'
+  | 'failed'
+  | 'done';
+
+/**
+ * One scene illustration once a story is illustrated. `blobUrl` is the
+ * app-relative byte route (`/reading/generated/:id/image/:n/blob` —
+ * same-origin cookie auth, no Range) — resolve it through
+ * `buildStoryImageSrc` (services/ttmik.ts) before handing it to an `<img>`
+ * element, never raw. `prompt` is the English generation scaffolding, NOT
+ * user-facing copy — it must never render as visible text or alt text.
+ */
+export interface StoryImage {
+  imageNumber: number;
+  blobUrl: string;
+  prompt: string;
+  width: number;
+  height: number;
+}
+
+/**
+ * The story-images status envelope both F-211 routes return (already
+ * camelCase on the wire — no mapping needed).
+ *   - `none`              — never illustrated (an old/pre-F-211 story); the
+ *                           UI offers "Generate illustrations".
+ *   - `pending`/`running` — a job is in flight; poll the GET every ~2–3s.
+ *                           A NEWLY generated story auto-enqueues its batch
+ *                           when the server is configured, so a fresh story
+ *                           lands here with no click.
+ *   - `failed`            — `error` carries server-authored WHITELISTED copy
+ *                           (never raw upstream prose), sanctioned for
+ *                           verbatim display; a new POST retries.
+ *   - `done`              — `images` holds the 2–4 scene illustrations.
+ *
+ * `imageGenConfigured` — whether this server can generate images at all (a
+ * dormant deploy without the OpenAI key reports `false`, and the UI hides
+ * the illustration surface entirely rather than offering a button that can
+ * only 503). Typed optional and default-TRUE at the call sites — only an
+ * explicit `false` hides (the F-210 `ttsConfigured` posture).
+ */
+export interface StoryImagesEnvelope {
+  status: StoryImagesStatus;
+  jobId: number | null;
+  error: string | null;
+  images: StoryImage[];
+  imageGenConfigured?: boolean;
+}
+
+interface StoryImagesWire {
+  images: StoryImagesEnvelope;
+}
+
+/**
+ * POST /reading/generated/:id/images — request the 2–4 scene illustrations
+ * for an owned story (no body). Idempotent + illustrate-once server-side:
+ * 200 with a `done` envelope when the story is already illustrated (or a
+ * live job's envelope), 202 when a new job was queued — both resolve here;
+ * callers branch on `status` alone.
+ *
+ * Failure paths (all `ApiError`):
+ *   - 429 `rate_limited` with NO `retryAfter` — the per-user DAILY image
+ *     cap (a cost control): `message` is server-authored whitelisted copy
+ *     sanctioned for verbatim display (the F-210 daily-TTS-cap posture).
+ *   - 429 WITH `retryAfter` — the generic short-window limiter; use
+ *     `errorMessageFor`'s structured-seconds copy as usual.
+ *   - 503 — image generation unconfigured on this deploy (the UI should
+ *     never reach this: `imageGenConfigured:false` hides the affordance).
+ *   - 404 — missing/foreign story id (uniform IDOR posture); 400 — bad id.
+ *     All map to fixed copy at the call site, never echoed.
+ */
+export async function requestStoryImages(
+  id: number,
+  signal?: AbortSignal,
+): Promise<StoryImagesEnvelope> {
+  const res = await api.post<StoryImagesWire>(
+    `/reading/generated/${String(id)}/images`,
+    undefined,
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.images;
+}
+
+/**
+ * GET /reading/generated/:id/images — the story's current illustration
+ * state (always 200 for an owned story, whatever the status). The polling
+ * surface while a job is pending/running. 404s (as `ApiError`) for a
+ * missing or foreign story id.
+ */
+export async function getStoryImages(
+  id: number,
+  signal?: AbortSignal,
+): Promise<StoryImagesEnvelope> {
+  const res = await api.get<StoryImagesWire>(
+    `/reading/generated/${String(id)}/images`,
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.images;
 }
 
 // ─────────────────────────────────────────────────────────────

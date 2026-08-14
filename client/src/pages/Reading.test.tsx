@@ -47,6 +47,7 @@ import type {
   GeneratedStorySummary,
   ReadingPosition,
   StoryAudio,
+  StoryImagesEnvelope,
 } from '../services/reading';
 import type { BookUpload } from '../types/domain';
 
@@ -62,6 +63,8 @@ const readingSvc = vi.hoisted(() => ({
   logReadingAttempt: vi.fn(),
   requestStoryAudio: vi.fn(),
   getStoryAudio: vi.fn(),
+  requestStoryImages: vi.fn(),
+  getStoryImages: vi.fn(),
   // Module CONSTANT (not a spy): Reading.tsx maps over it to build the
   // level radiogroup, so the mock must export the real display order.
   GENERATED_STORY_LEVELS: ['L1', 'L2', 'L3', 'L4', 'L5+'] as const,
@@ -226,6 +229,121 @@ const AUDIO_NONE_UNCONFIGURED: StoryAudio = {
   ttsConfigured: false,
 };
 
+// ── F-211 story-images envelope fixtures ──
+
+const IMAGES_NONE: StoryImagesEnvelope = {
+  status: 'none',
+  jobId: null,
+  error: null,
+  images: [],
+  imageGenConfigured: true,
+};
+
+const IMAGES_PENDING: StoryImagesEnvelope = {
+  status: 'pending',
+  jobId: 31,
+  error: null,
+  images: [],
+  imageGenConfigured: true,
+};
+
+/** blobUrls match the REAL `buildStoryImageSrc` allow-list (services/ttmik
+ *  is deliberately NOT mocked — the src assertions cover the true resolver,
+ *  same stance as the F-210 audio tests; empty API base → app-relative
+ *  src). The `prompt` is English generation scaffolding and must NEVER
+ *  surface in the DOM (alt text stays a generic ordinal). */
+const IMAGES_DONE: StoryImagesEnvelope = {
+  status: 'done',
+  jobId: 31,
+  error: null,
+  images: [
+    {
+      imageNumber: 1,
+      blobUrl: '/reading/generated/7/image/1/blob',
+      prompt: 'SCAFFOLD-PROMPT-ONE: a boy on a beach, Korean webtoon style',
+      width: 1024,
+      height: 1024,
+    },
+    {
+      imageNumber: 2,
+      blobUrl: '/reading/generated/7/image/2/blob',
+      prompt: 'SCAFFOLD-PROMPT-TWO: wind over the sea, Korean webtoon style',
+      width: 1024,
+      height: 1024,
+    },
+    {
+      imageNumber: 3,
+      blobUrl: '/reading/generated/7/image/3/blob',
+      prompt: 'SCAFFOLD-PROMPT-THREE: dusk falling, Korean webtoon style',
+      width: 1024,
+      height: 1024,
+    },
+  ],
+  imageGenConfigured: true,
+};
+
+/** One valid blob among tampered company — the off-origin absolute URL and
+ *  the wrong-route path must BOTH die at the allow-list; only the valid
+ *  scene renders. */
+const IMAGES_DONE_TAMPERED: StoryImagesEnvelope = {
+  ...IMAGES_DONE,
+  images: [
+    {
+      imageNumber: 1,
+      blobUrl: 'https://evil.example/tracker.png',
+      prompt: 'p1',
+      width: 1024,
+      height: 1024,
+    },
+    {
+      imageNumber: 2,
+      blobUrl: '/reading/generated/7/image/2/blob',
+      prompt: 'p2',
+      width: 1024,
+      height: 1024,
+    },
+    {
+      imageNumber: 3,
+      blobUrl: '/uploads/9/file',
+      prompt: 'p3',
+      width: 1024,
+      height: 1024,
+    },
+  ],
+};
+
+const IMAGES_FAILED: StoryImagesEnvelope = {
+  status: 'failed',
+  jobId: 31,
+  error: 'The image service is unavailable right now. Try again later.',
+  images: [],
+  imageGenConfigured: true,
+};
+
+/** Dormant deploy: no OpenAI image key — the client renders NO illustration
+ *  UI at all (absence, not a dead affordance), even for a done envelope. */
+const IMAGES_NONE_UNCONFIGURED: StoryImagesEnvelope = {
+  status: 'none',
+  jobId: null,
+  error: null,
+  images: [],
+  imageGenConfigured: false,
+};
+
+const IMAGES_DONE_UNCONFIGURED: StoryImagesEnvelope = {
+  ...IMAGES_DONE,
+  imageGenConfigured: false,
+};
+
+/** Flag omitted entirely (defensive forward-compat) — only an EXPLICIT
+ *  false hides the surface. */
+const IMAGES_NONE_NO_FLAG: StoryImagesEnvelope = {
+  status: 'none',
+  jobId: null,
+  error: null,
+  images: [],
+};
+
 beforeEach(() => {
   readingSvc.listChapters.mockReset();
   readingSvc.getChapter.mockReset();
@@ -238,6 +356,8 @@ beforeEach(() => {
   readingSvc.logReadingAttempt.mockReset();
   readingSvc.requestStoryAudio.mockReset();
   readingSvc.getStoryAudio.mockReset();
+  readingSvc.requestStoryImages.mockReset();
+  readingSvc.getStoryImages.mockReset();
   uploadsSvc.listUploads.mockReset();
   uploadsSvc.getUpload.mockReset();
   tapSvc.lemmatize.mockReset();
@@ -257,6 +377,9 @@ beforeEach(() => {
   // never-voiced envelope so pre-F-210 story tests see the same reader body
   // they always did (plus an inert "Generate audio" card).
   readingSvc.getStoryAudio.mockResolvedValue(AUDIO_NONE);
+  // F-211: same posture for the illustration hydrate — never-illustrated,
+  // configured (an inert "Generate illustrations" button; no polling).
+  readingSvc.getStoryImages.mockResolvedValue(IMAGES_NONE);
 });
 
 function renderReading(): ReturnType<typeof render> {
@@ -1982,6 +2105,370 @@ describe('Reading — story TTS audio (F-210)', () => {
 
     expect(
       await screen.findByRole('button', { name: /Generate audio/ }),
+    ).toBeInTheDocument();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// F-211 — story illustrations (request / poll / gallery)
+// ─────────────────────────────────────────────────────────────
+
+describe('Reading — story illustrations (F-211)', () => {
+  /** Deep-link straight into the story reader (`?story=7`) — the
+   *  illustration surface is a story-reader concern. */
+  function renderStory(): ReturnType<typeof render> {
+    readingSvc.getGeneratedStory.mockResolvedValue(STORY_FULL);
+    return render(
+      <MemoryRouter initialEntries={['/learn/reading?story=7']}>
+        <ToastProvider>
+          <Reading />
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  /** Fake-timer helper (the F-210 GOTCHA applies unchanged: `userEvent`
+   *  deadlocks against `vi.useFakeTimers()` in happy-dom, so every polling
+   *  test uses `fireEvent` + `advanceTimersByTimeAsync`). */
+  async function flushAsync(ms = 0): Promise<void> {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  const galleryImgs = (container: HTMLElement): HTMLImageElement[] =>
+    Array.from(
+      container.querySelectorAll<HTMLImageElement>(
+        '.km-reading__images-item img',
+      ),
+    );
+
+  it('an already-illustrated story shows the gallery on mount — allow-listed srcs, lazy, generic alt, no POST', async () => {
+    readingSvc.getStoryImages.mockResolvedValue(IMAGES_DONE);
+
+    const { container } = renderStory();
+
+    await waitFor(() => {
+      expect(galleryImgs(container)).toHaveLength(3);
+    });
+    const imgs = galleryImgs(container);
+    // The REAL buildStoryImageSrc resolved each wire blobUrl (empty API
+    // base → app-relative src through the allow-list), in ordinal order.
+    expect(imgs.map((img) => img.getAttribute('src'))).toEqual([
+      '/reading/generated/7/image/1/blob',
+      '/reading/generated/7/image/2/blob',
+      '/reading/generated/7/image/3/blob',
+    ]);
+    // Generic ordinal alt + lazy loading + reserved dimensions on every one.
+    imgs.forEach((img, i) => {
+      expect(img).toHaveAttribute('alt', `Story illustration ${String(i + 1)}`);
+      expect(img).toHaveAttribute('loading', 'lazy');
+      expect(img).toHaveAttribute('width', '1024');
+      expect(img).toHaveAttribute('height', '1024');
+    });
+    // The English generation scaffolding must never reach the DOM.
+    expect(container.innerHTML).not.toContain('SCAFFOLD-PROMPT');
+    // Already done → no affordance, no on-demand POST.
+    expect(
+      screen.queryByRole('button', { name: /Generate illustrations/ }),
+    ).not.toBeInTheDocument();
+    expect(readingSvc.requestStoryImages).not.toHaveBeenCalled();
+  });
+
+  it('a tampered/off-origin blobUrl dies at the allow-list — only the valid scene renders an <img>', async () => {
+    readingSvc.getStoryImages.mockResolvedValue(IMAGES_DONE_TAMPERED);
+
+    const { container } = renderStory();
+
+    // The valid middle image survives…
+    await waitFor(() => {
+      expect(galleryImgs(container)).toHaveLength(1);
+    });
+    expect(galleryImgs(container)[0]).toHaveAttribute(
+      'src',
+      '/reading/generated/7/image/2/blob',
+    );
+    // …and the tampered values appear NOWHERE in the DOM.
+    expect(container.innerHTML).not.toContain('evil.example');
+    expect(container.innerHTML).not.toContain('/uploads/9/file');
+  });
+
+  it('imageGenConfigured:false renders NO illustration UI at all — even for a done envelope', async () => {
+    readingSvc.getStoryImages.mockResolvedValue(IMAGES_DONE_UNCONFIGURED);
+
+    const { container, unmount } = renderStory();
+
+    // The reader body renders as usual…
+    expect(
+      await screen.findByRole('button', { name: /Mark story as finished/i }),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(readingSvc.getStoryImages).toHaveBeenCalledTimes(1);
+    });
+    await act(async () => {}); // flush the envelope's setState
+    // …and the ENTIRE surface is absent: no gallery, no imgs, no button.
+    expect(container.querySelector('.km-reading__images')).toBeNull();
+    expect(galleryImgs(container)).toHaveLength(0);
+    expect(
+      screen.queryByRole('button', { name: /Generate illustrations/ }),
+    ).not.toBeInTheDocument();
+
+    // Same dormancy for a 'none' envelope: no dead affordance.
+    unmount();
+    readingSvc.getStoryImages.mockResolvedValue(IMAGES_NONE_UNCONFIGURED);
+    const second = renderStory();
+    expect(
+      await second.findByRole('button', { name: /Mark story as finished/i }),
+    ).toBeInTheDocument();
+    await act(async () => {});
+    expect(second.container.querySelector('.km-reading__images')).toBeNull();
+    expect(
+      second.queryByRole('button', { name: /Generate illustrations/ }),
+    ).not.toBeInTheDocument();
+    expect(second.container.querySelector('.km-reading__images-request')).toBeNull();
+  });
+
+  it('a MISSING imageGenConfigured flag keeps the button — forward-compat default-true', async () => {
+    readingSvc.getStoryImages.mockResolvedValue(IMAGES_NONE_NO_FLAG);
+
+    renderStory();
+
+    expect(
+      await screen.findByRole('button', { name: /Generate illustrations/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('request → 202 → ~2.5s polling → done renders the gallery, then polling STOPS (fake timers)', async () => {
+    vi.useFakeTimers();
+    readingSvc.getStoryImages
+      .mockResolvedValueOnce(IMAGES_NONE) // mount hydrate
+      .mockResolvedValueOnce(IMAGES_PENDING) // poll tick 1
+      .mockResolvedValue(IMAGES_DONE); // poll tick 2+
+    readingSvc.requestStoryImages.mockResolvedValue(IMAGES_PENDING);
+
+    const { container } = renderStory();
+    await flushAsync();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /Generate illustrations/ }),
+    );
+    await flushAsync();
+    expect(readingSvc.requestStoryImages).toHaveBeenCalledTimes(1);
+    expect(readingSvc.requestStoryImages.mock.calls[0][0]).toBe(7);
+    // 202 landed a pending envelope → the busy status replaces the button.
+    expect(screen.getByText(/Illustrating/)).toBeInTheDocument();
+    expect(screen.getByRole('status')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /Generate illustrations/ }),
+    ).not.toBeInTheDocument();
+
+    // Tick 1 (2.5s): still pending — busy stays, poll count grows.
+    await flushAsync(2500);
+    expect(readingSvc.getStoryImages).toHaveBeenCalledTimes(2);
+    expect(screen.getByText(/Illustrating/)).toBeInTheDocument();
+
+    // Tick 2 (2.5s): done — the gallery mounts with resolved srcs.
+    await flushAsync(2500);
+    expect(galleryImgs(container)).toHaveLength(3);
+    expect(galleryImgs(container)[0]).toHaveAttribute(
+      'src',
+      '/reading/generated/7/image/1/blob',
+    );
+
+    // Settled → the poll stopped itself; no further status fetches.
+    await flushAsync(12_500);
+    expect(readingSvc.getStoryImages).toHaveBeenCalledTimes(3);
+    vi.useRealTimers();
+  });
+
+  it('a fresh batch-at-create story resumes polling on mount, and unmount clears the interval — no late fetch', async () => {
+    vi.useFakeTimers();
+    readingSvc.getStoryImages.mockResolvedValue(IMAGES_PENDING);
+
+    const { unmount } = renderStory();
+    await flushAsync();
+    // Hydrate found the auto-enqueued batch job — polling engages with no
+    // click, behind the "Illustrating…" status.
+    expect(readingSvc.getStoryImages).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/Illustrating/)).toBeInTheDocument();
+
+    await flushAsync(2500);
+    expect(readingSvc.getStoryImages).toHaveBeenCalledTimes(2);
+
+    unmount();
+    await flushAsync(12_500);
+    expect(readingSvc.getStoryImages).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
+  it('a failed envelope shows the server-authored error VERBATIM and "Try again" re-POSTs', async () => {
+    readingSvc.getStoryImages.mockResolvedValue(IMAGES_FAILED);
+    readingSvc.requestStoryImages.mockResolvedValue(IMAGES_PENDING);
+
+    const user = userEvent.setup();
+    renderStory();
+
+    const alert = await screen.findByRole('alert');
+    // Server-authored whitelisted copy, shown untouched (the F-210
+    // sanctioned exception, extended to F-211).
+    expect(alert).toHaveTextContent(
+      'The image service is unavailable right now. Try again later.',
+    );
+
+    await user.click(screen.getByRole('button', { name: /Try again/ }));
+    await waitFor(() => {
+      expect(readingSvc.requestStoryImages).toHaveBeenCalledWith(
+        7,
+        expect.any(AbortSignal),
+      );
+    });
+    // The 202 pending envelope flips the surface to the busy state.
+    expect(await screen.findByText(/Illustrating/)).toBeInTheDocument();
+  });
+
+  it('the daily-cap 429 (no retryAfter) shows the server message verbatim and keeps the button', async () => {
+    readingSvc.requestStoryImages.mockRejectedValue(
+      new ApiError(
+        'daily story-image limit reached: 2 of 2 batches used today. Try again tomorrow.',
+        { status: 429, code: 'rate_limited' },
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderStory();
+
+    await user.click(
+      await screen.findByRole('button', { name: /Generate illustrations/ }),
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(
+      'daily story-image limit reached: 2 of 2 batches used today. Try again tomorrow.',
+    );
+    // Not a terminal state: the button stays available (the cap resets
+    // tomorrow) and is not stuck busy.
+    const button = screen.getByRole('button', {
+      name: /Generate illustrations/,
+    });
+    expect(button).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('a short-window 429 (structured retryAfter) uses the fixed rate-limit copy — server prose never leaks', async () => {
+    readingSvc.requestStoryImages.mockRejectedValue(
+      new ApiError('upstream prose that must never reach the DOM', {
+        status: 429,
+        code: 'rate_limited',
+        retryAfter: 30,
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderStory();
+
+    await user.click(
+      await screen.findByRole('button', { name: /Generate illustrations/ }),
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/try again in about 30 seconds/i);
+    expect(alert).not.toHaveTextContent(/upstream prose/);
+  });
+
+  it('a per-image load error hides JUST that image — no broken-image frame, siblings untouched', async () => {
+    readingSvc.getStoryImages.mockResolvedValue(IMAGES_DONE);
+
+    const { container } = renderStory();
+    await waitFor(() => {
+      expect(galleryImgs(container)).toHaveLength(3);
+    });
+
+    // The first scene's bytes fail (deleted blob / decode error).
+    fireEvent.error(galleryImgs(container)[0]!);
+
+    await waitFor(() => {
+      expect(galleryImgs(container)).toHaveLength(2);
+    });
+    // The survivors keep their own srcs — absence, not reshuffling.
+    expect(galleryImgs(container).map((img) => img.getAttribute('src'))).toEqual([
+      '/reading/generated/7/image/2/blob',
+      '/reading/generated/7/image/3/blob',
+    ]);
+    // A load failure is cosmetic degradation, not an announced error.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('a never-settling job stops polling at the 120-tick ceiling — no unbounded fetch churn', async () => {
+    vi.useFakeTimers();
+    // Every status probe answers pending, forever (a stuck job).
+    readingSvc.getStoryImages.mockResolvedValue(IMAGES_PENDING);
+
+    renderStory();
+    await flushAsync();
+    expect(readingSvc.getStoryImages).toHaveBeenCalledTimes(1); // mount hydrate
+
+    // 302.5s ≈ 121 interval fires: ticks 1..120 each fetch; fire 121
+    // crosses the ceiling and clears the interval WITHOUT fetching.
+    await flushAsync(302_500);
+    expect(readingSvc.getStoryImages).toHaveBeenCalledTimes(121); // hydrate + 120
+
+    // Frozen: more time buys no more fetches.
+    await flushAsync(25_000);
+    expect(readingSvc.getStoryImages).toHaveBeenCalledTimes(121);
+    // The last known status stays on screen (bounded churn, honest UI).
+    expect(screen.getByText(/Illustrating/)).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it('does not disturb the F-210 audio card or the story body — gallery, player, and passages coexist', async () => {
+    readingSvc.getStoryImages.mockResolvedValue(IMAGES_DONE);
+    readingSvc.getStoryAudio.mockResolvedValue(AUDIO_DONE);
+
+    const { container } = renderStory();
+
+    // Gallery AND the real audio player, side by side.
+    await waitFor(() => {
+      expect(galleryImgs(container)).toHaveLength(3);
+    });
+    await waitFor(() => {
+      expect(container.querySelector('audio')).not.toBeNull();
+    });
+    expect(container.querySelector('audio')).toHaveAttribute(
+      'src',
+      '/audio/tracks/9/stream',
+    );
+    // The voiced read-along body (and its tap/translate affordances) stands.
+    expect(
+      container.querySelectorAll('.km-reading__readalong-line'),
+    ).toHaveLength(2);
+    expect(
+      screen.getByRole('button', { name: 'Translate sentence 1' }),
+    ).toBeInTheDocument();
+    // And the F-172 completion affordance survives below everything.
+    expect(
+      screen.getByRole('button', { name: /Mark story as finished/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('with no audio voiced, the plain paragraph body + "Generate audio" button render alongside the gallery (regression pin)', async () => {
+    readingSvc.getStoryImages.mockResolvedValue(IMAGES_DONE);
+    // AUDIO_NONE default from beforeEach — stated here for clarity.
+    readingSvc.getStoryAudio.mockResolvedValue(AUDIO_NONE);
+
+    const { container } = renderStory();
+
+    await waitFor(() => {
+      expect(galleryImgs(container)).toHaveLength(3);
+    });
+    // The pre-F-211 story surface is untouched: paragraphs, translate,
+    // audio affordance.
+    expect(
+      screen.getByRole('button', { name: 'Translate paragraph 1' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Translate paragraph 2' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /Generate audio/ }),
     ).toBeInTheDocument();
   });
 });

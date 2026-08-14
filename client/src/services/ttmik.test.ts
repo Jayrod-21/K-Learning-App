@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildAudioSrc,
+  buildStoryImageSrc,
   getIyagiEpisode,
   getIyagiEpisodes,
   getTtmikLesson,
@@ -239,5 +240,62 @@ describe('buildAudioSrc', () => {
     expect(buildAudioSrc('https://evil.example/topik/audio/60/2', '')).toBeNull();
     expect(buildAudioSrc('/\\evil.example/topik/audio/60/2', '')).toBeNull();
     expect(buildAudioSrc('/topik/audio/60/2\n', '')).toBeNull();
+  });
+});
+
+// F-211 — story-illustration blobs get their own strict resolver.
+describe('buildStoryImageSrc', () => {
+  it('returns the app-relative path verbatim on an empty base (prod same-origin)', () => {
+    expect(buildStoryImageSrc('/reading/generated/7/image/1/blob', '')).toBe(
+      '/reading/generated/7/image/1/blob',
+    );
+  });
+
+  it('prefixes the API base when one is configured (dev split-origin)', () => {
+    expect(
+      buildStoryImageSrc(
+        '/reading/generated/123/image/4/blob',
+        'http://localhost:4000',
+      ),
+    ).toBe('http://localhost:4000/reading/generated/123/image/4/blob');
+  });
+
+  it('rejects a non-app-relative blobUrl (absolute / protocol-relative / normalization bypass)', () => {
+    expect(buildStoryImageSrc('https://evil.example/x.png', '')).toBeNull();
+    expect(buildStoryImageSrc('//evil.example/x.png', '')).toBeNull();
+    expect(buildStoryImageSrc('evil.example/x.png', '')).toBeNull();
+    // The F-012 R3 family: leading backslash / embedded whitespace
+    // normalizes to `//` in the browser's URL parser.
+    expect(
+      buildStoryImageSrc('/\\evil.example/reading/generated/7/image/1/blob', ''),
+    ).toBeNull();
+    expect(
+      buildStoryImageSrc('/\tevil.example/image/1/blob', ''),
+    ).toBeNull();
+    expect(
+      buildStoryImageSrc('/\nevil.example/image/1/blob', ''),
+    ).toBeNull();
+  });
+
+  it('rejects near-misses of the blob shape (the anchor holds)', () => {
+    // Trailing junk / a lookalike suffix / query smuggling.
+    expect(buildStoryImageSrc('/reading/generated/7/image/1/blobx', '')).toBeNull();
+    expect(buildStoryImageSrc('/reading/generated/7/image/1/blob/', '')).toBeNull();
+    expect(buildStoryImageSrc('/reading/generated/7/image/1/blob?x=1', '')).toBeNull();
+    // Traversal past the anchored tail.
+    expect(
+      buildStoryImageSrc('/reading/generated/7/image/1/blob/../x', ''),
+    ).toBeNull();
+    // Non-numeric / missing ids.
+    expect(buildStoryImageSrc('/reading/generated/x/image/1/blob', '')).toBeNull();
+    expect(buildStoryImageSrc('/reading/generated/7/image//blob', '')).toBeNull();
+    expect(buildStoryImageSrc('/reading/generated/7/image/blob', '')).toBeNull();
+    // A different (even legitimate) route family is NOT an image blob.
+    expect(buildStoryImageSrc('/reading/generated/7/images', '')).toBeNull();
+    expect(buildStoryImageSrc('/audio/tracks/1/stream', '')).toBeNull();
+    // Whitespace near-misses (the unflagged `$` must not tolerate a
+    // trailing newline).
+    expect(buildStoryImageSrc('/reading/generated/7/image/1/blob\n', '')).toBeNull();
+    expect(buildStoryImageSrc('/reading/generated/7/image/1/blob ', '')).toBeNull();
   });
 });

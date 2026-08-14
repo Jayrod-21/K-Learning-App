@@ -130,6 +130,38 @@ export function buildAudioSrc(
   return base === '' ? audioUrl : `${base}${audioUrl}`;
 }
 
+/**
+ * The ONLY app-relative shape the server emits for a story-illustration
+ * blob (F-211 — routes/reading.ts `GET /reading/generated/:id/image/:n/blob`,
+ * the byte-serve sibling of the images-status envelope). Same anchored
+ * digits-and-literals stance as {@link buildAudioSrc}'s allow-list — a
+ * prefix heuristic is bypassable via backslash/whitespace normalization,
+ * an exact shape is not.
+ */
+const STORY_IMAGE_URL_ALLOW = /^\/reading\/generated\/\d+\/image\/\d+\/blob$/;
+
+/**
+ * Resolve a story-images envelope's `blobUrl` into an `<img src>` (F-211).
+ *
+ * The `<img>` element cannot use axios; this joins the SAME API base the
+ * axios instance uses (`getApiBaseUrl()`), so the cookie-auth blob route
+ * works in dev (Vite on :5173, API on :4000 — same-site) and in prod
+ * (empty base → same-origin relative path through the LB).
+ *
+ * Returns `null` for any value that does not match the strict allow-list —
+ * a tampered response body cannot steer the image element to an attacker
+ * origin; the caller simply renders no `<img>` for a rejected value.
+ *
+ * `base` is injectable for tests; production callers use the default.
+ */
+export function buildStoryImageSrc(
+  blobUrl: string,
+  base: string = getApiBaseUrl(),
+): string | null {
+  if (!STORY_IMAGE_URL_ALLOW.test(blobUrl)) return null;
+  return base === '' ? blobUrl : `${base}${blobUrl}`;
+}
+
 // ─────────────────────────────────────────────────────────────
 // Listening attempts (F-172 — listening_attempts, migration 061)
 // ─────────────────────────────────────────────────────────────
