@@ -65,6 +65,7 @@ const readingSvc = vi.hoisted(() => ({
   getStoryAudio: vi.fn(),
   requestStoryImages: vi.fn(),
   getStoryImages: vi.fn(),
+  requestStoryExperience: vi.fn(),
   // Module CONSTANT (not a spy): Reading.tsx maps over it to build the
   // level radiogroup, so the mock must export the real display order.
   GENERATED_STORY_LEVELS: ['L1', 'L2', 'L3', 'L4', 'L5+'] as const,
@@ -166,10 +167,19 @@ const STORY_SUMMARY: GeneratedStorySummary = {
   level: 'L3',
   prompt: null,
   createdAt: '2026-07-08T12:00:00Z',
+  // F-216 — aggregate asset statuses ride every list row.
+  audioStatus: 'none',
+  imageStatus: 'none',
 };
 
+// The single-story DTO carries NO aggregate statuses (list-only fields) —
+// strip them rather than spread them through, mirroring the wire exactly.
 const STORY_FULL: GeneratedStory = {
-  ...STORY_SUMMARY,
+  id: STORY_SUMMARY.id,
+  title: STORY_SUMMARY.title,
+  level: STORY_SUMMARY.level,
+  prompt: STORY_SUMMARY.prompt,
+  createdAt: STORY_SUMMARY.createdAt,
   bodyKo: '소년은 바닷가를 걸었다.\n\n바람이 불었다.',
 };
 
@@ -358,6 +368,7 @@ beforeEach(() => {
   readingSvc.getStoryAudio.mockReset();
   readingSvc.requestStoryImages.mockReset();
   readingSvc.getStoryImages.mockReset();
+  readingSvc.requestStoryExperience.mockReset();
   uploadsSvc.listUploads.mockReset();
   uploadsSvc.getUpload.mockReset();
   tapSvc.lemmatize.mockReset();
@@ -372,7 +383,9 @@ beforeEach(() => {
   uploadsSvc.getUpload.mockResolvedValue(LITERATURE_READY);
   readingSvc.getReadingPosition.mockResolvedValue(null);
   readingSvc.saveReadingPosition.mockResolvedValue(SAVED_POSITION);
-  readingSvc.listGeneratedStories.mockResolvedValue([]);
+  // F-216: the list resolves the library ENVELOPE (rows + capability
+  // flags); flags omitted here on purpose — default-shown forward-compat.
+  readingSvc.listGeneratedStories.mockResolvedValue({ stories: [] });
   // F-210: the story reader hydrates audio status on mount — default to the
   // never-voiced envelope so pre-F-210 story tests see the same reader body
   // they always did (plus an inert "Generate audio" card).
@@ -1336,7 +1349,9 @@ describe('Reading — AI stories (F-068)', () => {
   }
 
   it('lists the generated-story library and opens a story as tappable text', async () => {
-    readingSvc.listGeneratedStories.mockResolvedValue([STORY_SUMMARY]);
+    readingSvc.listGeneratedStories.mockResolvedValue({
+      stories: [STORY_SUMMARY],
+    });
     readingSvc.getGeneratedStory.mockResolvedValue(STORY_FULL);
 
     const user = userEvent.setup();
@@ -1494,7 +1509,7 @@ describe('Reading — AI stories (F-068)', () => {
       .mockRejectedValueOnce(
         new ApiError('boom', { status: 500, code: 'server_error' }),
       )
-      .mockResolvedValueOnce([STORY_SUMMARY]);
+      .mockResolvedValueOnce({ stories: [STORY_SUMMARY] });
 
     const user = userEvent.setup();
     renderReading();
@@ -1514,7 +1529,9 @@ describe('Reading — AI stories (F-068)', () => {
 
 describe('Reading — mark story as finished (F-172)', () => {
   async function openStory(user: ReturnType<typeof userEvent.setup>): Promise<void> {
-    readingSvc.listGeneratedStories.mockResolvedValue([STORY_SUMMARY]);
+    readingSvc.listGeneratedStories.mockResolvedValue({
+      stories: [STORY_SUMMARY],
+    });
     readingSvc.getGeneratedStory.mockResolvedValue(STORY_FULL);
     await user.click(await screen.findByRole('tab', { name: /AI stories/ }));
     await user.click(
@@ -1714,7 +1731,9 @@ describe('Reading — Seoul Day & Night reskin (F-128/F-129/F-131)', () => {
   });
 
   it('renders the story reader passage card with the same accent CityCard treatment as the chapter reader', async () => {
-    readingSvc.listGeneratedStories.mockResolvedValue([STORY_SUMMARY]);
+    readingSvc.listGeneratedStories.mockResolvedValue({
+      stories: [STORY_SUMMARY],
+    });
     readingSvc.getGeneratedStory.mockResolvedValue(STORY_FULL);
 
     const user = userEvent.setup();
@@ -2470,5 +2489,377 @@ describe('Reading — story illustrations (F-211)', () => {
     expect(
       screen.getByRole('button', { name: /Generate audio/ }),
     ).toBeInTheDocument();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// F-216 — unified story experience (library badges + one-tap button)
+// ─────────────────────────────────────────────────────────────
+
+describe('Reading — unified story experience (F-216)', () => {
+  /** Deep-link straight into the story reader (`?story=7`) — the combined
+   *  button is a story-reader concern (the F-210/F-211 helper, verbatim). */
+  function renderStory(): ReturnType<typeof render> {
+    readingSvc.getGeneratedStory.mockResolvedValue(STORY_FULL);
+    return render(
+      <MemoryRouter initialEntries={['/learn/reading?story=7']}>
+        <ToastProvider>
+          <Reading />
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  /** Fake-timer helper (the F-210 GOTCHA applies unchanged: `userEvent`
+   *  deadlocks against `vi.useFakeTimers()` in happy-dom, so polling tests
+   *  use `fireEvent` + `advanceTimersByTimeAsync`). */
+  async function flushAsync(ms = 0): Promise<void> {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  /** Open the stories tab from the root (library-badge tests). */
+  async function openStoriesTab(
+    user: ReturnType<typeof userEvent.setup>,
+  ): Promise<void> {
+    await user.click(await screen.findByRole('tab', { name: /AI stories/ }));
+  }
+
+  // Three rows spanning every pip color: done=moss, pending|running=ochre,
+  // failed=danger, none=muted.
+  const ROW_A: GeneratedStorySummary = {
+    ...STORY_SUMMARY,
+    audioStatus: 'done',
+    imageStatus: 'failed',
+  };
+  const ROW_B: GeneratedStorySummary = {
+    ...STORY_SUMMARY,
+    id: 8,
+    title: '겨울 산책',
+    audioStatus: 'running',
+    imageStatus: 'none',
+  };
+  const ROW_C: GeneratedStorySummary = {
+    ...STORY_SUMMARY,
+    id: 9,
+    title: '눈 오는 밤',
+    audioStatus: 'pending',
+    imageStatus: 'done',
+  };
+
+  it('renders per-row audio + image pips inside the row button, colored by aggregate status, with plain-language labels', async () => {
+    readingSvc.listGeneratedStories.mockResolvedValue({
+      stories: [ROW_A, ROW_B, ROW_C],
+      ttsConfigured: true,
+      imageGenConfigured: true,
+    });
+
+    const user = userEvent.setup();
+    renderReading();
+    await openStoriesTab(user);
+
+    // The pips live INSIDE each row's open button — the existing
+    // title/level/date layout (and the button's aria-label) is untouched.
+    const rowA = await screen.findByRole('button', {
+      name: /Open 바닷가 마을/,
+    });
+    const rowB = screen.getByRole('button', { name: /Open 겨울 산책/ });
+    const rowC = screen.getByRole('button', { name: /Open 눈 오는 밤/ });
+
+    const pip = (row: HTMLElement, label: string): HTMLElement =>
+      within(row).getByLabelText(label);
+
+    // done → moss (green), failed → danger (red).
+    expect(pip(rowA, 'audio: done').getAttribute('style')).toContain(
+      'var(--moss)',
+    );
+    expect(pip(rowA, 'image: failed').getAttribute('style')).toContain(
+      'var(--danger)',
+    );
+    // running AND pending → ochre-ink (amber); none → paper-mute (muted).
+    expect(pip(rowB, 'audio: running').getAttribute('style')).toContain(
+      'var(--ochre-ink)',
+    );
+    expect(pip(rowB, 'image: none').getAttribute('style')).toContain(
+      'var(--paper-mute)',
+    );
+    expect(pip(rowC, 'audio: pending').getAttribute('style')).toContain(
+      'var(--ochre-ink)',
+    );
+    expect(pip(rowC, 'image: done').getAttribute('style')).toContain(
+      'var(--moss)',
+    );
+    // Level pill and date survive alongside the pips.
+    expect(within(rowA).getByText('L3')).toBeInTheDocument();
+    expect(within(rowA).getByText('Jul 8')).toBeInTheDocument();
+  });
+
+  it('ttsConfigured:false hides every audio pip; imageGenConfigured:false hides every image pip', async () => {
+    readingSvc.listGeneratedStories.mockResolvedValue({
+      stories: [ROW_A],
+      ttsConfigured: false,
+      imageGenConfigured: true,
+    });
+
+    const user = userEvent.setup();
+    const first = renderReading();
+    await openStoriesTab(user);
+
+    const rowA = await screen.findByRole('button', {
+      name: /Open 바닷가 마을/,
+    });
+    expect(within(rowA).queryByLabelText(/^audio:/)).not.toBeInTheDocument();
+    expect(within(rowA).getByLabelText('image: failed')).toBeInTheDocument();
+
+    // Mirror: the image capability dormant instead.
+    first.unmount();
+    readingSvc.listGeneratedStories.mockResolvedValue({
+      stories: [ROW_A],
+      ttsConfigured: true,
+      imageGenConfigured: false,
+    });
+    renderReading();
+    await openStoriesTab(user);
+    const rowA2 = await screen.findByRole('button', {
+      name: /Open 바닷가 마을/,
+    });
+    expect(within(rowA2).getByLabelText('audio: done')).toBeInTheDocument();
+    expect(within(rowA2).queryByLabelText(/^image:/)).not.toBeInTheDocument();
+  });
+
+  it('MISSING capability flags keep both pips — forward-compat default-shown', async () => {
+    readingSvc.listGeneratedStories.mockResolvedValue({ stories: [ROW_A] });
+
+    const user = userEvent.setup();
+    renderReading();
+    await openStoriesTab(user);
+
+    const rowA = await screen.findByRole('button', {
+      name: /Open 바닷가 마을/,
+    });
+    expect(within(rowA).getByLabelText('audio: done')).toBeInTheDocument();
+    expect(within(rowA).getByLabelText('image: failed')).toBeInTheDocument();
+  });
+
+  it('one tap → POST /experience → BOTH halves seed their polls → both settle → player + gallery, polls stop', async () => {
+    vi.useFakeTimers();
+    readingSvc.getStoryAudio
+      .mockResolvedValueOnce(AUDIO_NONE) // mount hydrate
+      .mockResolvedValue(AUDIO_DONE); // poll ticks
+    readingSvc.getStoryImages
+      .mockResolvedValueOnce(IMAGES_NONE) // mount hydrate
+      .mockResolvedValue(IMAGES_DONE); // poll ticks
+    readingSvc.requestStoryExperience.mockResolvedValue({
+      audio: { ...AUDIO_PENDING, enqueueBlocked: null },
+      images: { ...IMAGES_PENDING, enqueueBlocked: null },
+    });
+
+    const { container } = renderStory();
+    await flushAsync();
+
+    // Both per-asset affordances AND the combined button coexist (additive).
+    expect(
+      screen.getByRole('button', { name: /Generate audio/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /Generate illustrations/ }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /Generate full experience/ }),
+    );
+    await flushAsync();
+    expect(readingSvc.requestStoryExperience).toHaveBeenCalledTimes(1);
+    expect(readingSvc.requestStoryExperience.mock.calls[0][0]).toBe(7);
+    // Neither dedicated POST fired — ONE request covers both halves.
+    expect(readingSvc.requestStoryAudio).not.toHaveBeenCalled();
+    expect(readingSvc.requestStoryImages).not.toHaveBeenCalled();
+    // Both seeded envelopes land pending → both busy states, at once.
+    expect(screen.getByText(/Generating audio/)).toBeInTheDocument();
+    expect(screen.getByText(/Illustrating/)).toBeInTheDocument();
+
+    // Audio poll tick (2s): settles done → the real player mounts.
+    await flushAsync(2000);
+    expect(readingSvc.getStoryAudio).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('audio')).toHaveAttribute(
+      'src',
+      '/audio/tracks/9/stream',
+    );
+
+    // Images poll tick (2.5s): settles done → the gallery mounts.
+    await flushAsync(500);
+    expect(readingSvc.getStoryImages).toHaveBeenCalledTimes(2);
+    expect(
+      container.querySelectorAll('.km-reading__images-item img'),
+    ).toHaveLength(3);
+
+    // Both settled → both polls stopped themselves; and with both halves
+    // done, the combined button is gone.
+    await flushAsync(12_500);
+    expect(readingSvc.getStoryAudio).toHaveBeenCalledTimes(2);
+    expect(readingSvc.getStoryImages).toHaveBeenCalledTimes(2);
+    expect(
+      screen.queryByRole('button', { name: /Generate full experience/ }),
+    ).not.toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it('the in-flight guard holds: aria-disabled while requesting, a second click never double-POSTs', async () => {
+    readingSvc.requestStoryExperience.mockImplementation(
+      () =>
+        new Promise(() => {
+          /* never settles — pins the in-flight state */
+        }),
+    );
+
+    renderStory();
+    const button = await screen.findByRole('button', {
+      name: /Generate full experience/,
+    });
+
+    fireEvent.click(button);
+    const busy = await screen.findByRole('button', { name: /Requesting/ });
+    expect(busy).toHaveAttribute('aria-disabled', 'true');
+
+    fireEvent.click(busy);
+    expect(readingSvc.requestStoryExperience).toHaveBeenCalledTimes(1);
+  });
+
+  it('hidden when both halves are already done — nothing left to generate', async () => {
+    readingSvc.getStoryAudio.mockResolvedValue(AUDIO_DONE);
+    readingSvc.getStoryImages.mockResolvedValue(IMAGES_DONE);
+
+    const { container } = renderStory();
+
+    await waitFor(() => {
+      expect(container.querySelector('audio')).not.toBeNull();
+    });
+    await waitFor(() => {
+      expect(
+        container.querySelectorAll('.km-reading__images-item img'),
+      ).toHaveLength(3);
+    });
+    expect(
+      screen.queryByRole('button', { name: /Generate full experience/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('hidden when BOTH capabilities are dormant — no dead affordance', async () => {
+    readingSvc.getStoryAudio.mockResolvedValue(AUDIO_NONE_UNCONFIGURED);
+    readingSvc.getStoryImages.mockResolvedValue(IMAGES_NONE_UNCONFIGURED);
+
+    renderStory();
+
+    expect(
+      await screen.findByRole('button', { name: /Mark story as finished/i }),
+    ).toBeInTheDocument();
+    await act(async () => {}); // flush both hydrate envelopes' setState
+    expect(
+      screen.queryByRole('button', { name: /Generate full experience/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shown when exactly one half is missing (audio done, images none) — alongside that half’s own button', async () => {
+    readingSvc.getStoryAudio.mockResolvedValue(AUDIO_DONE);
+    readingSvc.getStoryImages.mockResolvedValue(IMAGES_NONE);
+
+    renderStory();
+
+    expect(
+      await screen.findByRole('button', { name: /Generate full experience/ }),
+    ).toBeInTheDocument();
+    // The per-asset path stays available too (additive, never replaced).
+    expect(
+      screen.getByRole('button', { name: /Generate illustrations/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('a daily-capped audio half shows the inline cap notice; the images half still enqueues and polls', async () => {
+    vi.useFakeTimers();
+    readingSvc.getStoryAudio.mockResolvedValue(AUDIO_NONE);
+    readingSvc.getStoryImages
+      .mockResolvedValueOnce(IMAGES_NONE)
+      .mockResolvedValue(IMAGES_DONE);
+    readingSvc.requestStoryExperience.mockResolvedValue({
+      audio: { ...AUDIO_NONE, enqueueBlocked: 'daily_cap' },
+      images: { ...IMAGES_PENDING, enqueueBlocked: null },
+    });
+
+    renderStory();
+    await flushAsync();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /Generate full experience/ }),
+    );
+    await flushAsync();
+
+    // The capped half: inline fixed copy, and its own button survives (the
+    // cap resets tomorrow — not a terminal state).
+    expect(
+      screen.getByText('Audio: daily limit reached — try tomorrow.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /Generate audio/ }),
+    ).toBeInTheDocument();
+    // The other half was seeded pending regardless — its poll runs.
+    expect(screen.getByText(/Illustrating/)).toBeInTheDocument();
+    await flushAsync(2500);
+    expect(readingSvc.getStoryImages).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
+  it('a dormant audio half is silently omitted (card hides, NO notice); the images half proceeds', async () => {
+    vi.useFakeTimers();
+    readingSvc.getStoryAudio.mockResolvedValue(AUDIO_NONE);
+    readingSvc.getStoryImages.mockResolvedValue(IMAGES_NONE);
+    readingSvc.requestStoryExperience.mockResolvedValue({
+      audio: { ...AUDIO_NONE_UNCONFIGURED, enqueueBlocked: 'dormant' },
+      images: { ...IMAGES_PENDING, enqueueBlocked: null },
+    });
+
+    const { container } = renderStory();
+    await flushAsync();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /Generate full experience/ }),
+    );
+    await flushAsync();
+
+    // The seeded dormant envelope hides the whole audio card — absence,
+    // and no cap/dormancy prose anywhere.
+    expect(container.querySelector('.km-reading__audio')).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: /Generate audio/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/daily limit reached/)).not.toBeInTheDocument();
+    // The images half runs regardless of its dormant sibling.
+    expect(screen.getByText(/Illustrating/)).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it('a whole-call short-window 429 renders the fixed structured copy — server prose never leaks', async () => {
+    readingSvc.requestStoryExperience.mockRejectedValue(
+      new ApiError('upstream prose that must never reach the DOM', {
+        status: 429,
+        code: 'rate_limited',
+        retryAfter: 30,
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderStory();
+
+    await user.click(
+      await screen.findByRole('button', { name: /Generate full experience/ }),
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/try again in about 30 seconds/i);
+    expect(alert).not.toHaveTextContent(/upstream prose/);
+    // The button recovers as the retry (expensive-route posture).
+    expect(
+      screen.getByRole('button', { name: /Generate full experience/ }),
+    ).not.toHaveAttribute('aria-disabled');
   });
 });

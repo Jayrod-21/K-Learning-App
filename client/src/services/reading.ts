@@ -278,6 +278,17 @@ export async function saveReadingPosition(
  *  'basic' is a legacy corpus tag, never a generation target). */
 export type GeneratedStoryLevel = 'L1' | 'L2' | 'L3' | 'L4' | 'L5+';
 
+/**
+ * F-216 — the shared per-asset lifecycle both story assets report through
+ * the library list (`GET /reading/generated` — `audioStatus`/`imageStatus`
+ * per row). One state machine, two assets: the server's list aggregate
+ * implements the same done-authority-beats-latest-job precedence as the
+ * per-story DTO builders, so a row's pip and its reader envelope can never
+ * disagree. `StoryAudioStatus`/`StoryImagesStatus` below are aliases of
+ * this union — the per-story envelopes ride the identical machine.
+ */
+export type AssetStatus = 'none' | 'pending' | 'running' | 'failed' | 'done';
+
 /** In display order, for level pickers. */
 export const GENERATED_STORY_LEVELS: ReadonlyArray<GeneratedStoryLevel> = [
   'L1',
@@ -302,6 +313,13 @@ export interface GeneratedStorySummary {
   /** The user's topic at generation time, when one was given. */
   prompt: string | null;
   createdAt: string;
+  /** F-216 — aggregate TTS-narration state for this story (the library
+   *  badge pips), computed server-side with the same precedence as the
+   *  per-story audio envelope. */
+  audioStatus: AssetStatus;
+  /** F-216 — aggregate illustration state (same contract as
+   *  `audioStatus`, over the image tables). */
+  imageStatus: AssetStatus;
 }
 
 /**
@@ -320,8 +338,13 @@ export interface StoryTurn {
 /** One full generated story (`POST /reading/generate`,
  *  `GET /reading/generated/:id`). `turns` is null for stories generated
  *  before migration 081 or when the model emitted no split; optional so
- *  pre-F-210 fixtures/consumers stay valid (the wire always carries it). */
-export interface GeneratedStory extends GeneratedStorySummary {
+ *  pre-F-210 fixtures/consumers stay valid (the wire always carries it).
+ *  The F-216 aggregate statuses are OMITTED here on purpose: only the
+ *  library list computes them (the reader derives live state from the
+ *  dedicated audio/images envelopes instead), so this type must not claim
+ *  fields the single-story wire never carries. */
+export interface GeneratedStory
+  extends Omit<GeneratedStorySummary, 'audioStatus' | 'imageStatus'> {
   bodyKo: string;
   turns?: StoryTurn[] | null;
 }
@@ -330,8 +353,18 @@ interface StoryEnvelope {
   story: GeneratedStory;
 }
 
-interface StoriesEnvelope {
+/**
+ * Envelope returned by `GET /reading/generated` — the row list plus the
+ * F-216 top-level capability flags. `ttsConfigured`/`imageGenConfigured`
+ * follow the established dormant-deploy posture (see `StoryAudio.
+ * ttsConfigured`): OPTIONAL and default-TRUE at the call sites — only an
+ * explicit `false` hides the matching badge pips; a server that omits the
+ * flags keeps them visible (forward-compat).
+ */
+export interface GeneratedStoryLibrary {
   stories: GeneratedStorySummary[];
+  ttsConfigured?: boolean;
+  imageGenConfigured?: boolean;
 }
 
 /** What a generation request asks for. `topic` is optional free text —
@@ -363,15 +396,16 @@ export async function generateStory(
 }
 
 /** GET /reading/generated — the user's story library, newest first
- *  (metadata only; fetch a body via `getGeneratedStory`). */
+ *  (metadata + F-216 per-row asset statuses; fetch a body via
+ *  `getGeneratedStory`). Returns the whole envelope: rows under `stories`
+ *  plus the top-level capability flags the badge pips gate on. */
 export async function listGeneratedStories(
   signal?: AbortSignal,
-): Promise<GeneratedStorySummary[]> {
-  const res = await api.get<StoriesEnvelope>(
+): Promise<GeneratedStoryLibrary> {
+  return api.get<GeneratedStoryLibrary>(
     '/reading/generated',
     signal !== undefined ? { signal } : undefined,
   );
-  return res.stories;
 }
 
 /** GET /reading/generated/:id — one generated story, full body. 404s (as
@@ -393,8 +427,9 @@ export async function getGeneratedStory(
 // ─────────────────────────────────────────────────────────────
 
 /** Lifecycle of a story's TTS narration (`story_audio_jobs` + the voiced
- *  `audio_sources` set — see routes/reading.ts's StoryAudioDto). */
-export type StoryAudioStatus = 'none' | 'pending' | 'running' | 'failed' | 'done';
+ *  `audio_sources` set — see routes/reading.ts's StoryAudioDto). Since
+ *  F-216 an alias of the shared `AssetStatus` machine. */
+export type StoryAudioStatus = AssetStatus;
 
 /**
  * One read-along unit: `body` is the sentence text, `[startMs, endMs)` its
@@ -538,14 +573,10 @@ export async function listGeneratedAudio(
 // Story illustrations (F-211 — story_image_jobs + story_images)
 // ─────────────────────────────────────────────────────────────
 
-/** Lifecycle of a story's AI illustrations — same state machine shape as
- *  `StoryAudioStatus` (see routes/reading.ts's StoryImagesDto). */
-export type StoryImagesStatus =
-  | 'none'
-  | 'pending'
-  | 'running'
-  | 'failed'
-  | 'done';
+/** Lifecycle of a story's AI illustrations — same state machine as
+ *  `StoryAudioStatus` (see routes/reading.ts's StoryImagesDto). Since
+ *  F-216 an alias of the shared `AssetStatus` machine. */
+export type StoryImagesStatus = AssetStatus;
 
 /**
  * One scene illustration once a story is illustrated. `blobUrl` is the
@@ -640,6 +671,66 @@ export async function getStoryImages(
     signal !== undefined ? { signal } : undefined,
   );
   return res.images;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Unified story experience (F-216 — audio + illustrations, one tap)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Why one half of a combined-experience request did NOT enqueue a job:
+ *   - `'dormant'`   — that capability is unconfigured on this deploy (no
+ *                     TTS / image key); the half's own capability flag also
+ *                     reports `false`, so its UI surface hides itself.
+ *   - `'daily_cap'` — the per-user daily cost cap for that asset is spent;
+ *                     the other half is unaffected.
+ *   - `null`        — the enqueue succeeded, a job was already live, or the
+ *                     asset is already done (nothing to enqueue).
+ */
+export type EnqueueBlocked = null | 'dormant' | 'daily_cap';
+
+/**
+ * What `POST /reading/generated/:id/experience` resolves to: BOTH asset
+ * envelopes (byte-identical to their dedicated GET routes' DTOs, built
+ * AFTER the enqueue attempts so each reflects current state) plus the
+ * per-half `enqueueBlocked` discriminator. The caller seeds these straight
+ * into the audio/images state machines — a pending/running half starts its
+ * poll exactly as its own POST's 202 would.
+ */
+export interface StoryExperienceResult {
+  audio: StoryAudio & { enqueueBlocked: EnqueueBlocked };
+  images: StoryImagesEnvelope & { enqueueBlocked: EnqueueBlocked };
+}
+
+interface StoryExperienceWire {
+  experience: StoryExperienceResult;
+}
+
+/**
+ * POST /reading/generated/:id/experience — one-tap combined generation:
+ * the server attempts BOTH the audio and the illustration enqueue, each
+ * independently caught, so a dormant or daily-capped half never blocks the
+ * other. 202 when either half is left pending/running, 200 when both are
+ * settled — both resolve here; callers branch on the per-half `status` +
+ * `enqueueBlocked` alone.
+ *
+ * Failure paths (all `ApiError`) — WHOLE-call failures only (per-half
+ * problems arrive as `enqueueBlocked`, never as a throw):
+ *   - 429 WITH `retryAfter` — the generic expensive-route limiter; use
+ *     `errorMessageFor`'s structured-seconds copy as usual.
+ *   - 404 — missing/foreign story id (uniform IDOR posture); 400 — bad id.
+ *     Both map to fixed copy at the call site, never echoed.
+ */
+export async function requestStoryExperience(
+  storyId: number,
+  signal?: AbortSignal,
+): Promise<StoryExperienceResult> {
+  const res = await api.post<StoryExperienceWire>(
+    `/reading/generated/${String(storyId)}/experience`,
+    undefined,
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.experience;
 }
 
 // ─────────────────────────────────────────────────────────────
