@@ -51,6 +51,7 @@ import {
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import type { UseEndpointOrMockResult } from '../hooks/useEndpointOrMock';
+import type { AbilityEstimate } from '../services/ability';
 import { ApiError } from '../services/api';
 import type {
   AllSkillSeries,
@@ -245,6 +246,11 @@ const { GRAMMAR_MASTERY_DEFAULT } = vi.hoisted(() => ({
   },
 }));
 
+// F-212 P2 — the live-estimate block fetches directly (not via
+// useEndpointOrMock: fabricated ability numbers would misrepresent real
+// progress). Only the fetch fn needs hoisting for the vi.mock factory.
+const abilitySvc = vi.hoisted(() => ({ fetchAbilityEstimate: vi.fn() }));
+
 // F-041 — the Hanja mastery tab fetches directly (not via useEndpointOrMock).
 const hanjaSvc = vi.hoisted(() => ({ fetchHanjaProgress: vi.fn() }));
 const { HANJA_DEFAULT, HANJA_EMPTY } = vi.hoisted(() => ({
@@ -303,6 +309,13 @@ vi.mock('../hooks/useEndpointOrMock', () => ({
 vi.mock('../services/vocab', () => masterySvc);
 vi.mock('../services/grammar', () => grammarSvc);
 vi.mock('../services/hanja', () => hanjaSvc);
+// F-212 P2 — stub ONLY the fetch; the page also imports the module's real
+// pure helpers (estimateBandEdges) for the θ±se band math, so those pass
+// through from the original module.
+vi.mock('../services/ability', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/ability')>()),
+  fetchAbilityEstimate: abilitySvc.fetchAbilityEstimate,
+}));
 // The page imports `fetchSkillSeries` for its realFn; with the hook mocked
 // it is never invoked, but mock the module anyway so no test path can reach
 // the real axios layer.
@@ -312,6 +325,92 @@ vi.mock('../services/stats', () => ({
 
 // Import after the mock so it is in place.
 import Progress from './Progress';
+
+// ── F-212 P2 fixtures ────────────────────────────────────────
+// Not hoisted — only `abilitySvc` is referenced inside a vi.mock factory.
+
+function abilityInsufficient(
+  dimension: AbilityEstimate['dimension'],
+): AbilityEstimate {
+  return {
+    dimension,
+    theta: null,
+    se: null,
+    band: null,
+    score: null,
+    n: 2,
+    nUsed: 1,
+    effN: 0.8,
+    lastEvidenceAt: null,
+    insufficient: true,
+    estimatorVersion: 'eap-1pl-1.0',
+    rubricVersion: 'r1',
+  };
+}
+
+/** Fresh user — every dimension gated. The suite-wide default (beforeEach)
+ *  so pre-existing tests see only the placeholder sentence, never bars. */
+const ABILITY_ALL_INSUFFICIENT: AbilityEstimate[] = [
+  abilityInsufficient('reading'),
+  abilityInsufficient('listening'),
+  abilityInsufficient('vocab'),
+  abilityInsufficient('grammar'),
+];
+
+/** Two ready dimensions + two gated ones. Reading θ=3.5±0.5 → score 47.5,
+ *  band 40–55 (the anchor map's exact values); listening θ=4±0.5 → score 55,
+ *  band 47.5–62.5. Both effN ≥ 5 and band width < 20 → NOT tentative. */
+const ABILITY_MIXED: AbilityEstimate[] = [
+  {
+    dimension: 'reading',
+    theta: 3.5,
+    se: 0.5,
+    band: 'L3',
+    score: 47.5,
+    n: 14,
+    nUsed: 12,
+    effN: 8.2,
+    lastEvidenceAt: '2026-08-10T09:00:00.000Z',
+    insufficient: false,
+    estimatorVersion: 'eap-1pl-1.0',
+    rubricVersion: 'r1',
+  },
+  {
+    dimension: 'listening',
+    theta: 4,
+    se: 0.5,
+    band: 'L4',
+    score: 55,
+    n: 9,
+    nUsed: 8,
+    effN: 6.4,
+    lastEvidenceAt: '2026-08-08T09:00:00.000Z',
+    insufficient: false,
+    estimatorVersion: 'eap-1pl-1.0',
+    rubricVersion: 'r1',
+  },
+  abilityInsufficient('vocab'),
+  abilityInsufficient('grammar'),
+];
+
+/** One ready dimension with a WIDE posterior (θ=3.5±1.5 → band 25–70, width
+ *  45 ≥ 20) → the block must render muted with the low-confidence caption. */
+const ABILITY_TENTATIVE: AbilityEstimate[] = [
+  {
+    dimension: 'reading',
+    theta: 3.5,
+    se: 1.5,
+    band: 'L3',
+    score: 47.5,
+    n: 6,
+    nUsed: 5,
+    effN: 3.1,
+    lastEvidenceAt: '2026-08-10T09:00:00.000Z',
+    insufficient: false,
+    estimatorVersion: 'eap-1pl-1.0',
+    rubricVersion: 'r1',
+  },
+];
 
 function historyOf(count: number): DiagnosticHistoryResponse {
   return { snapshots: HISTORY_3.snapshots.slice(0, count) };
@@ -367,6 +466,8 @@ beforeEach(() => {
   grammarSvc.fetchGrammarMastery.mockResolvedValue(GRAMMAR_MASTERY_DEFAULT);
   hanjaSvc.fetchHanjaProgress.mockReset();
   hanjaSvc.fetchHanjaProgress.mockResolvedValue(HANJA_DEFAULT);
+  abilitySvc.fetchAbilityEstimate.mockReset();
+  abilitySvc.fetchAbilityEstimate.mockResolvedValue(ABILITY_ALL_INSUFFICIENT);
 });
 
 describe('Progress page — F-177 shared PageHubHeader', () => {
@@ -1927,5 +2028,167 @@ describe('Progress page — device-adaptive "Progress by skill" grid (Phase D1)'
     expect(mediaBlock).not.toBe('');
     expect(mediaBlock).toContain('max-width: 640px;');
     expect(mediaBlock).toContain('margin-inline: auto;');
+  });
+});
+
+describe('Progress page — live ability estimate (F-212 P2)', () => {
+  /** Raw render (no auto-expand of the other sections). */
+  function renderRaw(): void {
+    render(
+      <MemoryRouter>
+        <Routes>
+          <Route path="/" element={<Progress />} />
+          <Route path="/diagnostic" element={<div>DIAGNOSTIC PAGE</div>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+  }
+
+  /** Render + expand ONLY the estimate section. */
+  function renderEstimate(): void {
+    renderRaw();
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /Estimated from your recent practice/,
+      }),
+    );
+  }
+
+  it('is its own default-collapsed section; the fetch fires on load; the diagnostic compare stays untouched', async () => {
+    renderRaw();
+
+    const header = screen.getByRole('button', {
+      name: /Estimated from your recent practice/,
+    });
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    // Additive only — the diagnostic "Where you stand" block still renders.
+    expect(screen.getByText('Where you stand')).toBeInTheDocument();
+    // CollapsibleTile keeps the body mounted, so the fetch runs while folded.
+    await waitFor(() => {
+      expect(abilitySvc.fetchAbilityEstimate).toHaveBeenCalled();
+    });
+  });
+
+  it('renders the honest framing copy and, when every dimension is gated, the keep-practicing placeholder — never a bar', async () => {
+    renderEstimate();
+
+    expect(
+      await screen.findByText(
+        'Updates as you study. A rough signal, not a formal placement — take the diagnostic for that.',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Practice a few more placed items to unlock a live estimate.',
+      ),
+    ).toBeInTheDocument();
+    // Calibration honesty note (difficulties are anchored, not data-fit).
+    expect(
+      screen.getByText(
+        'Item difficulties are proficiency-anchored, not yet calibrated from data.',
+      ),
+    ).toBeInTheDocument();
+    // No estimate bars: the ONLY visible reference picker is the diagnostic
+    // compare's — the estimate block contributed none.
+    expect(screen.getAllByRole('radiogroup')).toHaveLength(1);
+  });
+
+  it('renders ready dimensions as SkillsCompare bars whose confidence band is θ±se through the anchor map; gated dimensions get the placeholder', async () => {
+    abilitySvc.fetchAbilityEstimate.mockResolvedValue(ABILITY_MIXED);
+    renderEstimate();
+
+    // Reading θ=3.5±0.5 → score 47.5, band 40–55; listening θ=4±0.5 → score
+    // 55, band 47.5–62.5. SkillBar's aria-label carries all three numbers,
+    // so this pins that the band edges really come from θ±se, not se-free
+    // duplicates of the score.
+    expect(
+      await screen.findByRole('progressbar', {
+        name: 'Reading skill — estimated 47.5, range 40–55',
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('progressbar', {
+        name: 'Listening skill — estimated 55, range 47.5–62.5',
+      }),
+    ).toBeInTheDocument();
+
+    // The estimate block's own reference picker joins the diagnostic one.
+    expect(screen.getAllByRole('radiogroup')).toHaveLength(2);
+
+    // Gated dimensions are named in ONE placeholder line (locked copy).
+    expect(
+      screen.getByText(
+        'Vocabulary, Grammar — Practice a few more placed items to unlock a live estimate.',
+      ),
+    ).toBeInTheDocument();
+
+    // "As of" caption uses the NEWEST contributing evidence (8/10 > 8/8).
+    expect(screen.getByText('As of 8/10')).toBeInTheDocument();
+
+    // Not tentative: bands are narrow and effN is healthy.
+    expect(
+      screen.queryByText('Low confidence — these bars are still rough.'),
+    ).not.toBeInTheDocument();
+    expect(
+      document.querySelector('.km-progress__estimatebars--tentative'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('mutes the block and says so when the posterior band is wide (tentative signal)', async () => {
+    abilitySvc.fetchAbilityEstimate.mockResolvedValue(ABILITY_TENTATIVE);
+    renderEstimate();
+
+    // θ=3.5±1.5 → band 25–70 (width 45 ≥ 20) → tentative treatment.
+    expect(
+      await screen.findByText('Low confidence — these bars are still rough.'),
+    ).toBeInTheDocument();
+    const wrap = document.querySelector<HTMLElement>(
+      '.km-progress__estimatebars--tentative',
+    );
+    expect(wrap).not.toBeNull();
+    expect(wrap).toHaveStyle({ opacity: '0.72' });
+    // The wide band still renders honestly on the bar itself.
+    expect(
+      screen.getByRole('progressbar', {
+        name: 'Reading skill — estimated 47.5, range 25–70',
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows a fixed-copy ErrorCard on failure and retries on tap', async () => {
+    const user = userEvent.setup();
+    abilitySvc.fetchAbilityEstimate.mockRejectedValue(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+    renderEstimate();
+
+    const alert = await screen.findByText(
+      'Could not load your live estimate.',
+    );
+    expect(alert).toBeInTheDocument();
+
+    abilitySvc.fetchAbilityEstimate.mockResolvedValue(ABILITY_ALL_INSUFFICIENT);
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => {
+      expect(abilitySvc.fetchAbilityEstimate).toHaveBeenCalledTimes(2);
+    });
+    expect(
+      await screen.findByText(
+        'Practice a few more placed items to unlock a live estimate.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('never renders a bare "TOPIK level N" claim on the estimate block', async () => {
+    abilitySvc.fetchAbilityEstimate.mockResolvedValue(ABILITY_MIXED);
+    renderEstimate();
+    await screen.findByRole('progressbar', {
+      name: 'Reading skill — estimated 47.5, range 40–55',
+    });
+
+    // Reference-line labels ("TOPIK 4") are comparison targets, not claims;
+    // the locked framing bans asserting the USER is at a level.
+    expect(screen.queryByText(/TOPIK level \d/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/You are (at )?TOPIK/i)).not.toBeInTheDocument();
   });
 });
