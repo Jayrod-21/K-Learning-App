@@ -180,11 +180,13 @@ import {
   listGeneratedStories,
   logReadingAttempt,
   requestStoryAudio,
+  requestStoryExperience,
   requestStoryImages,
   saveReadingPosition,
   translatePassage,
 } from '../services/reading';
 import type {
+  AssetStatus,
   GeneratedStory,
   GeneratedStoryLevel,
   GeneratedStorySummary,
@@ -1554,12 +1556,72 @@ function formatStoryDate(iso: string): string {
     : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+/**
+ * F-216 — pip color per aggregate asset status, on the app's existing
+ * token vocabulary (the `--km-mastery-*` precedent: moss = settled-good,
+ * ochre-ink = in progress, danger = failed, paper-mute = nothing yet).
+ * Total by construction — an unknown value (a defensive impossibility once
+ * the wire is typed) degrades to the muted "nothing yet" tone.
+ */
+function assetPipColor(status: AssetStatus): string {
+  switch (status) {
+    case 'done':
+      return 'var(--moss)';
+    case 'pending':
+    case 'running':
+      return 'var(--ochre-ink)';
+    case 'failed':
+      return 'var(--danger)';
+    case 'none':
+      return 'var(--paper-mute)';
+  }
+}
+
+/**
+ * F-216 — one compact per-row asset-status pip (audio = headphones glyph,
+ * image = picture glyph; the registry's `currentColor` strokes take the
+ * status color directly). `role="img"` + a plain-English `aria-label`
+ * ("audio: done") make the glyph-only status legible to AT; `title` gives
+ * pointer users the same reading. Rendered inside the row button's middle
+ * grid cell (next to the level Pill) so the existing title/level/date
+ * three-column layout is untouched.
+ */
+function AssetStatusPip({
+  kind,
+  status,
+}: {
+  kind: 'audio' | 'image';
+  status: AssetStatus;
+}): JSX.Element {
+  const label = `${kind}: ${status}`;
+  return (
+    <span
+      role="img"
+      aria-label={label}
+      title={label}
+      className="km-reading__asset-pip"
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        color: assetPipColor(status),
+      }}
+    >
+      <Icon name={kind === 'audio' ? 'headphones' : 'image'} size={12} />
+    </span>
+  );
+}
+
 function StoriesSection({
   onOpenStory,
 }: {
   onOpenStory: (id: number) => void;
 }): JSX.Element {
   const [stories, setStories] = useState<GeneratedStorySummary[]>([]);
+  // F-216 — the library envelope's capability flags gate the badge pips.
+  // Default-TRUE (only an explicit false hides — the ttsConfigured posture)
+  // so an older server that omits the flags keeps both pips visible.
+  const [showAudioPips, setShowAudioPips] = useState(true);
+  const [showImagePips, setShowImagePips] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
@@ -1574,9 +1636,11 @@ function StoriesSection({
     setError(null);
     /* eslint-enable react-hooks/set-state-in-effect */
     listGeneratedStories(ctrl.signal)
-      .then((rows) => {
+      .then((library) => {
         if (ctrl.signal.aborted) return;
-        setStories(rows);
+        setStories(library.stories);
+        setShowAudioPips(library.ttsConfigured !== false);
+        setShowImagePips(library.imageGenConfigured !== false);
         setLoading(false);
       })
       .catch((err: unknown) => {
@@ -1642,7 +1706,32 @@ function StoriesSection({
                     <span className="kr km-reference__row-kr">
                       {story.title}
                     </span>
-                    <Pill tone="gold">{story.level}</Pill>
+                    {/* Level + the F-216 asset pips share the middle grid
+                        cell (an inline-flex wrapper), preserving the row's
+                        original title/level/date three-column layout. A
+                        dormant capability (explicit false) drops its pip
+                        entirely — absence, not a dead muted glyph. */}
+                    <span
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 8,
+                      }}
+                    >
+                      <Pill tone="gold">{story.level}</Pill>
+                      {showAudioPips ? (
+                        <AssetStatusPip
+                          kind="audio"
+                          status={story.audioStatus}
+                        />
+                      ) : null}
+                      {showImagePips ? (
+                        <AssetStatusPip
+                          kind="image"
+                          status={story.imageStatus}
+                        />
+                      ) : null}
+                    </span>
                     <span className="km-resources__pager-count">
                       {formatStoryDate(story.createdAt)}
                     </span>
@@ -1748,6 +1837,12 @@ function useStoryAudio(storyId: number): {
   /** Request failure copy (429 cap verbatim / fixed copy), or null. */
   requestError: string | null;
   requestAudio: () => void;
+  /** F-216 — imperatively land a fresh envelope from OUTSIDE this hook's
+   *  own request path (the combined-experience POST's audio half). Pure
+   *  setState: a pending/running envelope flips `polling` and starts the
+   *  bounded poll exactly as `requestAudio`'s 202 would; a settled one
+   *  renders directly. The hydrate/poll/abort lifecycle is untouched. */
+  seed: (env: StoryAudio) => void;
 } {
   const [audio, setAudio] = useState<StoryAudio | null>(null);
   const [requesting, setRequesting] = useState(false);
@@ -1868,7 +1963,11 @@ function useStoryAudio(storyId: number): {
     );
   }, [storyId]);
 
-  return { audio, requesting, requestError, requestAudio };
+  const seed = useCallback((env: StoryAudio): void => {
+    setAudio(env);
+  }, []);
+
+  return { audio, requesting, requestError, requestAudio, seed };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1932,6 +2031,12 @@ function useStoryImages(storyId: number): {
   /** Request failure copy (429 cap verbatim / fixed copy), or null. */
   requestError: string | null;
   requestImages: () => void;
+  /** F-216 — imperatively land a fresh envelope from OUTSIDE this hook's
+   *  own request path (the combined-experience POST's images half). Pure
+   *  setState: a pending/running envelope flips `polling` and starts the
+   *  bounded poll exactly as `requestImages`'s 202 would; a settled one
+   *  renders directly. The hydrate/poll/abort lifecycle is untouched. */
+  seed: (env: StoryImagesEnvelope) => void;
 } {
   const [images, setImages] = useState<StoryImagesEnvelope | null>(null);
   const [requesting, setRequesting] = useState(false);
@@ -2053,7 +2158,11 @@ function useStoryImages(storyId: number): {
     );
   }, [storyId]);
 
-  return { images, requesting, requestError, requestImages };
+  const seed = useCallback((env: StoryImagesEnvelope): void => {
+    setImages(env);
+  }, []);
+
+  return { images, requesting, requestError, requestImages, seed };
 }
 
 /**
@@ -2093,6 +2202,25 @@ function StoryIllustration({
     </figure>
   );
 }
+
+// ─────────────────────────────────────────────────────────────
+// Unified story experience (F-216) — one-tap audio + illustrations
+// ─────────────────────────────────────────────────────────────
+
+/** Fixed fallback copy for a failed combined-experience REQUEST (errorCopy
+ *  contract — per-half daily caps arrive as `enqueueBlocked`, never as a
+ *  throw, so this covers only whole-call failures). */
+const EXPERIENCE_REQUEST_FAILED_COPY =
+  'Could not start the full experience. Try again.';
+
+/** Fixed per-half daily-cap notices. Unlike the per-asset POSTs (whose 429
+ *  carries server-authored copy), the experience route reports a capped
+ *  half as the `'daily_cap'` discriminator — so the copy here is
+ *  client-fixed, per the app's errorCopy stance. */
+const EXPERIENCE_AUDIO_CAPPED_COPY =
+  'Audio: daily limit reached — try tomorrow.';
+const EXPERIENCE_IMAGES_CAPPED_COPY =
+  'Illustrations: daily limit reached — try tomorrow.';
 
 // ─────────────────────────────────────────────────────────────
 // Story reader (?story=N)
@@ -2150,7 +2278,7 @@ function StoryReader({ storyId }: { storyId: number }): JSX.Element {
   }, [story]);
 
   // ── F-210: story TTS audio + read-along highlighting ──
-  const { audio, requesting, requestError, requestAudio } =
+  const { audio, requesting, requestError, requestAudio, seed: seedAudio } =
     useStoryAudio(storyId);
 
   // ── F-211: story illustrations ──
@@ -2159,7 +2287,70 @@ function StoryReader({ storyId }: { storyId: number }): JSX.Element {
     requesting: requestingImages,
     requestError: imagesRequestError,
     requestImages,
+    seed: seedImages,
   } = useStoryImages(storyId);
+
+  // ── F-216: one-tap combined generation (audio + illustrations) ──
+  // One POST attempts both enqueues server-side; the response carries both
+  // asset envelopes, which SEED the two hooks above — a pending/running
+  // half starts its own bounded poll exactly as its dedicated button's 202
+  // would, and a dormant half's capability flag hides its card outright.
+  const [expRequesting, setExpRequesting] = useState(false);
+  const [expError, setExpError] = useState<string | null>(null);
+  const [expAudioCapped, setExpAudioCapped] = useState(false);
+  const [expImagesCapped, setExpImagesCapped] = useState(false);
+  const expCtrlRef = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      expCtrlRef.current?.abort();
+    },
+    [],
+  );
+  const requestExperience = useCallback((): void => {
+    expCtrlRef.current?.abort();
+    const ctrl = new AbortController();
+    expCtrlRef.current = ctrl;
+    setExpRequesting(true);
+    setExpError(null);
+    setExpAudioCapped(false);
+    setExpImagesCapped(false);
+    requestStoryExperience(storyId, ctrl.signal).then(
+      (exp) => {
+        if (ctrl.signal.aborted) return;
+        setExpRequesting(false);
+        // Strip the wrapper-only discriminator before seeding so the hooks
+        // hold exactly the DTO shape their own routes return.
+        const { enqueueBlocked: audioBlocked, ...audioEnv } = exp.audio;
+        const { enqueueBlocked: imagesBlocked, ...imagesEnv } = exp.images;
+        seedAudio(audioEnv);
+        seedImages(imagesEnv);
+        // daily_cap surfaces an inline notice for that half; 'dormant' is
+        // deliberately silent — the seeded envelope's capability flag
+        // already hides the whole surface (absence, not an apology).
+        setExpAudioCapped(audioBlocked === 'daily_cap');
+        setExpImagesCapped(imagesBlocked === 'daily_cap');
+      },
+      (err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setExpRequesting(false);
+        setExpError(errorMessageFor(err, EXPERIENCE_REQUEST_FAILED_COPY));
+      },
+    );
+  }, [storyId, seedAudio, seedImages]);
+
+  // Visibility: only once BOTH hydrates have landed (the button must never
+  // pop in ahead of the state it summarizes), when at least one half is
+  // not-yet-done AND that half's capability is on (only an explicit false
+  // is dormant). Both-done and both-dormant both collapse to absence.
+  const audioHalfWanted =
+    audio !== null && audio.ttsConfigured !== false && audio.status !== 'done';
+  const imagesHalfWanted =
+    images !== null &&
+    images.imageGenConfigured !== false &&
+    images.status !== 'done';
+  const showExperienceButton =
+    audio !== null && images !== null && (audioHalfWanted || imagesHalfWanted);
 
   // Every candidate resolves through the strict allow-list; a tampered or
   // off-origin blobUrl drops out here, so the gallery below never touches a
@@ -2319,6 +2510,55 @@ function StoryReader({ storyId }: { storyId: number }): JSX.Element {
           {': '}
           <span className="kr">{story.prompt}</span>
         </p>
+      ) : null}
+
+      {/* F-216 — one-tap combined generation, ABOVE both asset cards: one
+          POST enqueues whatever is still missing (audio and/or
+          illustrations) and seeds both state machines from its response.
+          Hidden while either hydrate is in flight, when both halves are
+          done, and when both are dormant — the per-asset buttons below
+          remain the single-asset paths either way. */}
+      {showExperienceButton ? (
+        <div className="km-reading__experience">
+          <Button
+            variant="gold"
+            size="sm"
+            // aria-disabled, NOT disabled: the hard attribute would drop
+            // keyboard focus to <body> the instant the call starts (the
+            // asset cards' exact pattern).
+            aria-disabled={expRequesting || undefined}
+            leadingIcon={<Icon name="spark" size={14} />}
+            onClick={() => {
+              if (expRequesting) return; // aria-disabled doesn't block clicks
+              requestExperience();
+            }}
+          >
+            {expRequesting ? (
+              <Bilingual en="Requesting…" kr="요청 중…" compact />
+            ) : (
+              <Bilingual
+                en="Generate full experience"
+                kr="오디오·삽화 한 번에 생성"
+                compact
+              />
+            )}
+          </Button>
+          {expError !== null ? (
+            <div role="alert" className="km-reading__audio-error">
+              {expError}
+            </div>
+          ) : null}
+          {expAudioCapped ? (
+            <p role="alert" className="km-reading__audio-error">
+              {EXPERIENCE_AUDIO_CAPPED_COPY}
+            </p>
+          ) : null}
+          {expImagesCapped ? (
+            <p role="alert" className="km-reading__images-error">
+              {EXPERIENCE_IMAGES_CAPPED_COPY}
+            </p>
+          ) : null}
+        </div>
       ) : null}
 
       {/* F-210 — the story-audio section, driven by the envelope status.

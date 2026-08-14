@@ -20,10 +20,17 @@ import {
   getStoryAudio,
   getStoryImages,
   listGeneratedAudio,
+  listGeneratedStories,
   requestStoryAudio,
+  requestStoryExperience,
   requestStoryImages,
 } from './reading';
-import type { StoryAudio, StoryImagesEnvelope } from './reading';
+import type {
+  GeneratedStoryLibrary,
+  StoryAudio,
+  StoryExperienceResult,
+  StoryImagesEnvelope,
+} from './reading';
 import { api, ApiError } from './api';
 
 afterEach(() => {
@@ -373,6 +380,160 @@ describe('getStoryImages', () => {
     expect(got.error).toBe(
       'The image service is unavailable right now. Try again later.',
     );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// F-216 — unified story experience
+// ─────────────────────────────────────────────────────────────
+
+const LIBRARY: GeneratedStoryLibrary = {
+  stories: [
+    {
+      id: 7,
+      title: '바닷가 마을',
+      level: 'L3',
+      prompt: null,
+      createdAt: '2026-07-08T12:00:00Z',
+      audioStatus: 'done',
+      imageStatus: 'failed',
+    },
+    {
+      id: 8,
+      title: '겨울 산책',
+      level: 'L4',
+      prompt: '겨울',
+      createdAt: '2026-07-01T12:00:00Z',
+      audioStatus: 'pending',
+      imageStatus: 'none',
+    },
+  ],
+  ttsConfigured: true,
+  imageGenConfigured: true,
+};
+
+describe('listGeneratedStories — F-216 aggregate library', () => {
+  it('GETs /reading/generated and returns the whole envelope (rows + capability flags) untouched', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce(LIBRARY);
+
+    const got = await listGeneratedStories();
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0][0]).toBe('/reading/generated');
+    expect(got).toEqual(LIBRARY);
+    // The per-row aggregate statuses ride through unmodified.
+    expect(got.stories[0]?.audioStatus).toBe('done');
+    expect(got.stories[0]?.imageStatus).toBe('failed');
+    expect(got.stories[1]?.audioStatus).toBe('pending');
+    expect(got.stories[1]?.imageStatus).toBe('none');
+  });
+
+  it('leaves ABSENT capability flags undefined — the UI treats that as shown (default-true posture)', async () => {
+    vi.spyOn(api, 'get').mockResolvedValueOnce({ stories: [] });
+
+    const got = await listGeneratedStories();
+
+    expect(got.stories).toEqual([]);
+    expect(got.ttsConfigured).toBeUndefined();
+    expect(got.imageGenConfigured).toBeUndefined();
+  });
+
+  it('threads an AbortSignal into the request config', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({ stories: [] });
+    const ctrl = new AbortController();
+
+    await listGeneratedStories(ctrl.signal);
+
+    expect(spy.mock.calls[0][1]?.signal).toBe(ctrl.signal);
+  });
+
+  it('re-throws an ApiError untouched', async () => {
+    const boom = new ApiError('boom internal', {
+      status: 500,
+      code: 'server_error',
+    });
+    vi.spyOn(api, 'get').mockRejectedValueOnce(boom);
+
+    await expect(listGeneratedStories()).rejects.toBe(boom);
+  });
+});
+
+describe('requestStoryExperience', () => {
+  const EXPERIENCE: StoryExperienceResult = {
+    audio: { ...PENDING_AUDIO, enqueueBlocked: null },
+    images: { ...PENDING_IMAGES, enqueueBlocked: null },
+  };
+
+  it('POSTs /reading/generated/:id/experience with no body and unwraps the envelope', async () => {
+    const spy = vi
+      .spyOn(api, 'post')
+      .mockResolvedValueOnce({ experience: EXPERIENCE });
+
+    const got = await requestStoryExperience(7);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    const [url, body] = spy.mock.calls[0];
+    expect(url).toBe('/reading/generated/7/experience');
+    expect(body).toBeUndefined();
+    expect(got).toEqual(EXPERIENCE);
+  });
+
+  it('passes the per-half enqueueBlocked discriminators through verbatim (dormant / daily_cap)', async () => {
+    const blocked: StoryExperienceResult = {
+      audio: {
+        ...PENDING_AUDIO,
+        status: 'none',
+        jobId: null,
+        ttsConfigured: false,
+        enqueueBlocked: 'dormant',
+      },
+      images: {
+        ...PENDING_IMAGES,
+        status: 'none',
+        jobId: null,
+        enqueueBlocked: 'daily_cap',
+      },
+    };
+    vi.spyOn(api, 'post').mockResolvedValueOnce({ experience: blocked });
+
+    const got = await requestStoryExperience(7);
+
+    expect(got.audio.enqueueBlocked).toBe('dormant');
+    expect(got.audio.ttsConfigured).toBe(false);
+    expect(got.images.enqueueBlocked).toBe('daily_cap');
+  });
+
+  it('threads an AbortSignal into the request config', async () => {
+    const spy = vi
+      .spyOn(api, 'post')
+      .mockResolvedValueOnce({ experience: EXPERIENCE });
+    const ctrl = new AbortController();
+
+    await requestStoryExperience(7, ctrl.signal);
+
+    expect(spy.mock.calls[0][2]?.signal).toBe(ctrl.signal);
+  });
+
+  it('re-throws a short-window 429 ApiError with retryAfter intact (the expensive-route limiter)', async () => {
+    const limited = new ApiError('rate limited', {
+      status: 429,
+      code: 'rate_limited',
+      retryAfter: 30,
+    });
+    vi.spyOn(api, 'post').mockRejectedValueOnce(limited);
+
+    await expect(requestStoryExperience(7)).rejects.toBe(limited);
+    expect(limited.retryAfter).toBe(30);
+  });
+
+  it('re-throws a 404 ApiError untouched (uniform missing/foreign story)', async () => {
+    const notFound = new ApiError('story not found', {
+      status: 404,
+      code: 'not_found',
+    });
+    vi.spyOn(api, 'post').mockRejectedValueOnce(notFound);
+
+    await expect(requestStoryExperience(999)).rejects.toBe(notFound);
   });
 });
 
