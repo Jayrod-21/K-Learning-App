@@ -88,6 +88,7 @@ UNION ALL
 -- cardReview.ts dual-writes hanja reviews to both logs).
 SELECT
     cr.user_id,
+    -- Sentence-/topik-target cards also land in ELSE → 'vocab' (only grammar is named); the leg-prefixed item_key below preserves the finer distinction.
     CASE WHEN vc.grammar_entry_id IS NOT NULL THEN 'grammar' ELSE 'vocab' END::text,
     'fsrs'::text,
     cr.id,

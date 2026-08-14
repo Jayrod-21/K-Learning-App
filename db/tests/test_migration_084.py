@@ -434,6 +434,14 @@ def test_084_up_view_exists_and_is_empty(env, dsn: str, full_dir) -> None:
             cur.execute("SELECT count(*) FROM ability_evidence")
             assert cur.fetchone()[0] == 0, "no base rows → no evidence"
 
+        # Belt-and-braces: the app role (047's km_app, via its DEFAULT
+        # PRIVILEGES) can read the view — the TS read API connects as km_app.
+        with conn.cursor(row_factory=tuple_row) as cur:
+            cur.execute(
+                "SELECT has_table_privilege('km_app', 'ability_evidence', 'SELECT')"
+            )
+            assert cur.fetchone()[0] is True, "km_app must hold SELECT on the view"
+
 
 # ---------------------------------------------------------------------------
 # 2. UP — one seeded row per source surfaces with the right projection

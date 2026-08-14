@@ -130,6 +130,64 @@ describe('getAbilityEvidence', () => {
     expect(recent[0]!.source).toBe('diagnostic');
   });
 
+  it('combines dimension + since + limit in one query (param-index arithmetic)', async () => {
+    const userId = await seedUser('ability-combined@example.com');
+    await seedDrill(userId, '2026-08-01T09:00:00Z', 10); // before since — excluded
+    await seedDrill(userId, '2026-08-05T09:00:00Z', 50);
+    await seedDrill(userId, '2026-08-06T09:00:00Z', 60);
+    await seedDrill(userId, '2026-08-07T09:00:00Z', 70);
+    // Inside the window but the wrong dimension — excluded by the filter.
+    await seedDiagnostic(userId, '2026-08-06T12:00:00Z');
+
+    // All three optional filters at once: a mutant that mis-numbers the $n
+    // placeholders when the WHERE clauses stack would bind the wrong values.
+    const rows = await getAbilityEvidence(userId, {
+      dimension: 'grammar',
+      since: new Date('2026-08-04T00:00:00Z'),
+      limit: 2,
+    });
+    expect(rows.map((row) => row.source)).toEqual(['grammar_drill', 'grammar_drill']);
+    expect(rows.map((row) => row.outcome)).toEqual([0.7, 0.6]); // newest-first, capped
+  });
+
+  it('caps a limit above MAX_LIMIT at 10,000, not the raw value', async () => {
+    const userId = await seedUser('ability-cap@example.com');
+    await seedDrill(userId, '2026-08-01T09:00:00Z');
+
+    // A raw over-cap limit is indistinguishable from the capped one on a small
+    // seed, so intercept the bound params: the LIMIT parameter must be the
+    // MAX_LIMIT cap (10,000), never the caller's raw value.
+    const captured: unknown[][] = [];
+    const realPool = pg.pool;
+    const spyPool = new Proxy(realPool, {
+      get(target, prop) {
+        if (prop === 'query') {
+          return (...args: unknown[]): Promise<unknown> => {
+            const params = args[1];
+            if (Array.isArray(params)) captured.push(params);
+            return (target.query as (...a: unknown[]) => Promise<unknown>)(...args);
+          };
+        }
+        const value = Reflect.get(target, prop, target);
+        return typeof value === 'function'
+          ? (value as (...a: unknown[]) => unknown).bind(target)
+          : value;
+      },
+    });
+
+    setPoolForTesting(spyPool);
+    try {
+      const rows = await getAbilityEvidence(userId, { limit: 50_000 });
+      expect(rows).toHaveLength(1); // the capped query still runs for real
+    } finally {
+      setPoolForTesting(realPool);
+    }
+
+    const evidenceParams = captured.at(-1)!;
+    expect(evidenceParams.at(-1)).toBe(10_000);
+    expect(evidenceParams).not.toContain(50_000);
+  });
+
   it('excludes writing by default; includeWriting or an explicit dimension admits it', async () => {
     const userId = await seedUser('ability-writing@example.com');
     await seedDrill(userId, '2026-08-01T09:00:00Z');
