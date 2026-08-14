@@ -60,7 +60,9 @@ Rules:
    Each prompt MUST be fully SELF-CONTAINED English (the image model sees
    one prompt at a time, with no memory): embed the full styleDirective,
    the verbatim descriptions of every character in the scene, the setting,
-   the action, and the mood. 1-4 sentences, under 3800 characters.
+   the action, and the mood. 1-4 sentences, under 3800 characters. Settings
+   must be culturally appropriate, everyday Korean environments consistent
+   with the story.
 5. Every scene prompt MUST also state these constraints verbatim at its
    end: "No text, lettering, captions, or speech bubbles anywhere in the
    image. No real people, no celebrity likenesses, no existing copyrighted

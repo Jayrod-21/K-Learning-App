@@ -240,7 +240,7 @@ const EnvSchema = z.object({
   // story's one-live-job slot. Sized past the worst plausible run: one
   // prompt-set Claude call + 4 sequential image generations at ~90s each
   // ('pending' is never reaped — it is the healthy backlog).
-  STORY_IMAGE_STALE_RUN_MINUTES: z.coerce.number().int().positive().default(15),
+  STORY_IMAGE_STALE_RUN_MINUTES: z.coerce.number().int().positive().default(20),
 
   // How many key-scene illustrations one job generates (the sceneCount the
   // prompt-set route is asked for). LOCKED to 2..4 (F-211's charter) — an

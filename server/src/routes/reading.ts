@@ -1209,10 +1209,10 @@ async function buildStoryImagesDto(storyId: number, userId: number): Promise<Sto
   if (imgRes.rows.length > 0) {
     const jobRes = await query<{ id: string }>(
       `SELECT id FROM story_image_jobs
-        WHERE generated_story_id = $1 AND status = 'done'
+        WHERE generated_story_id = $1 AND user_id = $2 AND status = 'done'
         ORDER BY created_at DESC, id DESC
         LIMIT 1`,
-      [storyId],
+      [storyId, userId],
     );
     return {
       status: 'done',
