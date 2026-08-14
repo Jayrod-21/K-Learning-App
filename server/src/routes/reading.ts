@@ -1176,6 +1176,13 @@ async function enqueueStoryAudio(
       `SELECT body_ko FROM generated_stories WHERE id = $1 LIMIT 1`,
       [storyId],
     );
+    if (story.rows[0] === undefined) {
+      // The story vanished between the route's ownership check and this
+      // transaction (today only a user-cascade delete can do it — there is
+      // no story DELETE route). Same uniform 404 as the route's IDOR gate;
+      // both call sites rethrow it untouched.
+      throw new NotFoundError('story not found');
+    }
     await client.query(
       `INSERT INTO story_audio_jobs (generated_story_id, user_id, status, char_count)
        VALUES ($1, $2, 'pending', $3)`,

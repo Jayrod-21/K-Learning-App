@@ -383,6 +383,25 @@ describe('GET /reading/generated — the F-216 asset aggregates', () => {
     expect(byId.get(failedStory)).toMatchObject({ audioStatus: 'failed', imageStatus: 'failed' });
   });
 
+  it('the NEWEST job wins when a story has several (the lateral probe orders by created_at DESC)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const storyId = await seedGeneratedStory(pg.pool, userId);
+    // An OLDER failed attempt, then a NEWER pending re-request — distinct
+    // created_at so the probe's ORDER BY is what decides, not insert order.
+    await seedStoryAudioJob(pg.pool, userId, storyId, {
+      status: 'failed',
+      createdAt: new Date(Date.now() - 60_000),
+    });
+    await seedStoryAudioJob(pg.pool, userId, storyId, {
+      status: 'pending',
+      createdAt: new Date(),
+    });
+
+    const res = await agent.get('/reading/generated');
+    expect(res.status).toBe(200);
+    expect(res.body.stories[0].audioStatus).toBe('pending');
+  });
+
   it("the done AUTHORITY beats a NEWER failed job (buildStory*Dto's exact precedence)", async () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
     const storyId = await seedGeneratedStory(pg.pool, userId);

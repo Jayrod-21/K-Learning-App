@@ -1964,6 +1964,9 @@ function useStoryAudio(storyId: number): {
   }, [storyId]);
 
   const seed = useCallback((env: StoryAudio): void => {
+    // A seeded envelope supersedes any earlier per-asset failure — clear the
+    // stale error so a capped experience half doesn't render two alerts.
+    setRequestError(null);
     setAudio(env);
   }, []);
 
@@ -2159,6 +2162,9 @@ function useStoryImages(storyId: number): {
   }, [storyId]);
 
   const seed = useCallback((env: StoryImagesEnvelope): void => {
+    // A seeded envelope supersedes any earlier per-asset failure — clear the
+    // stale error so a capped experience half doesn't render two alerts.
+    setRequestError(null);
     setImages(env);
   }, []);
 
