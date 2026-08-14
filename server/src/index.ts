@@ -12,6 +12,7 @@ import { closePool, getPool } from './db/pool.js';
 import { getLogger } from './logging.js';
 import { buildClaudeProxy, setClaudeProxy } from './services/claudeProxy.js';
 import { startStoryAudioRunner } from './services/storyAudio.js';
+import { startStoryImageRunner } from './services/storyImage.js';
 
 function main(): void {
   const cfg = loadConfig();
@@ -38,10 +39,22 @@ function main(): void {
     log.warn('story TTS disabled — ELEVENLABS_API_KEY not set');
   }
   const stopStoryAudioRunner = startStoryAudioRunner(log);
+  // F-211: the in-server story-illustration job runner — the story-audio
+  // runner's exact posture (in-process, unref'd interval, explicit ticks in
+  // tests, stale-run reap after a crash). Same dormant-deploy stance: with
+  // no OPENAI_API_KEY the feature reports itself unavailable (503 on
+  // enqueue, `imageGenConfigured: false` on the status envelope, no
+  // batch-at-creation enqueue) and this warn makes a deploy that MEANT to
+  // enable illustrations diagnosable at boot.
+  if (cfg.OPENAI_API_KEY === undefined) {
+    log.warn('story illustrations disabled — OPENAI_API_KEY not set');
+  }
+  const stopStoryImageRunner = startStoryImageRunner(log);
 
   function shutdown(signal: string): void {
     log.info({ signal }, 'shutting down');
     stopStoryAudioRunner();
+    stopStoryImageRunner();
     server.close(async () => {
       try {
         await closePool();

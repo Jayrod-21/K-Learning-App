@@ -946,6 +946,73 @@ export async function seedStoryAudio(
   return { sourceId, trackId };
 }
 
+/**
+ * Seed a single story_image_jobs row (F-211, migration 083) directly —
+ * bypasses POST /reading/generated/:id/images. Returns the new job id.
+ * `userId` MUST own `storyId` (083's composite owner FK rejects any other
+ * pairing). Defaults to a settled 'failed' row so cap tests can stack many
+ * rows on ONE story without tripping the one-live-job partial unique
+ * (mirrors seedStoryAudioJob).
+ */
+export async function seedStoryImageJob(
+  pool: Pool,
+  userId: number,
+  storyId: number,
+  opts: {
+    status?: 'pending' | 'running' | 'done' | 'failed';
+    imageCount?: number;
+    error?: string | null;
+    createdAt?: Date;
+    startedAt?: Date;
+  } = {},
+): Promise<number> {
+  const { rows } = await pool.query<{ id: string }>(
+    `INSERT INTO story_image_jobs
+       (generated_story_id, user_id, status, image_count, error, created_at, started_at)
+     VALUES ($1, $2, $3, $4, $5, COALESCE($6, now()), $7)
+     RETURNING id`,
+    [
+      storyId,
+      userId,
+      opts.status ?? 'failed',
+      opts.imageCount ?? 3,
+      opts.error ?? null,
+      opts.createdAt ?? null,
+      opts.startedAt ?? null,
+    ],
+  );
+  return Number(rows[0]!.id);
+}
+
+/**
+ * Seed a fully ILLUSTRATED story (F-211): `count` ordered story_images rows
+ * — the at-rest state the runner produces, without generating anything or
+ * touching the filesystem (blob_ref points at nothing; tests that serve
+ * bytes must write the file themselves). Returns the blob_refs in
+ * image_number order.
+ */
+export async function seedStoryImages(
+  pool: Pool,
+  userId: number,
+  storyId: number,
+  opts: { count?: number; ext?: 'png' | 'jpg' | 'webp' } = {},
+): Promise<string[]> {
+  const count = opts.count ?? 3;
+  const ext = opts.ext ?? 'png';
+  const blobRefs: string[] = [];
+  for (let n = 1; n <= count; n++) {
+    const blobRef = `${userId}/${randomUUID()}.${ext}`;
+    await pool.query(
+      `INSERT INTO story_images
+         (generated_story_id, user_id, image_number, blob_ref, prompt, width, height)
+       VALUES ($1, $2, $3, $4, $5, 1024, 1024)`,
+      [storyId, userId, n, blobRef, `seeded scene ${n} prompt — webtoon style, no text in image`],
+    );
+    blobRefs.push(blobRef);
+  }
+  return blobRefs;
+}
+
 /** Insert a minimal krdict entry. Returns id. */
 export async function seedKrdictEntry(
   pool: Pool,

@@ -21,7 +21,7 @@
  *     so a fresh deploy / new user works without manual provisioning.
  */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
 import { loadConfig } from '../config/index.js';
 
@@ -110,6 +110,30 @@ export async function readBlob(relPath: string): Promise<Buffer> {
   const absPath = resolve(root, normalize(relPath));
   assertUnderRoot(root, absPath);
   return readFile(absPath);
+}
+
+/**
+ * Delete a blob given its RELATIVE path (F-211 — the story-image runner's
+ * best-effort cleanup after a rolled-back persist; mirrors
+ * audioStore.deleteBlob). Same traversal posture as readBlob: the stored
+ * path is treated as untrusted on the way back in. A missing file is NOT an
+ * error (idempotent — the cleanup may race an operator sweep).
+ *
+ * @throws Error if the resolved path escapes the storage root (traversal).
+ */
+export async function deleteBlob(relPath: string): Promise<void> {
+  const root = storageRoot();
+  if (isAbsolute(relPath)) {
+    throw new Error('deleteBlob: blob path must be relative');
+  }
+  const absPath = resolve(root, normalize(relPath));
+  assertUnderRoot(root, absPath);
+  try {
+    await unlink(absPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException | null)?.code === 'ENOENT') return;
+    throw err;
+  }
 }
 
 /**

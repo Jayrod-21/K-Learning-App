@@ -123,6 +123,12 @@ services:
       # var; the config schema reads empty as unset.
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
       - ELEVENLABS_VOICE_ID=${ELEVENLABS_VOICE_ID:-}
+      # F-211 story illustrations (OpenAI gpt-image-1). OPTIONAL — the same
+      # dormant-ship posture as ELEVENLABS_API_KEY above: blank in Deploy/.env
+      # means the server boots normally, the image endpoints report
+      # imageGenConfigured=false, and enqueues 503. Going live is a
+      # Deploy/.env edit + redeploy; no code or compose change.
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - TOTP_SECRET_ENC_KEY=${TOTP_SECRET_ENC_KEY}
       - REGISTRATION_ENABLED=${REGISTRATION_ENABLED:-false}
       - MFA_REQUIRED=${MFA_REQUIRED:-true}

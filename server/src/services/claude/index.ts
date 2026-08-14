@@ -67,6 +67,8 @@ import {
   ConversationTitleSchema,
   PatternResultSchema,
   StoryGenInputSchema,
+  StoryImagePromptsInputSchema,
+  StoryImagePromptsResultSchema,
   StoryResultSchema,
   TranslatePassageInputSchema,
   TranslatePassageResultSchema,
@@ -94,6 +96,8 @@ import {
   type PatternResult,
   type ProxyResult,
   type StoryGenInput,
+  type StoryImagePromptsInput,
+  type StoryImagePromptsResult,
   type StoryResult,
   type TranslatePassageInput,
   type TranslatePassageResult,
@@ -110,6 +114,7 @@ import {
   buildGrammarDrillScoreRequest,
 } from './prompts/grammar_drill';
 import { buildStoryRequest, buildWritingPromptRequest } from './prompts/generation';
+import { buildStoryImagePromptsRequest } from './prompts/story_image_prompts';
 import { buildImageOcrRequest } from './prompts/image_ocr';
 import { buildRecognizeGrammarRequest } from './prompts/recognize_grammar';
 import { buildTranslatePassageRequest } from './prompts/translate_passage';
@@ -151,6 +156,9 @@ export type {
   ProficiencyLevel,
   ProxyResult,
   StoryGenInput,
+  StoryImageCharacter,
+  StoryImagePromptsInput,
+  StoryImagePromptsResult,
   StoryLevel,
   StoryResult,
   StoryTurn,
@@ -283,6 +291,19 @@ export interface ClaudeProxy {
     input: TranslatePassageInput,
     ctx?: CallContext,
   ): Promise<ProxyResult<TranslatePassageResult>>;
+  /**
+   * F-211: author the illustration prompt set for ONE generated story — a
+   * fixed Korean-webtoon style directive, a shared character sheet, and 2-4
+   * self-contained key-scene prompts (style + characters + copyright-clean
+   * guardrails baked into each). Tool-use forced; low temperature and CACHED
+   * with a long TTL (deterministic per story — a retry after an
+   * image-provider failure reuses the same scenes at $0). The story-image
+   * runner is the only caller.
+   */
+  generateStoryImagePrompts(
+    input: StoryImagePromptsInput,
+    ctx?: CallContext,
+  ): Promise<ProxyResult<StoryImagePromptsResult>>;
   generateConversation(
     input: ConversationInput,
     ctx?: CallContext,
@@ -665,6 +686,45 @@ class ClaudeProxyImpl implements ClaudeProxy {
       cacheTtl: cfg.cacheTtlSeconds.translate_passage,
       outputSchema: TranslatePassageResultSchema,
       parser: parseToolResult('submit_translation'),
+    });
+  }
+
+  async generateStoryImagePrompts(
+    rawInput: StoryImagePromptsInput,
+    ctx: CallContext = {},
+  ): Promise<ProxyResult<StoryImagePromptsResult>> {
+    const cfg = this.cfg;
+    const route: RouteName = 'story_image_prompts';
+    const input = parseInput(StoryImagePromptsInputSchema, rawInput, route);
+    const cap = cfg.inputCaps.story_image_prompts;
+    // The title/body are model-generated but user-STEERED text (the story
+    // topic is user free text) — run both through the shared injection
+    // guard + length cap, exactly like translate_passage's passage. Speaker
+    // names (the only turn field the builder renders) get the same
+    // treatment; turn TEXT never rides the request.
+    const title = sanitizeUserInput(input.title, { maxLength: cap });
+    const bodyKo = sanitizeUserInput(input.bodyKo, { maxLength: cap });
+    const turns = input.turns?.map((t) => ({
+      ...t,
+      speaker: sanitizeUserInput(t.speaker, { maxLength: cap }),
+    }));
+    const cleaned: StoryImagePromptsInput = {
+      ...input,
+      title,
+      bodyKo,
+      ...(turns !== undefined ? { turns } : {}),
+    };
+    const model = resolveModel(cfg, route, input.model);
+    const request = buildStoryImagePromptsRequest(cleaned, model);
+
+    return this.runJsonRoute({
+      route,
+      model,
+      ctx,
+      request,
+      cacheTtl: cfg.cacheTtlSeconds.story_image_prompts,
+      outputSchema: StoryImagePromptsResultSchema,
+      parser: parseToolResult('submit_image_prompts'),
     });
   }
 

@@ -262,6 +262,22 @@ export function makeStubProxy(overrides: Partial<ClaudeProxy> = {}): ClaudeProxy
       },
       metadata: { ...baseMeta, requestId: randomUUID() },
     }),
+    generateStoryImagePrompts: async (input) => ({
+      // Deterministic prompt set sized to the requested sceneCount — lets the
+      // story-image runner tests assert per-scene generation + persistence
+      // without touching Anthropic. Each scene prompt embeds the title so
+      // tests can assert the story's own text reached the provider.
+      result: {
+        styleDirective:
+          'Korean webtoon (manhwa) digital illustration style: clean expressive line art, soft cel shading',
+        characters: [{ name: '주인공', description: 'a young woman in her 20s with short black hair' }],
+        scenePrompts: Array.from(
+          { length: input.sceneCount },
+          (_, i) => `mock scene ${i + 1} prompt for ${input.title} — webtoon style, no text in image`,
+        ),
+      },
+      metadata: { ...baseMeta, requestId: randomUUID() },
+    }),
     translatePassage: async (input) => ({
       // Deterministic mock translation echoing the source passage — lets the
       // /reading/translate route test assert the wire shape without touching
