@@ -354,6 +354,31 @@ describe('estimateAbility — sampled persist', () => {
     expect(Number(rows[0]!.user_id)).toBe(Number(alice));
   });
 
+  it('persist:false skips the daily sample entirely; the default still writes (F-212 P4)', async () => {
+    const userId = await seedUser('est-persist-flag@example.com');
+    await seedSufficientListening(userId);
+
+    // The pure-read path (/plan/today): a sufficient estimate is served but
+    // NO user_progress row is appended.
+    const estimates = await estimateAbility(userId, { now: NOW, persist: false });
+    expect(estimates[1]!.insufficient).toBe(false);
+    const afterPure = await pg.pool.query(
+      `SELECT count(*)::int AS n FROM user_progress WHERE user_id = $1`,
+      [userId],
+    );
+    expect(afterPure.rows[0]!.n).toBe(0);
+
+    // Default (persist omitted) — /ability/estimate behavior unchanged: the
+    // day's sample is written exactly as before the flag existed.
+    await estimateAbility(userId, { now: NOW });
+    const afterDefault = await pg.pool.query<{ metric_type: string }>(
+      `SELECT metric_type FROM user_progress WHERE user_id = $1`,
+      [userId],
+    );
+    expect(afterDefault.rows).toHaveLength(1);
+    expect(afterDefault.rows[0]!.metric_type).toBe('ability_theta_listening');
+  });
+
   it('a failed sample write is swallowed — the estimate is still served', async () => {
     const userId = await seedUser('est-persist-fail@example.com');
     await seedSufficientListening(userId);

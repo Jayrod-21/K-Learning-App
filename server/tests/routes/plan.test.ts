@@ -465,6 +465,181 @@ describe('GET /plan/today — writing task after F-014 prompt reconciliation', (
 });
 
 // ---------------------------------------------------------------------------
+// F-212 P4 — the additive `recommendation` field. Evidence is seeded through
+// the diagnostic_responses log (the same placed-evidence source the
+// estimate.test.ts suite uses) so the Phase-2 estimator finds a sufficient
+// dimension; the recommender then ranks it against the candidate pools.
+// ---------------------------------------------------------------------------
+
+/** One diagnostic run for a user (evidence container). */
+async function seedRun(userId: number): Promise<string> {
+  const { rows } = await pg.pool.query<{ id: string }>(
+    `INSERT INTO diagnostic_runs (user_id) VALUES ($1) RETURNING id`,
+    [userId],
+  );
+  return rows[0]!.id;
+}
+
+/** Six recent placed listening responses (5 right, 1 wrong) — clears the
+ *  Phase-2 min-evidence gate for the listening dimension (nUsed ≥ 5, fresh
+ *  recency weights), same recipe as estimate.test.ts. */
+async function seedSufficientListening(userId: number): Promise<void> {
+  const runId = await seedRun(userId);
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  for (let i = 0; i < 6; i += 1) {
+    await pg.pool.query(
+      `INSERT INTO diagnostic_responses
+          (run_id, ordinal, section, source_kind, source_ref, difficulty,
+           kind, item_payload, correct_answer, picked, is_correct, answered_at)
+       VALUES ($1, $2, 'listening', 'topik', 'f212-p4-ref', 3.5, 'mc',
+               '{"prompt":"고르세요"}'::jsonb, 'a', $3, $4, $5)`,
+      [
+        runId,
+        i + 1,
+        i !== 5 ? 'a' : 'b',
+        i !== 5,
+        new Date(Date.now() - (i + 1) * DAY_MS).toISOString(),
+      ],
+    );
+  }
+}
+
+describe('GET /plan/today — recommendation (F-212 P4)', () => {
+  it('recommends the evidence-backed dimension, deterministically, without writing user_progress', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await seedSufficientListening(userId);
+    await seedIyagiEpisode(pg.pool, { number: 11 });
+    await seedIyagiEpisode(pg.pool, { number: 12 });
+
+    const res = await agent.get('/plan/today');
+    expect(res.status).toBe(200);
+    const body = res.body as {
+      recommendation: {
+        dimension: string;
+        exploratory: boolean;
+        reasonCode: string;
+        reasonEn: string;
+        reasonKr: string;
+        level: string;
+        deepLink: string;
+        title: string;
+        mins: number;
+        corpus?: string;
+        episodeNumber?: number;
+      } | null;
+      alternatives?: unknown[];
+    };
+
+    // Listening is the ONLY sufficient dimension, and the other three have no
+    // content to explore (no library, no cards, no bank) — so listening is
+    // both the Stage-A winner and the only candidate-bearing dimension.
+    expect(body.recommendation).not.toBeNull();
+    const rec = body.recommendation!;
+    expect(rec.dimension).toBe('listening');
+    expect(rec.exploratory).toBe(false);
+    expect(['weakest_dimension', 'due_backlog', 'low_confidence', 'baseline']).toContain(
+      rec.reasonCode,
+    );
+    expect(rec.reasonEn.length).toBeGreaterThan(0);
+    expect(rec.reasonKr.length).toBeGreaterThan(0);
+    expect(rec.corpus).toBe('iyagi');
+    expect([11, 12]).toContain(rec.episodeNumber);
+    expect(rec.deepLink).toBe(
+      `/learn/listen?corpus=iyagi&episode=${String(rec.episodeNumber)}`,
+    );
+    expect(typeof rec.mins).toBe('number');
+    // The internal scoring fields never leak onto the wire.
+    expect(rec).not.toHaveProperty('itemKey');
+    expect(rec).not.toHaveProperty('b');
+    // No other dimension has candidates → no alternatives.
+    expect(body.alternatives).toEqual([]);
+
+    // Deterministic per (user, Seoul-day): a refetch returns the SAME plan +
+    // recommendation.
+    const second = await agent.get('/plan/today');
+    expect(second.body).toEqual(res.body);
+
+    // /plan/today stays a PURE READ: estimateAbility ran with persist:false,
+    // so the estimator's daily θ sample was NOT appended.
+    const progress = await pg.pool.query(
+      `SELECT count(*)::int AS n FROM user_progress WHERE user_id = $1`,
+      [userId],
+    );
+    expect(progress.rows[0]!.n).toBe(0);
+  });
+
+  it('cold start (no evidence at all) → recommendation null, tiles intact', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // Content exists — but with zero evidence every dimension is insufficient,
+    // and recommending on nothing would be a dishonest guess.
+    const uploadId = await seedBookUpload(pg.pool, userId, { type: 'literature' });
+    const chapterId = await seedReadingChapter(pg.pool, userId, uploadId);
+    await seedReadingPassage(pg.pool, chapterId);
+    await seedIyagiEpisode(pg.pool, { number: 3 });
+
+    const res = await agent.get('/plan/today');
+    expect(res.status).toBe(200);
+    const body = res.body as {
+      recommendation: unknown | null;
+      alternatives?: unknown[];
+      reading: unknown | null;
+      listening: unknown | null;
+      writing: unknown | null;
+    };
+    expect(body.recommendation).toBeNull();
+    expect(body.alternatives).toBeUndefined(); // omitted alongside the null
+    // The existing deterministic tiles are untouched by the cold start.
+    expect(body.reading).not.toBeNull();
+    expect(body.listening).not.toBeNull();
+    expect(body.writing).not.toBeNull();
+  });
+
+  it('is per-user isolated: one user’s evidence never leaks into another’s plan', async () => {
+    const a = await registerUser(t.app, pg.pool);
+    await seedSufficientListening(a.userId);
+    await seedIyagiEpisode(pg.pool, { number: 21 });
+
+    const b = await registerUser(t.app, pg.pool);
+    const resB = await b.agent.get('/plan/today');
+    expect(resB.status).toBe(200);
+    expect((resB.body as { recommendation: unknown | null }).recommendation).toBeNull();
+
+    const resA = await a.agent.get('/plan/today');
+    expect(
+      (resA.body as { recommendation: { dimension: string } | null }).recommendation
+        ?.dimension,
+    ).toBe('listening');
+  });
+
+  it('surfaces the due backlog through the vocab dimension when cards pile up', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // Listening sufficient (so the run is NOT a cold start) …
+    await seedSufficientListening(userId);
+    await seedIyagiEpisode(pg.pool, { number: 5 });
+    // … and a saturated vocab due backlog. Vocab itself is insufficient
+    // (no vocab evidence), so it wins on EXPLORE_BASE — the point here is
+    // that the due cards give the vocab dimension real candidates and the
+    // recommendation deep-links into the review queue.
+    for (let i = 0; i < 3; i += 1) {
+      await seedVocabCard(pg.pool, userId, { dueOffsetMs: -60_000 * (i + 1) });
+    }
+
+    const res = await agent.get('/plan/today');
+    expect(res.status).toBe(200);
+    const rec = (res.body as {
+      recommendation: { dimension: string; deepLink: string; exploratory: boolean } | null;
+    }).recommendation;
+    expect(rec).not.toBeNull();
+    expect(rec!.dimension).toBe('vocab');
+    expect(rec!.exploratory).toBe(true); // honest: vocab evidence is insufficient
+    expect(rec!.deepLink).toBe('/learn/vocab');
+    // The sufficient listening dimension rides along as an alternative.
+    const alts = (res.body as { alternatives?: Array<{ dimension: string }> }).alternatives;
+    expect(alts?.map((x) => x.dimension)).toContain('listening');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Writing-branch tests that TRUNCATE the shared writing_prompts bank to control
 // it exactly. These MUST stay LAST in the file: beforeEach does NOT restore the
 // migration seed rows, so any earlier test that relies on the bank (the shape
