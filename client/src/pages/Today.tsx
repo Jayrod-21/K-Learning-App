@@ -204,7 +204,13 @@ import { listReadingAttempts } from '../services/reading';
 import type { ReadingAttemptsPage } from '../services/reading';
 import { listListeningAttempts } from '../services/ttmik';
 import type { ListeningAttemptsPage } from '../services/ttmik';
-import type { DrillAttemptsPage, TodayPlan, TodayTask } from '../types/domain';
+import type {
+  DrillAttemptsPage,
+  Recommendation,
+  RecommendationDimension,
+  TodayPlan,
+  TodayTask,
+} from '../types/domain';
 import { cn } from '../lib/cn';
 import { isLocalToday } from '../lib/localDay';
 import { SKILL_COLOR } from '../lib/skill-colors';
@@ -282,8 +288,13 @@ function renderTag(tag: TodayTask['tag'], gap: TodayTask['tag']): ReactNode {
 /** Reading tile target: the exact chapter (`?chapter=<id>`) or generated
  *  story (`?story=<id>`) the tile displays (B4 Option 2 — reading is now
  *  sourced from the caller's own reading_chapters/generated_stories, not the
- *  old public TTMIK-lesson pick). */
-function readingHref(t: TodayTask): string {
+ *  old public TTMIK-lesson pick). Structurally typed on just the deep-link
+ *  fields (F-212 P4) so the Recommended-next card — whose `Recommendation`
+ *  carries the same optional id fields as `TodayTask` — reuses this exact
+ *  builder instead of growing a parallel one that could drift. */
+function readingHref(
+  t: Pick<TodayTask, 'sourceKind' | 'chapterId' | 'storyId'>,
+): string {
   if (t.sourceKind === 'story' && t.storyId !== undefined) {
     return `/learn/reading?story=${String(t.storyId)}`;
   }
@@ -293,8 +304,11 @@ function readingHref(t: TodayTask): string {
   return '/learn/reading';
 }
 
-/** Listening tile target: the exact Iyagi episode (B5). */
-function listeningHref(t: TodayTask): string {
+/** Listening tile target: the exact Iyagi episode (B5). Structurally typed
+ *  for the same `Recommendation` reuse as `readingHref` above. */
+function listeningHref(
+  t: Pick<TodayTask, 'corpus' | 'episodeNumber'>,
+): string {
   if (t.corpus !== undefined && t.episodeNumber !== undefined) {
     return `/learn/listen?corpus=${t.corpus}&episode=${String(t.episodeNumber)}`;
   }
@@ -307,6 +321,75 @@ function writingHref(t: TodayTask): string {
   return t.promptId !== undefined
     ? `/learn/writing?promptId=${String(t.promptId)}`
     : '/learn/writing';
+}
+
+// ─────────────────────────────────────────────────────────────
+// F-212 Phase 4 — the "Recommended next" featured card. Rendered ABOVE the
+// Suggested-learning rail when `/plan/today` carries a non-null
+// `recommendation` (the evidence-driven pick from the Phase-2 ability
+// estimates); a null recommendation (cold-start — every dimension still
+// insufficient) renders NO card and the existing deterministic tiles carry
+// the day unchanged, the honest fallback. Copy discipline: "Recommended" /
+// "Suggested next step" — never "optimal" or "best path" (the recommender is
+// a heuristic over noisy estimates, and the copy must not claim more).
+// ─────────────────────────────────────────────────────────────
+
+/** Per-dimension presentation for the recommendation card — the SAME
+ *  canonical `SKILL_COLOR` tone + icon the dimension's own tile uses
+ *  elsewhere on this page, so a skill reads as one color everywhere. */
+const RECOMMENDATION_DIM: Record<
+  RecommendationDimension,
+  { tone: CityCardTone; icon: IconName; en: string; kr: string }
+> = {
+  reading: { tone: SKILL_COLOR.reading.tone, icon: 'book', en: 'Reading', kr: '읽기' },
+  listening: { tone: SKILL_COLOR.ttmik.tone, icon: 'headphones', en: 'Listening', kr: '듣기' },
+  vocab: { tone: SKILL_COLOR.flashcards.tone, icon: 'cards', en: 'Vocab', kr: '어휘' },
+  grammar: { tone: SKILL_COLOR.grammar.tone, icon: 'grammar', en: 'Grammar', kr: '문법' },
+};
+
+/**
+ * Recommendation card target. Built CLIENT-SIDE from the structured id
+ * fields via the exact same builders the Suggested-learning tiles use —
+ * never by navigating on the server's free-form `deepLink` string (this
+ * page's threat model: constructed paths come from integer ids/enums only).
+ * Vocab lands on the FSRS due-review session (`?study=due` — Review.tsx's
+ * actual flashcard branch, same target as the Vocab tile above) and grammar
+ * on the drills landing; neither carries per-item ids in v1. Missing id
+ * fields fall back to the bare landing page, never a fabricated id — same
+ * posture as every other deep link on this page.
+ */
+function recommendationHref(rec: Recommendation): string {
+  switch (rec.dimension) {
+    case 'reading':
+      return readingHref(rec);
+    case 'listening':
+      return listeningHref(rec);
+    case 'vocab':
+      return '/learn/vocab?study=due';
+    case 'grammar':
+      return '/learn/grammar';
+  }
+}
+
+/**
+ * The card's client-composed framing line (rendered above the server's own
+ * bilingual reason). Exploratory picks exist to GATHER signal on a dimension
+ * with no usable estimate yet — the framing is "let's build a read on your
+ * <dimension>", explicitly NOT a deficit claim, because no deficit has been
+ * measured. Every other reason code frames as a plain "Suggested next step"
+ * and lets the server's reason text (`reasonEn`/`reasonKr`, composed from
+ * the actual dominant scoring term) do the honest explaining — the client
+ * never re-derives WHY copy that could drift from the real ranking.
+ */
+function recommendationFraming(rec: Recommendation): { en: string; kr: string } {
+  if (rec.exploratory) {
+    const dim = RECOMMENDATION_DIM[rec.dimension];
+    return {
+      en: `Let's build a read on your ${dim.en.toLowerCase()}`,
+      kr: `${dim.kr} 감각을 함께 알아봐요`,
+    };
+  }
+  return { en: 'Suggested next step', kr: '다음 추천 학습' };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -918,6 +1001,13 @@ export function Today(): JSX.Element {
   // and keep working regardless (checked below).
   const planFailed = !today.loading && today.data === null;
 
+  // F-212 P4 — the evidence-driven "do this next" pick. Strictly additive:
+  // null (cold-start — no dimension has a usable ability estimate yet, or an
+  // older server color that predates the field) renders NO card and changes
+  // nothing else on this screen; the gap pill, tiles, and rails above/below
+  // are untouched either way.
+  const recommendation = today.data?.recommendation ?? null;
+
   return (
     <section
       className="screen km-today km-rain-sheen"
@@ -1081,6 +1171,70 @@ export function Today(): JSX.Element {
           ]}
         />
       </section>
+
+      {/* F-212 P4 — "Recommended next": ONE featured tile (same `feat` +
+          gold "Recommended" pill treatment as the TOPIK tile below) slotted
+          ABOVE the Suggested-learning rail. Deliberately a labeled <section>
+          with NO `.km-today__section-title` <h2> of its own: the card IS the
+          content (its pill + framing line carry the "Recommended / Suggested
+          next step" copy), and the page's three-section-header structure —
+          pinned by tests — stays exactly three. The framing line is
+          exploration-aware (`recommendationFraming`): an exploratory pick
+          says "let's build a read on your <dimension>", never a deficit
+          claim, because no deficit has been measured for an insufficient
+          dimension. The server's own bilingual reason (`reasonEn`/
+          `reasonKr`, composed from the actual dominant scoring term) renders
+          verbatim beneath it — the honest WHY, folded into the button's
+          aria-label too (this subtree is presentational to AT, same
+          convention as the Writing tile's prompt preview). Navigation goes
+          through `recommendationHref` — the same id-built href builders as
+          every other tile, never the server's free-form `deepLink` string
+          (threat model: constructed paths from integer ids/enums only). */}
+      {recommendation !== null ? (
+        <section className="km-today__section" aria-label="Recommended next">
+          <ActivityTile
+            tone={RECOMMENDATION_DIM[recommendation.dimension].tone}
+            feat
+            icon={RECOMMENDATION_DIM[recommendation.dimension].icon}
+            ariaLabel={`Recommended next — ${recommendation.title}. ${recommendation.reasonEn}`}
+            pill={
+              <Pill tone="gold">
+                <Bilingual en="Recommended" kr="추천" />
+              </Pill>
+            }
+            headline={<span className="kr">{recommendation.title}</span>}
+            meta={
+              <Bilingual
+                en={`${RECOMMENDATION_DIM[recommendation.dimension].en} · ${recommendation.level} · ${String(recommendation.mins)} min`}
+                kr={`${RECOMMENDATION_DIM[recommendation.dimension].kr} · ${recommendation.level} · ${String(recommendation.mins)}분`}
+              />
+            }
+            extra={
+              <>
+                <span className="km-today__tile-progress">
+                  <span className="km-today__tile-meta">
+                    <Bilingual
+                      en={recommendationFraming(recommendation).en}
+                      kr={recommendationFraming(recommendation).kr}
+                    />
+                  </span>
+                </span>
+                <span className="km-today__tile-progress">
+                  <span className="km-today__tile-meta">
+                    <Bilingual
+                      en={recommendation.reasonEn}
+                      kr={recommendation.reasonKr}
+                    />
+                  </span>
+                </span>
+              </>
+            }
+            onClick={() => {
+              navigate(recommendationHref(recommendation));
+            }}
+          />
+        </section>
+      ) : null}
 
       {/* Carousel 2 — Suggested learning: Listening / Reading / Writing as
           a native-scroll-snap PEEK SLIDER on mobile (see the module header

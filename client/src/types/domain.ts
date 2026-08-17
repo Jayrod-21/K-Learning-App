@@ -567,6 +567,67 @@ export interface TodayTask {
   promptKr?: string;
 }
 
+/** The four dimensions the F-212 Phase-4 recommender chooses between.
+ *  Writing is deliberately held out of v1 (its scoring surface is separate),
+ *  so this is narrower than the full skill set the app teaches. */
+export type RecommendationDimension =
+  | 'reading'
+  | 'listening'
+  | 'vocab'
+  | 'grammar';
+
+/** Why the recommender picked this item — the dominant term of its
+ *  dimension score. Drives honest client copy, never a hidden ranking. */
+export type RecommendationReasonCode =
+  | 'weakest_dimension'
+  | 'due_backlog'
+  | 'low_confidence'
+  | 'exploration'
+  | 'baseline';
+
+/**
+ * F-212 Phase 4 — one ranked "do this next" pick from `GET /plan/today`.
+ *
+ * `reasonEn`/`reasonKr` are the server-composed honest WHY (bilingual); the
+ * client renders them verbatim rather than re-deriving copy that could drift
+ * from the actual scoring. `exploratory` is true when the pick exists to
+ * GATHER signal on a dimension we can't estimate yet — the client must frame
+ * it as exploration ("let's build a read on your listening"), never as a
+ * deficit claim, because no deficit has been measured.
+ *
+ * `deepLink` is the server's own composed target path. The client does NOT
+ * navigate on it: Today.tsx builds hrefs from the structured id fields below
+ * via the same `readingHref`/`listeningHref` builders every other tile uses
+ * (integer ids/enums only — no free-text URL surface; see Today.tsx's threat
+ * model). The field is carried through so the wire shape matches the server
+ * contract and future consumers can cross-check the id-built href against it.
+ *
+ * The optional id fields mirror the `TodayTask` deep-link union exactly —
+ * each populated only when `dimension` names it (reading → sourceKind +
+ * chapterId/storyId, listening → corpus + episodeNumber). Vocab and grammar
+ * carry no per-item ids in v1; their deep links are the fixed session
+ * landings (`/learn/vocab?study=due`, `/learn/grammar`).
+ */
+export interface Recommendation {
+  dimension: RecommendationDimension;
+  exploratory: boolean;
+  reasonCode: RecommendationReasonCode;
+  reasonEn: string;
+  reasonKr: string;
+  /** Display label for the item's level (e.g. "L3", "L3→L4"). Looser than
+   *  `LevelLabel` by contract — the recommender's target-difficulty banding
+   *  may compose labels the fixed union doesn't enumerate. */
+  level: string;
+  deepLink: string;
+  title: string;
+  mins: number;
+  sourceKind?: 'chapter' | 'story';
+  chapterId?: number;
+  storyId?: number;
+  corpus?: 'iyagi';
+  episodeNumber?: number;
+}
+
 /**
  * Today plan. Originally mirrored `TODAY` in data.js; Pass 4 wires it to
  * `GET /plan/today`.
@@ -579,6 +640,14 @@ export interface TodayTask {
  * latest diagnostic snapshot); it drives which tile wears the "Largest gap"
  * highlight. `null` when the user has no diagnostic snapshot yet — the screen
  * falls back to highlighting Listening (the design's default emphasis).
+ *
+ * `recommendation` (F-212 Phase 4) is the evidence-driven "do this next"
+ * pick. `null` at cold-start (every dimension's ability estimate is still
+ * insufficient) — the screen renders NO recommendation card and the existing
+ * deterministic tiles carry the day unchanged, which is the honest fallback
+ * (recommending from no evidence would be a fabricated claim). `alternatives`
+ * (runner-up dimensions' best items, in rank order) is optional and unused by
+ * the Today card in v1 — mapped through so the domain type matches the wire.
  */
 export interface TodayPlan {
   reviewCount: number;
@@ -586,6 +655,8 @@ export interface TodayPlan {
   listening: TodayTask | null;
   writing: TodayTask | null;
   largestGap: TodayTask['tag'] | null;
+  recommendation: Recommendation | null;
+  alternatives?: Recommendation[];
 }
 
 // ─────────────────────────────────────────────────────────────
