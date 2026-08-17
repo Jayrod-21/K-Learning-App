@@ -206,6 +206,25 @@ describe('EAP — boundedness at the extremes', () => {
     expect(theta).toBeLessThanOrEqual(cfg.gridMax);
     expect(se).toBeGreaterThan(0);
   });
+
+  it('stays finite at scale (~2000 items): total log-weight ≈ −10³ underflows every grid node without log-space max-subtraction', () => {
+    // 2000 mid-outcome items put ℓ(θ) around −1300…−2000 at every node —
+    // past exp()'s ~−745 underflow floor. Naive exp(logW) would zero the
+    // whole posterior (0/0 → NaN); the max-subtraction in eapEstimate keeps
+    // the ratio well-defined. This test fails if that subtraction is removed.
+    const items: LikelihoodItem[] = Array.from({ length: 2000 }, (_, i) => ({
+      b: 1 + (5 * i) / 1999, // spread across [1, 6]
+      outcome: 0.6,
+      weight: 1,
+      graded: true,
+    }));
+    const { theta, se } = eapEstimate(items, cfg);
+    expect(Number.isFinite(theta)).toBe(true);
+    expect(Number.isFinite(se)).toBe(true);
+    expect(theta).toBeGreaterThanOrEqual(cfg.gridMin);
+    expect(theta).toBeLessThanOrEqual(cfg.gridMax);
+    expect(se).toBeGreaterThan(0);
+  });
 });
 
 describe('continuous-Bernoulli outcomes', () => {
@@ -248,11 +267,18 @@ describe('continuous-Bernoulli outcomes', () => {
   });
 
   it('clamps P before ln so extreme θ−b gaps never produce NaN/−∞ weights', () => {
-    // b far outside the grid with a huge |θ−b| would hit ln(0) unclamped.
-    const items: LikelihoodItem[] = [{ b: 100, outcome: 1, weight: 1 }];
+    // b = 800 puts a·(θ−b) ≤ −794 at every grid node, so the unclamped
+    // logistic underflows to EXACTLY 0 → o·ln(0) = −∞ at every node →
+    // exp(−∞ − (−∞)) = NaN posterior. The [ε, 1−ε] clamp in logLikelihood
+    // is what keeps this finite — this test fails if the clamp is removed.
+    // (A milder b like 100 would NOT catch that: P ≈ 1e−43 is small but
+    // nonzero, so ln stays finite even unclamped.)
+    const items: LikelihoodItem[] = [{ b: 800, outcome: 1, weight: 1 }];
     const { theta, se } = eapEstimate(items, cfg);
     expect(Number.isFinite(theta)).toBe(true);
     expect(Number.isFinite(se)).toBe(true);
+    expect(theta).toBeGreaterThanOrEqual(cfg.gridMin);
+    expect(theta).toBeLessThanOrEqual(cfg.gridMax);
   });
 });
 

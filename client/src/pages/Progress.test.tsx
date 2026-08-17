@@ -357,16 +357,17 @@ const ABILITY_ALL_INSUFFICIENT: AbilityEstimate[] = [
   abilityInsufficient('grammar'),
 ];
 
-/** Two ready dimensions + two gated ones. Reading θ=3.5±0.5 → score 47.5,
- *  band 40–55 (the anchor map's exact values); listening θ=4±0.5 → score 55,
- *  band 47.5–62.5. Both effN ≥ 5 and band width < 20 → NOT tentative. */
+/** Two ready dimensions + two gated ones. Reading θ=3.5±0.5 → score 48,
+ *  band 40–55 (the anchor map's values, integer-rounded like the server);
+ *  listening θ=4±0.5 → score 55, band 48–63. Both effN ≥ 5 and band width
+ *  < 20 → NOT tentative. */
 const ABILITY_MIXED: AbilityEstimate[] = [
   {
     dimension: 'reading',
     theta: 3.5,
     se: 0.5,
     band: 'L3',
-    score: 47.5,
+    score: 48,
     n: 14,
     nUsed: 12,
     effN: 8.2,
@@ -401,7 +402,7 @@ const ABILITY_TENTATIVE: AbilityEstimate[] = [
     theta: 3.5,
     se: 1.5,
     band: 'L3',
-    score: 47.5,
+    score: 48,
     n: 6,
     nUsed: 5,
     effN: 3.1,
@@ -2097,18 +2098,18 @@ describe('Progress page — live ability estimate (F-212 P2)', () => {
     abilitySvc.fetchAbilityEstimate.mockResolvedValue(ABILITY_MIXED);
     renderEstimate();
 
-    // Reading θ=3.5±0.5 → score 47.5, band 40–55; listening θ=4±0.5 → score
-    // 55, band 47.5–62.5. SkillBar's aria-label carries all three numbers,
-    // so this pins that the band edges really come from θ±se, not se-free
-    // duplicates of the score.
+    // Reading θ=3.5±0.5 → score 48, band 40–55; listening θ=4±0.5 → score
+    // 55, band 48–63 (integer scores, server rounding parity). SkillBar's
+    // aria-label carries all three numbers, so this pins that the band edges
+    // really come from θ±se, not se-free duplicates of the score.
     expect(
       await screen.findByRole('progressbar', {
-        name: 'Reading skill — estimated 47.5, range 40–55',
+        name: 'Reading skill — estimated 48, range 40–55',
       }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole('progressbar', {
-        name: 'Listening skill — estimated 55, range 47.5–62.5',
+        name: 'Listening skill — estimated 55, range 48–63',
       }),
     ).toBeInTheDocument();
 
@@ -2150,7 +2151,7 @@ describe('Progress page — live ability estimate (F-212 P2)', () => {
     // The wide band still renders honestly on the bar itself.
     expect(
       screen.getByRole('progressbar', {
-        name: 'Reading skill — estimated 47.5, range 25–70',
+        name: 'Reading skill — estimated 48, range 25–70',
       }),
     ).toBeInTheDocument();
   });
@@ -2183,7 +2184,7 @@ describe('Progress page — live ability estimate (F-212 P2)', () => {
     abilitySvc.fetchAbilityEstimate.mockResolvedValue(ABILITY_MIXED);
     renderEstimate();
     await screen.findByRole('progressbar', {
-      name: 'Reading skill — estimated 47.5, range 40–55',
+      name: 'Reading skill — estimated 48, range 40–55',
     });
 
     // Reference-line labels ("TOPIK 4") are comparison targets, not claims;

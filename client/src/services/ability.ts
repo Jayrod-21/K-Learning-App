@@ -89,15 +89,40 @@ export async function fetchAbilityEstimate(
 }
 
 /**
- * θ → 0–100 score, mirroring the server's `estimateToScore` anchor table
- * (`server/src/services/diagnostic/scoring.ts`) EXACTLY — piecewise-linear
- * through [θ, score] anchors, first-segment extrapolation below θ=1, clamped
- * to 0–100. The server already returns `score` for the point estimate; this
- * client mirror exists ONLY to derive the confidence-band edges from θ±se
- * (the wire contract carries `se` on the θ scale, not score-scale edges), so
- * the rendered band honestly reflects the posterior SD. If the server table
- * ever changes, this mirror must change with it — the service test pins the
- * anchor values so a drift fails loudly.
+ * θ-scale floor/ceiling the estimator can actually measure — the server
+ * clamps every estimate into [1, 6] (`clampEstimate` in scoring.ts /
+ * `clampTheta` in diagnostic/cat.ts) before mapping to a score, and the
+ * band edges here do the same so a θ+se tail can never render a ~100
+ * ("Native") band-high the estimator cannot claim.
+ */
+const THETA_MIN = 1;
+const THETA_MAX = 6;
+
+/** Mirror of the server's `clampEstimate` (scoring.ts): θ confined to [1, 6]. */
+function clampTheta(value: number): number {
+  if (value < THETA_MIN) return THETA_MIN;
+  if (value > THETA_MAX) return THETA_MAX;
+  return value;
+}
+
+/** Mirror of the server's private `clampScore` (scoring.ts): clamp to 0–100
+ *  AND round to an integer — server scores are integers on the wire, so the
+ *  client-derived values must be too (θ=3.5 → 48 on both sides, not 47.5). */
+function toServerScore(value: number): number {
+  return Math.round(clampScore(value));
+}
+
+/**
+ * θ → 0–100 INTEGER score, mirroring the server's `estimateToScore`
+ * (`server/src/services/diagnostic/scoring.ts`): the same piecewise-linear
+ * [θ, score] anchor table, first-segment extrapolation below θ=1, clamped to
+ * 0–100 and rounded to an integer exactly as the server's `clampScore` does.
+ * The server already returns `score` for the point estimate; this client
+ * mirror exists ONLY to derive the confidence-band edges from θ±se (the wire
+ * contract carries `se` on the θ scale, not score-scale edges), so the
+ * rendered band honestly reflects the posterior SD. If the server table or
+ * rounding ever changes, this mirror must change with it — the service test
+ * pins the anchor values so a drift fails loudly.
  */
 export function thetaToScore(theta: number): number {
   // Anchor table: [θ, score], ascending by θ. θ=3 → 40 (TOPIK 3 threshold),
@@ -121,7 +146,7 @@ export function thetaToScore(theta: number): number {
   // Below the first anchor: extrapolate on the first segment's slope.
   if (theta <= e0) {
     const slope = (s1 - s0) / (e1 - e0);
-    return clampScore(s0 + slope * (theta - e0));
+    return toServerScore(s0 + slope * (theta - e0));
   }
   // Within the table: interpolate on the bracketing segment.
   for (let i = 0; i < anchors.length - 1; i += 1) {
@@ -130,19 +155,21 @@ export function thetaToScore(theta: number): number {
     if (lo === undefined || hi === undefined) break; // unreachable
     if (theta <= hi[0]) {
       const slope = (hi[1] - lo[1]) / (hi[0] - lo[0]);
-      return clampScore(lo[1] + slope * (theta - lo[0]));
+      return toServerScore(lo[1] + slope * (theta - lo[0]));
     }
   }
   // Above the last anchor.
-  return clampScore(100);
+  return toServerScore(100);
 }
 
 /**
- * Confidence-band edges (0–100) for an estimate: `thetaToScore(θ−se)` /
- * `thetaToScore(θ+se)` — the θ-scale posterior SD pushed through the same
- * monotone anchor map as the score itself, so the band brackets the bar it
- * decorates. Returns null when either input is null (insufficient estimate —
- * no bar, no band).
+ * Confidence-band edges (0–100 integers) for an estimate: θ−se / θ+se are
+ * first clamped into [1, 6] (parity with the server diagnostic's
+ * `clampEstimate` — the estimator cannot measure outside that range, so a
+ * θ+se tail must not paint a ~100 "Native" band-high), then pushed through
+ * the same monotone anchor map as the score itself, so the band brackets the
+ * bar it decorates. Returns null when either input is null (insufficient
+ * estimate — no bar, no band).
  */
 export function estimateBandEdges(
   theta: number | null,
@@ -150,7 +177,7 @@ export function estimateBandEdges(
 ): { scoreLow: number; scoreHigh: number } | null {
   if (theta === null || se === null) return null;
   return {
-    scoreLow: thetaToScore(theta - se),
-    scoreHigh: thetaToScore(theta + se),
+    scoreLow: thetaToScore(clampTheta(theta - se)),
+    scoreHigh: thetaToScore(clampTheta(theta + se)),
   };
 }

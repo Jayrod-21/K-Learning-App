@@ -25,7 +25,7 @@ const READY: AbilityEstimate = {
   theta: 3.5,
   se: 0.5,
   band: 'L3',
-  score: 47.5,
+  score: 48, // server-realistic: estimateToScore rounds to an integer
   n: 12,
   nUsed: 10,
   effN: 8.2,
@@ -121,13 +121,16 @@ describe('thetaToScore (server anchor-table mirror)', () => {
     expect(thetaToScore(7)).toBe(100);
   });
 
-  it('interpolates linearly between anchors', () => {
-    expect(thetaToScore(3.5)).toBe(47.5);
-    expect(thetaToScore(4.2)).toBeCloseTo(58, 10);
+  it('interpolates linearly between anchors, rounded to an INTEGER like the server', () => {
+    // 47.5 → 48: the server's clampScore Math.rounds, and the mirror must
+    // agree so a client-derived edge never disagrees with a wire score.
+    expect(thetaToScore(3.5)).toBe(48);
+    expect(thetaToScore(4.2)).toBe(58);
   });
 
   it('extrapolates below the first anchor on the first segment slope, clamped at 0', () => {
-    expect(thetaToScore(0.5)).toBeCloseTo(2.5, 10);
+    // 10 + 15·(−0.5) = 2.5 → Math.round → 3 (server parity).
+    expect(thetaToScore(0.5)).toBe(3);
     // 10 + 15·(−1) = −5 → clamps to 0.
     expect(thetaToScore(0)).toBe(0);
   });
@@ -136,10 +139,11 @@ describe('thetaToScore (server anchor-table mirror)', () => {
     expect(thetaToScore(8)).toBe(100);
   });
 
-  it('is monotone non-decreasing across the whole grid', () => {
+  it('is monotone non-decreasing and integer-valued across the whole grid', () => {
     let prev = -Infinity;
     for (let theta = 0; theta <= 8; theta += 0.1) {
       const score = thetaToScore(theta);
+      expect(Number.isInteger(score)).toBe(true);
       expect(score).toBeGreaterThanOrEqual(prev);
       prev = score;
     }
@@ -160,12 +164,16 @@ describe('estimateBandEdges', () => {
     expect(estimateBandEdges(4, 0)).toEqual({ scoreLow: 55, scoreHigh: 55 });
   });
 
-  it('clamps edges into 0–100 for extreme θ±se', () => {
+  it('clamps θ±se into [1, 6] before mapping, so extremes cap at the measurable 10–85', () => {
+    // θ+se = 9 clamps to θ=6 → 85, NOT 100: the estimator cannot measure
+    // "Native", so the band-high must not paint it (server clampEstimate
+    // parity).
     const edges = estimateBandEdges(6, 3);
     expect(edges?.scoreLow).toBe(40);
-    expect(edges?.scoreHigh).toBe(100);
+    expect(edges?.scoreHigh).toBe(85);
+    // θ−se = −1 clamps to θ=1 → 10, the scale floor's anchor.
     const low = estimateBandEdges(1, 2);
-    expect(low?.scoreLow).toBe(0);
+    expect(low?.scoreLow).toBe(10);
   });
 
   it('returns null when theta or se is null (insufficient estimate)', () => {
