@@ -39,6 +39,7 @@ import uploadsRoutes from './routes/uploads.js';
 import audioRoutes from './routes/audio.js';
 import readingRoutes from './routes/reading.js';
 import ticketsRoutes from './routes/tickets.js';
+import abilityRoutes from './routes/ability.js';
 
 export function createApp(): Express {
   const cfg = loadConfig();
@@ -121,6 +122,11 @@ export function createApp(): Express {
   // km-lb nginx API allow-list (Deploy/nginx-{blue,green}-active.conf) in the
   // same change, or the SPA shadows it (see km-nginx-api-route-allowlist).
   app.use('/tickets', ticketsRoutes);
+  // F-212 P2: continuous ability estimate (anchored IRT over the evidence
+  // stream) — a NEW top-level prefix, added to the km-lb nginx API allow-list
+  // (Deploy/nginx-{blue,green}-active.conf, both server blocks) in the same
+  // change, or the SPA shadows it (see km-nginx-api-route-allowlist).
+  app.use('/ability', abilityRoutes);
 
   // 404 fallthrough — comes BEFORE the error handler.
   app.use((req, res) => {
