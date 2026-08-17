@@ -1981,6 +1981,62 @@ describe('Today — Recommended next card (F-212 P4)', () => {
 
     expect(screen.queryByText(/optimal/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/best path/i)).not.toBeInTheDocument();
+
+    // The button's ACCESSIBLE NAME too — its aria-label replaces the
+    // subtree for AT, so queryByText alone can't see a claim smuggled into
+    // the label. Screen-reader users get the same honest copy.
+    const button = within(
+      screen.getByRole('region', { name: 'Recommended next' }),
+    ).getByRole('button');
+    const label = button.getAttribute('aria-label') ?? '';
+    expect(label).not.toBe('');
+    expect(label).not.toMatch(/optimal/i);
+    expect(label).not.toMatch(/best path/i);
+  });
+
+  it('keeps exactly THREE .km-today__section-title h2 headers WITH the card present — the Recommended-next section adds no fourth header', () => {
+    // Pins the locked layout decision: the card slots between Review &
+    // drills and Suggested learning WITHOUT its own section header — the
+    // page's h2 count must not grow when the recommendation renders.
+    loadWithRecommendation(REC_LISTENING);
+    renderTodayAt();
+
+    expect(
+      screen.getByRole('region', { name: 'Recommended next' }),
+    ).toBeInTheDocument();
+    expect(
+      document.querySelectorAll('.km-today__section-title'),
+    ).toHaveLength(3);
+    const headings = screen.getAllByRole('heading', { level: 2 });
+    expect(headings).toHaveLength(3);
+    expect(headings[0]).toHaveTextContent('Review & drills');
+    expect(headings[1]).toHaveTextContent('Suggested learning');
+    expect(headings[2]).toHaveTextContent('TOPIK');
+  });
+
+  it('reading: a hostile deepLink is inert even WITH id fields present — navigation is id-built, never the server string', async () => {
+    // Mirror of the listening hostile-deepLink test above, for the reading
+    // dimension WITH its id fields intact: the id-built href must win and
+    // the hostile string must never be navigated.
+    loadWithRecommendation({
+      ...REC_LISTENING,
+      dimension: 'reading',
+      deepLink: 'https://evil.example/phish',
+      title: '3장 — 한강의 밤',
+      sourceKind: 'chapter',
+      chapterId: 88,
+    });
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    await user.click(
+      within(
+        screen.getByRole('region', { name: 'Recommended next' }),
+      ).getByRole('button'),
+    );
+    expect(
+      screen.getByText('READING PAGE /learn/reading?chapter=88'),
+    ).toBeInTheDocument();
   });
 
   it('the mock fixture renders the card too (mock path parity)', () => {

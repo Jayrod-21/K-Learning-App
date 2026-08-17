@@ -210,6 +210,17 @@ function clamp01(x: number): number {
   return Math.min(1, Math.max(0, x));
 }
 
+/**
+ * Exploration-dominance guard margin. Under the LOCKED config the invariant
+ * "any insufficient dimension outranks any sufficient one" already holds by
+ * the estimator's posterior-SD math (max sufficient sum ≈ 0.96 < EXPLORE_BASE
+ * 1.0), but that makes it an EMERGENT property of remote constants — a future
+ * weight retune could silently break it. dimensionScore therefore caps every
+ * SUFFICIENT score strictly below exploreBase by this margin, making the
+ * invariant LOCAL and retune-proof. A no-op under the locked config.
+ */
+const EXPLORATION_DOMINANCE_EPS = 1e-9;
+
 /** Deterministic md5 hex of the joined parts (the plan.ts hash idiom in JS). */
 function md5Key(...parts: string[]): string {
   return createHash('md5').update(parts.join('')).digest('hex');
@@ -249,7 +260,12 @@ export function dimensionScore(
   const due = config.wDue * clamp01(signal.dueCount / config.dueSat);
   const uncertainty = config.wUncertainty * clamp01((signal.se ?? 0) / config.priorSd);
   return {
-    score: deficit + due + uncertainty,
+    // Capped strictly below exploreBase so exploration dominance holds by
+    // construction, whatever the weights (see EXPLORATION_DOMINANCE_EPS).
+    score: Math.min(
+      deficit + due + uncertainty,
+      config.exploreBase - EXPLORATION_DOMINANCE_EPS,
+    ),
     exploratory: false,
     terms: { deficit, due, uncertainty },
   };

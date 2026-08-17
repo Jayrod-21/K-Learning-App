@@ -183,6 +183,77 @@ describe('rankRecommendations — Stage A winner', () => {
     expect(recommendation?.reasonCode).toBe('exploration');
   });
 
+  it('two SUFFICIENT dimensions with exactly equal Stage-A scores resolve by DIMENSION_ORDER (reading < listening < vocab < grammar)', () => {
+    // Identical θ / se / dueCount on all four → every Stage-A score is
+    // exactly equal (deficit 0 against a shared θ_ref, same uncertainty), so
+    // the ONLY thing ordering them is the deterministic DIMENSION_ORDER
+    // tie-break — no md5 involvement at Stage A.
+    const { recommendation, alternatives } = rank({
+      dimensions: [
+        sufficient('grammar', 3.0),
+        sufficient('vocab', 3.0),
+        sufficient('listening', 3.0),
+        sufficient('reading', 3.0),
+      ],
+      candidates: {
+        reading: [item('reading:story:1', 3.4)],
+        listening: [item('listening:iyagi:1', 3.4)],
+        vocab: [item('vocab:card:1', 3.4)],
+        grammar: [item('grammar:entry:1', 3.4)],
+      },
+    });
+    expect(recommendation?.dimension).toBe('reading');
+    expect(alternatives.map((a) => a.dimension)).toEqual([
+      'listening',
+      'vocab',
+      'grammar',
+    ]);
+  });
+
+  it('exploration dominance is clamped LOCALLY — a hostile config whose sufficient score would reach EXPLORE_BASE still loses to an insufficient dimension', () => {
+    // A retuned/hostile config where a maxed-out sufficient dimension's raw
+    // term sum (5·1 + 0.3 + 0.2 = 5.5) would dwarf EXPLORE_BASE if the
+    // invariant relied only on the estimator's posterior-SD math. The
+    // dimensionScore cap must hold it strictly below exploreBase anyway.
+    const hostile = { ...RECOMMENDER_CONFIG, wDeficit: 5 };
+    const capped = dimensionScore(
+      sufficient('reading', 1.0, { se: 1.49, dueCount: 999 }),
+      6.0,
+      hostile,
+    );
+    expect(capped.score).toBeLessThan(hostile.exploreBase);
+
+    const { recommendation } = rank({
+      dimensions: [
+        sufficient('reading', 1.0, { se: 1.49, dueCount: 999 }),
+        sufficient('vocab', 6.0),
+        insufficient('listening'),
+      ],
+      candidates: {
+        reading: [item('reading:story:1', 1.4)],
+        vocab: [item('vocab:card:1', 6.0)],
+        listening: [item('listening:iyagi:1', null)],
+      },
+      config: hostile,
+    });
+    expect(recommendation?.dimension).toBe('listening');
+    expect(recommendation?.exploratory).toBe(true);
+  });
+
+  it('the clamp is a no-op under the LOCKED config — a sufficient score still equals its term sum', () => {
+    // Worst realistic sufficient case (full deficit, saturated due, se just
+    // under the prior): the raw sum ≈ 0.9987 < 1.0, so the local cap never
+    // bites under the locked weights — score remains exactly the term sum.
+    const worst = dimensionScore(
+      sufficient('grammar', 1.0, { se: 1.49, dueCount: 999 }),
+      6.0,
+    );
+    expect(worst.score).toBeCloseTo(
+      worst.terms.deficit + worst.terms.due + worst.terms.uncertainty,
+      12,
+    );
+  });
+
   it('due backlog flips the winner exactly at DUE_SAT, not below', () => {
     // reading: deficit 0.5·((3.5−2.63)/1.5) = 0.29; vocab: due·0.3/20.
     // Equal se on both sides cancels the uncertainty term in the comparison,
