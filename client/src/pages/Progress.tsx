@@ -128,6 +128,13 @@ import {
   hanjaProgressSummary,
 } from '../lib/encounteredBar';
 import { navItem } from '../lib/nav';
+import { clampScore } from '../lib/skillBand';
+import {
+  estimateBandEdges,
+  fetchAbilityEstimate,
+  type AbilityDimension,
+  type AbilityEstimate,
+} from '../services/ability';
 import { getHistory } from '../services/diagnostic';
 import { fetchGrammarMastery } from '../services/grammar';
 import { fetchHanjaProgress } from '../services/hanja';
@@ -239,6 +246,258 @@ function toSkillRefs(snap: DiagnosticSnapshot): ReadonlyArray<SkillReference> {
     // `native` is the ceiling — design paints its tick indigo, not vermilion.
     isCeiling: r.id === 'native',
   }));
+}
+
+// ─────────────────────────────────────────────────────────────
+// Live ability estimate (F-212 Phase 2)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Chrome labels for the estimator's dimensions. A `switch` (not a `Record`)
+ * so an out-of-contract dimension from the server degrades to its raw key
+ * instead of crashing on an undefined lookup.
+ */
+function abilityDimMeta(dim: AbilityDimension): { label: string; kr: string } {
+  switch (dim) {
+    case 'reading':
+      return { label: 'Reading', kr: '읽기' };
+    case 'listening':
+      return { label: 'Listening', kr: '듣기' };
+    case 'vocab':
+      return { label: 'Vocabulary', kr: '어휘' };
+    case 'grammar':
+      return { label: 'Grammar', kr: '문법' };
+    case 'writing':
+      return { label: 'Writing', kr: '쓰기' };
+    default:
+      return { label: dim, kr: dim };
+  }
+}
+
+/**
+ * Reference lines for the estimate block's `SkillsCompare`. Values are the
+ * SAME anchor scores the server's θ→score table maps the band thresholds to
+ * (scoring.ts: θ3→40, θ4→55, θ5→70, θ6→85, Native=100), so a bar crossing
+ * "T4" here means exactly what it means on the diagnostic block. Static on
+ * purpose — this block renders even when the user has never taken a
+ * diagnostic, so it cannot borrow the snapshot's server-sent references.
+ */
+const ESTIMATE_REFERENCES: ReadonlyArray<SkillReference> = [
+  { id: 'l3', label: 'TOPIK 3', kr: '3급', value: 40 },
+  { id: 'l4', label: 'TOPIK 4', kr: '4급', value: 55 },
+  { id: 'l5', label: 'TOPIK 5', kr: '5급', value: 70 },
+  { id: 'l6', label: 'TOPIK 6', kr: '6급', value: 85 },
+  { id: 'native', label: 'Native', kr: '원어민', value: 100, isCeiling: true },
+];
+
+/**
+ * Tentative-signal thresholds. Below `TENTATIVE_EFF_N` recency-weighted
+ * effective observations, or with a confidence band wider than
+ * `TENTATIVE_BAND_WIDTH` score points, the whole block gets a muted visual
+ * treatment + an explicit "low confidence" caption — a thin signal must not
+ * render with the same visual authority as a settled one.
+ */
+const TENTATIVE_EFF_N = 5;
+const TENTATIVE_BAND_WIDTH = 20;
+
+/** An estimate the gate released AND whose numeric fields are all present —
+ *  the only shape that may render as a bar. Everything else is "locked". */
+function isReadyEstimate(
+  e: AbilityEstimate,
+): e is AbilityEstimate & { theta: number; se: number; score: number } {
+  return !e.insufficient && e.theta !== null && e.se !== null && e.score !== null;
+}
+
+/** Map ready estimates onto SkillsCompare rows. `score` comes straight from
+ *  the server; the band edges are derived from θ±se through the same anchor
+ *  map (services/ability.ts), so the band's width reflects the posterior SD
+ *  honestly. */
+function toEstimateRows(
+  ready: ReadonlyArray<AbilityEstimate & { theta: number; se: number; score: number }>,
+): ReadonlyArray<SkillRow> {
+  return ready.map((e) => {
+    const meta = abilityDimMeta(e.dimension);
+    const edges = estimateBandEdges(e.theta, e.se);
+    return {
+      key: e.dimension,
+      label: meta.label,
+      kr: meta.kr,
+      score: clampScore(e.score),
+      ...(edges !== null
+        ? { scoreLow: edges.scoreLow, scoreHigh: edges.scoreHigh }
+        : {}),
+    };
+  });
+}
+
+/** Whether one ready estimate is a thin/rough signal (see the thresholds). */
+function isTentativeEstimate(
+  e: AbilityEstimate & { theta: number; se: number; score: number },
+): boolean {
+  if (e.effN < TENTATIVE_EFF_N) return true;
+  const edges = estimateBandEdges(e.theta, e.se);
+  return edges !== null && edges.scoreHigh - edges.scoreLow >= TENTATIVE_BAND_WIDTH;
+}
+
+/**
+ * "Estimated from your recent practice" (F-212 P2) — the CONTINUOUS ability
+ * estimate from `GET /ability/estimate`, rendered as its own block, fully
+ * separate from the diagnostic's "Where you stand" compare above it. The two
+ * are different numbers on purpose and are never merged: the diagnostic
+ * snapshot stays the formal placement; this is a rough live signal.
+ *
+ * Honesty rules (locked):
+ *   - Never a bare "TOPIK level N" claim — bars render against reference
+ *     LINES the user picks, same as the diagnostic compare.
+ *   - `insufficient` dimensions get a "keep practicing" placeholder, never a
+ *     bar with invented numbers.
+ *   - The confidence band comes from θ±se (posterior SD) through the same
+ *     anchor map as the score, and a thin/wide-band signal renders muted
+ *     with an explicit low-confidence caption.
+ *
+ * Real-data-only on purpose (same rationale as the mastery panels): a mock
+ * fallback would paint a fabricated ability level as the user's own.
+ */
+function LiveEstimateBody(): JSX.Element {
+  const [estimates, setEstimates] = useState<AbilityEstimate[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
+
+  function retry(): void {
+    setNonce((n) => n + 1);
+  }
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setLoading(true);
+    setError(null);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    fetchAbilityEstimate(ctrl.signal)
+      .then((res) => {
+        if (ctrl.signal.aborted) return;
+        setEstimates(res);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setError(errorMessageFor(err, 'Could not load your live estimate.'));
+        setLoading(false);
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [nonce]);
+
+  if (loading) {
+    return (
+      <div className="km-progress__state" role="status">
+        <Bilingual en="Loading your estimate…" kr="불러오는 중…" />
+      </div>
+    );
+  }
+  if (error !== null || estimates === null) {
+    return (
+      <ErrorCard
+        message={error ?? 'Could not load your live estimate.'}
+        onRetry={retry}
+      />
+    );
+  }
+
+  const ready = estimates.filter(isReadyEstimate);
+  const locked = estimates.filter((e) => !isReadyEstimate(e));
+  const tentative = ready.some(isTentativeEstimate);
+  // Newest contributing evidence across the rendered bars — ISO strings
+  // compare lexicographically, so a plain max works.
+  const asOf = ready.reduce<string | null>(
+    (acc, e) =>
+      e.lastEvidenceAt !== null && (acc === null || e.lastEvidenceAt > acc)
+        ? e.lastEvidenceAt
+        : acc,
+    null,
+  );
+  const lockedEn = locked.map((e) => abilityDimMeta(e.dimension).label).join(', ');
+  const lockedKr = locked.map((e) => abilityDimMeta(e.dimension).kr).join(', ');
+
+  return (
+    <div className="km-progress__estimate">
+      {/* Honest framing (locked copy): a rough signal, not a placement. */}
+      <p className="km-progress__note">
+        <Bilingual
+          en="Updates as you study. A rough signal, not a formal placement — take the diagnostic for that."
+          kr="공부할수록 업데이트돼요. 대략적인 신호일 뿐 정식 배치가 아니에요 — 정확한 배치는 진단으로 확인하세요."
+        />
+      </p>
+
+      {ready.length > 0 ? (
+        <div
+          className={cn(
+            'km-progress__estimatebars',
+            tentative && 'km-progress__estimatebars--tentative',
+          )}
+          // Muted treatment for a thin/wide-band signal. Inline (not a CSS
+          // rule) so the tentative state is visually real even before the
+          // stylesheet learns the modifier class above.
+          style={tentative ? { opacity: 0.72 } : undefined}
+        >
+          {tentative ? (
+            <p className="km-progress__note">
+              <Bilingual
+                en="Low confidence — these bars are still rough."
+                kr="신뢰도가 낮아요 — 아직 대략적인 값이에요."
+              />
+            </p>
+          ) : null}
+          <SkillsCompare
+            variant="full"
+            skills={toEstimateRows(ready)}
+            references={ESTIMATE_REFERENCES}
+            defaultRefId="l4"
+          />
+          {asOf !== null ? (
+            <p className="km-progress__note">
+              <Bilingual
+                en={`As of ${formatDay(asOf)}`}
+                kr={`${formatDay(asOf)} 기준`}
+                compact
+              />
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* Insufficient dimensions — a placeholder, never a bar. When EVERY
+          dimension is locked the sentence stands alone; a mixed state names
+          the locked dimensions inline. (Locked copy, verbatim.) */}
+      {ready.length === 0 ? (
+        <p className="km-progress__note">
+          <Bilingual
+            en="Practice a few more placed items to unlock a live estimate."
+            kr="배치된 문제를 몇 개 더 풀면 실시간 추정이 열려요."
+          />
+        </p>
+      ) : locked.length > 0 ? (
+        <p className="km-progress__note">
+          <Bilingual
+            en={`${lockedEn} — Practice a few more placed items to unlock a live estimate.`}
+            kr={`${lockedKr} — 배치된 문제를 몇 개 더 풀면 실시간 추정이 열려요.`}
+          />
+        </p>
+      ) : null}
+
+      {/* Calibration honesty note — anchored difficulties, not yet fit to
+          response data (that is Phase 3). */}
+      <p className="km-progress__note">
+        <Bilingual
+          en="Item difficulties are proficiency-anchored, not yet calibrated from data."
+          kr="문항 난이도는 숙련도 기준 고정값이에요 — 아직 데이터로 보정되지 않았어요."
+        />
+      </p>
+    </div>
+  );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -644,6 +903,29 @@ function Progress(): JSX.Element {
             <CompareCardBody snapshots={snapshots} />
           )
         ) : null}
+      </CollapsibleTile>
+
+      {/* F-212 P2 — the live ability estimate. A SEPARATE block from the
+          diagnostic compare above (different number, different authority):
+          "Where you stand" is the formal placement; this is a continuous
+          rough signal from recent practice. Distinct tone (mint) so the two
+          never read as one surface. Default-collapsed like the other
+          secondary sections; the body stays mounted, so its fetch fires on
+          page load either way. */}
+      <CollapsibleTile
+        className="km-progress__section"
+        defaultCollapsed
+        surface="city"
+        tone="mint"
+        rail
+        title={
+          <Bilingual
+            en="Estimated from your recent practice"
+            kr="최근 학습 기반 추정"
+          />
+        }
+      >
+        <LiveEstimateBody />
       </CollapsibleTile>
 
       <CollapsibleTile
