@@ -72,6 +72,7 @@ const readingSvc = vi.hoisted(() => ({
 }));
 const uploadsSvc = vi.hoisted(() => ({
   listUploads: vi.fn(),
+  listSharedUploads: vi.fn(),
   getUpload: vi.fn(),
 }));
 const tapSvc = vi.hoisted(() => ({
@@ -370,6 +371,7 @@ beforeEach(() => {
   readingSvc.getStoryImages.mockReset();
   readingSvc.requestStoryExperience.mockReset();
   uploadsSvc.listUploads.mockReset();
+  uploadsSvc.listSharedUploads.mockReset();
   uploadsSvc.getUpload.mockReset();
   tapSvc.lemmatize.mockReset();
   tapSvc.defineEntry.mockReset();
@@ -380,6 +382,9 @@ beforeEach(() => {
   // these, an unmocked service resolves `undefined` and the component's
   // Promise chains would crash on a shape it can never receive in prod.
   uploadsSvc.listUploads.mockResolvedValue([LITERATURE_READY]);
+  // F-217: default to an empty shared library so every pre-F-217 test sees
+  // the exact shelf it always did (the section renders nothing when empty).
+  uploadsSvc.listSharedUploads.mockResolvedValue([]);
   uploadsSvc.getUpload.mockResolvedValue(LITERATURE_READY);
   readingSvc.getReadingPosition.mockResolvedValue(null);
   readingSvc.saveReadingPosition.mockResolvedValue(SAVED_POSITION);
@@ -890,6 +895,34 @@ describe('Reading — chapter reader (tap-to-define)', () => {
     expect(screen.getByRole('button', { name: '소년은' })).toBeInTheDocument();
   });
 
+  it('F-217: a 404 on the position save (non-owner reading a SHARED book) is swallowed silently — no error toast, reading continues', async () => {
+    readingSvc.getChapter.mockResolvedValue({
+      chapter: { ...CHAPTER_ONE, sourceUploadId: 41 },
+      passages: [
+        { id: 1, passageNumber: 1, body: '소년은 걸었다.', pageNumber: 1 },
+      ],
+    });
+    // The owner-only PUT /reading/position/:uploadId 404s for a non-owner
+    // on every chapter open — expected, not an error.
+    readingSvc.saveReadingPosition.mockRejectedValue(
+      new ApiError('not found', { status: 404, code: 'not_found' }),
+    );
+
+    const user = userEvent.setup();
+    renderReading();
+    await openChapterOne(user);
+
+    // The save was attempted (and rejected) …
+    await waitFor(() => {
+      expect(readingSvc.saveReadingPosition).toHaveBeenCalled();
+    });
+    // … but no toast fired, and the reader body is intact.
+    expect(
+      screen.queryByText(/couldn't save your reading position/i),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '소년은' })).toBeInTheDocument();
+  });
+
   it('tapping a word runs the lemmatize→define→enrich chain and opens the popover', async () => {
     readingSvc.getChapter.mockResolvedValue({
       chapter: { ...CHAPTER_ONE, sourceUploadId: 41 },
@@ -1335,6 +1368,144 @@ describe('Reading — Comics & Picture Books (Track P)', () => {
     const probe = await screen.findByTestId('upload-viewer-probe');
     expect(probe.textContent).toBe(COMIC_READY.id);
     expect(readingSvc.listChapters).not.toHaveBeenCalled();
+  });
+});
+
+describe('Reading — Shared Library (F-217)', () => {
+  const SHARED_LIT: BookUpload = {
+    id: '90',
+    title: '공유 문학집',
+    type: 'literature',
+    status: 'ready',
+    pageCount: 40,
+    byteSize: 1_500_000,
+    createdAt: '2026-08-01T00:00:00Z',
+  };
+
+  const SHARED_COMIC: BookUpload = {
+    id: '91',
+    title: '공유 만화',
+    type: 'comic',
+    status: 'ready',
+    pageCount: 20,
+    byteSize: 2_000_000,
+    createdAt: '2026-08-02T00:00:00Z',
+  };
+
+  it("renders a Shared Library section BELOW the owner's sections, listing only books the user does NOT own (no double-listing)", async () => {
+    uploadsSvc.listUploads.mockResolvedValue([LITERATURE_READY]);
+    // The shared listing includes the caller's own shared book too (the
+    // server serves one library to every account) — the shelf must de-dupe
+    // it out of the Shared Library because Literature already lists it.
+    uploadsSvc.listSharedUploads.mockResolvedValue([
+      LITERATURE_READY,
+      SHARED_LIT,
+    ]);
+
+    renderReading();
+
+    const sharedRegion = await screen.findByRole('region', {
+      name: 'Shared Library',
+    });
+    expect(
+      within(sharedRegion).getByRole('button', {
+        name: new RegExp(`Open ${SHARED_LIT.title}`),
+      }),
+    ).toBeInTheDocument();
+    // The owned-and-shared book renders exactly once — in Literature.
+    const literature = screen.getByRole('region', { name: 'Literature' });
+    expect(
+      within(literature).getByRole('button', {
+        name: new RegExp(`Open ${LITERATURE_READY.title}`),
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(sharedRegion).queryByText(LITERATURE_READY.title),
+    ).not.toBeInTheDocument();
+    // Additive placement: the shared section sits BELOW the owner's.
+    expect(
+      literature.compareDocumentPosition(sharedRegion) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('a non-owner with ZERO uploads of their own lands on the Shared Library — not the upload prompt', async () => {
+    uploadsSvc.listUploads.mockResolvedValue([]);
+    uploadsSvc.listSharedUploads.mockResolvedValue([SHARED_LIT]);
+
+    renderReading();
+
+    expect(
+      await screen.findByRole('region', { name: 'Shared Library' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/upload a book to start reading/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('opening a shared LITERATURE book reaches the chapter picker WITHOUT an ErrorCard (the owner-only position 404 resolves to null)', async () => {
+    uploadsSvc.listUploads.mockResolvedValue([]);
+    uploadsSvc.listSharedUploads.mockResolvedValue([SHARED_LIT]);
+    uploadsSvc.getUpload.mockResolvedValue(SHARED_LIT);
+    readingSvc.listChapters.mockResolvedValue([CHAPTER_ONE]);
+    // What the service layer NOW returns for a non-owner: getReadingPosition
+    // swallows the owner-only route's 404 into null (services/reading.ts) —
+    // the picker's Promise.all sees a resolved null, never a rejection.
+    readingSvc.getReadingPosition.mockResolvedValue(null);
+
+    const user = userEvent.setup();
+    renderReading();
+
+    await user.click(
+      await screen.findByRole('button', {
+        name: new RegExp(`Open ${SHARED_LIT.title}`),
+      }),
+    );
+
+    // The chapter list rendered — no ErrorCard, and no Resume button (a
+    // borrowed book starts from the beginning).
+    expect(
+      await screen.findByRole('button', { name: /open 해질녘/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /resume/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('a shared COMIC opens the page-image viewer at /uploads/:id — never the chapter picker', async () => {
+    uploadsSvc.listUploads.mockResolvedValue([]);
+    uploadsSvc.listSharedUploads.mockResolvedValue([SHARED_COMIC]);
+
+    const user = userEvent.setup();
+    renderReadingWithViewerRoute();
+
+    await user.click(
+      await screen.findByRole('button', {
+        name: new RegExp(`Open ${SHARED_COMIC.title}`),
+      }),
+    );
+
+    const probe = await screen.findByTestId('upload-viewer-probe');
+    expect(probe.textContent).toBe(SHARED_COMIC.id);
+    expect(readingSvc.listChapters).not.toHaveBeenCalled();
+  });
+
+  it("a failed shared-library fetch degrades to no section — the owner's own shelf still renders (no ErrorCard)", async () => {
+    uploadsSvc.listUploads.mockResolvedValue([LITERATURE_READY]);
+    uploadsSvc.listSharedUploads.mockRejectedValue(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+
+    renderReading();
+
+    expect(
+      await screen.findByRole('region', { name: 'Literature' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('region', { name: 'Shared Library' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });
 
