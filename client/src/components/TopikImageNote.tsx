@@ -20,6 +20,7 @@
  * React text node — a malicious payload becomes literal text, never markup.
  */
 import type { JSX } from 'react';
+import { useState } from 'react';
 import { Bilingual } from './Bilingual';
 import { Eyebrow } from './Eyebrow';
 import { buildTopikImageSrc } from '../services/ttmik';
@@ -42,6 +43,11 @@ export function TopikImageNote({
   // Strict allow-list + API-base join — null for absent AND for any value
   // that is not exactly a /topik/image/<n>/<1|2>/<n> route shape.
   const src = imageUrl !== undefined ? buildTopikImageSrc(imageUrl) : null;
+  // A mapped asset can still fail to load (deleted blob, transient 404); on
+  // `onError` we drop the broken <img> and fall back to the same text
+  // rendering used when no image was mapped, instead of showing the
+  // browser's broken-image glyph.
+  const [imgFailed, setImgFailed] = useState(false);
   return (
     <aside
       className="km-topik__image-note"
@@ -53,7 +59,7 @@ export function TopikImageNote({
       <Eyebrow>
         <Bilingual kr="그림 설명" en="Image description" />
       </Eyebrow>
-      {src !== null ? (
+      {src !== null && !imgFailed ? (
         <figure className="km-topik__image-figure">
           <img
             className="km-topik__image"
@@ -63,6 +69,7 @@ export function TopikImageNote({
             // is the content — better an image with a thin alt than no image).
             alt={description ?? 'Exam figure for this question'}
             loading="lazy"
+            onError={() => setImgFailed(true)}
           />
           {description !== null ? (
             <figcaption className="kr km-topik__image-desc">

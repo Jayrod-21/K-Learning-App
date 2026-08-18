@@ -8,11 +8,13 @@
  *     buildTopikImageSrc (empty API base in tests → the app-relative path
  *     verbatim), with the description as the figure's caption AND alt;
  *   - imageUrl without a description still renders the figure (generic alt);
+ *   - a failed image load (error event) removes the <img> and falls back to
+ *     the same text note used when no image was mapped;
  *   - an off-allow-list imageUrl (tampered wire value) renders NO <img> and
  *     falls back to the text path — the allow-list is what feeds the src.
  */
 import { describe, expect, it } from 'vitest';
-import { render } from '@testing-library/react';
+import { fireEvent, render } from '@testing-library/react';
 import { TopikImageNote } from './TopikImageNote';
 
 // NOTE on src assertions: the test env builds with no VITE_API_URL, so
@@ -59,6 +61,17 @@ describe('TopikImageNote — real exam figure (F-120)', () => {
     expect(img?.getAttribute('src')).toBe('/topik/image/60/1/17');
     expect(img?.getAttribute('alt')).toBe('Exam figure for this question');
     expect(container.querySelector('figcaption')).toBeNull();
+  });
+
+  it('a failed image load drops the <img> and falls back to the text note', () => {
+    const { container } = render(
+      <TopikImageNote description={DESC} imageUrl="/topik/image/60/2/1" />,
+    );
+    const img = container.querySelector('img');
+    expect(img).not.toBeNull();
+    fireEvent.error(img as HTMLImageElement);
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('.km-topik__image-desc')?.textContent).toBe(DESC);
   });
 
   it('an off-allow-list imageUrl never reaches an <img> — text fallback instead', () => {
