@@ -182,3 +182,24 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* ── Listen read-along (shared F-210 mechanism) ─────────────── */
+
+/* One transcript sentence line in the track player. Carries the row's 8px
+ * vertical rhythm (moved here from the old inline padding) plus side
+ * padding a negative inline margin cancels — the highlight pad breathes
+ * past the text column without shifting the copy. The transition keeps the
+ * read-along sweep calm instead of strobing (the Reading.css recipe). */
+.km-ttmik__readalong-line {
+  padding: 8px;
+  margin: 0 -8px;
+  border-radius: var(--radius);
+  transition: background-color 180ms ease;
+}
+
+/* Accent-driven highlight — the shared `--vermilion` token, never a
+ * hard-coded color, so it stays soft and legible in both themes (the
+ * F-131 stance, matching the reader's active line). */
+.km-ttmik__readalong-line--active {
+  background: color-mix(in srgb, var(--vermilion) 14%, transparent);
+}

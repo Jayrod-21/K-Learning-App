@@ -261,6 +261,7 @@ import {
 import { useTapWord } from '../hooks/useTapWord';
 import { audioUploadErrorMessage, errorMessageFor } from '../lib/errorCopy';
 import { navItem } from '../lib/nav';
+import { activeSegmentNumberAt } from '../lib/readAlong';
 import {
   checkAudioFile,
   getAudioTrack,
@@ -3558,6 +3559,64 @@ function MyAudioDetail({
     [data],
   );
 
+  // Read-along (the F-210 reader mechanism, via the shared lib/readAlong
+  // resolver): highlight the transcript line whose [startMs, endMs) window
+  // contains the playhead. Degrade exactly as the reader does — no segments,
+  // or all-zero windows (no usable timing), means no highlighting and the
+  // plain transcript stands. Listeners attach only while a timed transcript
+  // is rendered and are removed on unmount / track change (the component
+  // remounts per trackId key; a poll-refreshed `data` re-runs the effect;
+  // browsers don't fire `timeupdate` while paused, so pause needs no extra
+  // teardown). `seeked` re-syncs after a scrub; `ended` clears.
+  const hasTiming = orderedSegments.some(
+    (s) => s.startMs !== 0 || s.endMs !== 0,
+  );
+  const readAlong =
+    data !== null &&
+    data.track.transcriptStatus === 'done' &&
+    orderedSegments.length > 0 &&
+    hasTiming;
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
+  const activeLineRef = useRef<HTMLLIElement | null>(null);
+  const [activeSegmentNumber, setActiveSegmentNumber] = useState<
+    number | null
+  >(null);
+  useEffect(() => {
+    if (!readAlong) return;
+    const el = audioElRef.current;
+    if (el === null) return;
+    const sync = (): void => {
+      setActiveSegmentNumber(
+        activeSegmentNumberAt(orderedSegments, el.currentTime * 1000),
+      );
+    };
+    const clear = (): void => {
+      setActiveSegmentNumber(null);
+    };
+    el.addEventListener('timeupdate', sync);
+    el.addEventListener('seeked', sync);
+    el.addEventListener('ended', clear);
+    return () => {
+      el.removeEventListener('timeupdate', sync);
+      el.removeEventListener('seeked', sync);
+      el.removeEventListener('ended', clear);
+    };
+  }, [readAlong, orderedSegments]);
+
+  // Gentle auto-follow (the reader's recipe verbatim): keep the active line
+  // in view while actually playing — never on a paused scrub, and `nearest`
+  // so the page doesn't lurch. Guarded: happy-dom/test environments may not
+  // implement scrollIntoView.
+  useEffect(() => {
+    if (activeSegmentNumber === null) return;
+    const line = activeLineRef.current;
+    const player = audioElRef.current;
+    if (line === null || player === null || player.paused) return;
+    if (typeof line.scrollIntoView === 'function') {
+      line.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [activeSegmentNumber]);
+
   if (loading) return <SkeletonCard />;
   if (notFound) {
     return (
@@ -3622,6 +3681,7 @@ function MyAudioDetail({
                 the corpus player. */}
             {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
             <audio
+              ref={audioElRef}
               controls
               preload="metadata"
               src={audioSrc}
@@ -3664,19 +3724,30 @@ function MyAudioDetail({
             aria-label="Transcript"
             style={{ listStyle: 'none', margin: 0, padding: 0 }}
           >
-            {orderedSegments.map((seg) => (
-              <li
-                key={seg.segmentNumber}
-                className="km-reference__row"
-                style={{ padding: '8px 0' }}
-              >
-                {/* Whisper output rendered through React text children
-                    (escaped) — same contract as every transcript above. */}
-                <p className="kr km-reference__row-kr" style={{ margin: 0 }}>
-                  {seg.body}
-                </p>
-              </li>
-            ))}
+            {orderedSegments.map((seg) => {
+              // Read-along: `activeSegmentNumber` only ever lands while the
+              // timed-transcript listeners are attached, so an untimed
+              // transcript renders these lines with no active state at all.
+              const active = seg.segmentNumber === activeSegmentNumber;
+              return (
+                <li
+                  key={seg.segmentNumber}
+                  ref={active ? activeLineRef : null}
+                  className={cn(
+                    'km-reference__row',
+                    'km-ttmik__readalong-line',
+                    active && 'km-ttmik__readalong-line--active',
+                  )}
+                  {...(active ? { 'aria-current': 'true' } : {})}
+                >
+                  {/* Whisper output rendered through React text children
+                      (escaped) — same contract as every transcript above. */}
+                  <p className="kr km-reference__row-kr" style={{ margin: 0 }}>
+                    {seg.body}
+                  </p>
+                </li>
+              );
+            })}
           </ol>
           {orderedSegments.length === 0 ? (
             <p className="km-reference__empty">

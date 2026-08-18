@@ -2094,3 +2094,117 @@ describe('Ttmik page — F-207 shared curated corpus', () => {
     ).toBeInTheDocument();
   });
 });
+
+// ─────────────────────────────────────────────────────────────
+// Listen read-along — track-player transcript highlighting (the shared
+// F-210 mechanism, lib/readAlong). Exercised via the sharedTrack deep-link
+// mount path — the SAME MyAudioDetail serves the My Audio flow.
+// ─────────────────────────────────────────────────────────────
+
+describe('Ttmik page — Listen read-along (track player transcript)', () => {
+  /** Three timed lines with a 500ms gap between #2 and #3, so a mid-gap
+   *  position clears rather than sticking to a neighbor. */
+  const TIMED_TRACK_DETAIL: AudioTrackDetail = {
+    track: { ...SHARED_TRACK_DETAIL.track },
+    segments: [
+      { segmentNumber: 1, startMs: 0, endMs: 4000, body: '옛날 옛적에.' },
+      { segmentNumber: 2, startMs: 4000, endMs: 8000, body: '호랑이가 살았어요.' },
+      { segmentNumber: 3, startMs: 8500, endMs: 12_000, body: '끝.' },
+    ],
+  };
+
+  /** Deep-link into the shared folktales track player and wait for it. */
+  async function openSharedTrack(): Promise<HTMLAudioElement> {
+    renderPage('/learn/listen?corpus=shared&set=korean-folktales&track=7201');
+    await screen.findByRole('heading', { name: '전래 동화 모음 1' });
+    const audio = document.querySelector('audio');
+    expect(audio).not.toBeNull();
+    return audio as HTMLAudioElement;
+  }
+
+  const lines = (): NodeListOf<Element> =>
+    document.querySelectorAll('.km-ttmik__readalong-line');
+
+  it('advancing the playhead past a segment start highlights that line (aria-current) and clears the previous', async () => {
+    vi.mocked(getAudioTrack).mockResolvedValue(TIMED_TRACK_DETAIL);
+    const audio = await openSharedTrack();
+    expect(lines()).toHaveLength(3);
+
+    // 1s → 1000ms sits in segment 1's [0, 4000).
+    audio.currentTime = 1;
+    fireEvent.timeUpdate(audio);
+    expect(lines()[0]).toHaveClass('km-ttmik__readalong-line--active');
+    expect(lines()[0]).toHaveAttribute('aria-current', 'true');
+    expect(lines()[1]).not.toHaveClass('km-ttmik__readalong-line--active');
+
+    // 5s crosses into segment 2's [4000, 8000) — the previous line clears.
+    audio.currentTime = 5;
+    fireEvent.timeUpdate(audio);
+    expect(lines()[1]).toHaveClass('km-ttmik__readalong-line--active');
+    expect(lines()[1]).toHaveAttribute('aria-current', 'true');
+    expect(lines()[0]).not.toHaveClass('km-ttmik__readalong-line--active');
+    expect(lines()[0]).not.toHaveAttribute('aria-current');
+
+    // Exactly one active line, ever.
+    expect(
+      document.querySelectorAll('.km-ttmik__readalong-line--active'),
+    ).toHaveLength(1);
+  });
+
+  it('a seek re-syncs the highlight — into a window, and clear in a gap', async () => {
+    vi.mocked(getAudioTrack).mockResolvedValue(TIMED_TRACK_DETAIL);
+    const audio = await openSharedTrack();
+
+    // Scrub straight into segment 3's [8500, 12000).
+    audio.currentTime = 9;
+    fireEvent.seeked(audio);
+    expect(lines()[2]).toHaveClass('km-ttmik__readalong-line--active');
+    expect(lines()[2]).toHaveAttribute('aria-current', 'true');
+
+    // Scrub into the 8000–8500 gap → nothing highlighted.
+    audio.currentTime = 8.2;
+    fireEvent.seeked(audio);
+    expect(
+      document.querySelector('.km-ttmik__readalong-line--active'),
+    ).toBeNull();
+  });
+
+  it('ended clears the highlight', async () => {
+    vi.mocked(getAudioTrack).mockResolvedValue(TIMED_TRACK_DETAIL);
+    const audio = await openSharedTrack();
+
+    audio.currentTime = 1;
+    fireEvent.timeUpdate(audio);
+    expect(lines()[0]).toHaveClass('km-ttmik__readalong-line--active');
+
+    fireEvent.ended(audio);
+    expect(
+      document.querySelector('.km-ttmik__readalong-line--active'),
+    ).toBeNull();
+  });
+
+  it('no usable timings (all-zero windows) → the transcript still renders, but nothing ever highlights', async () => {
+    vi.mocked(getAudioTrack).mockResolvedValue({
+      track: { ...SHARED_TRACK_DETAIL.track },
+      segments: [
+        { segmentNumber: 1, startMs: 0, endMs: 0, body: '옛날 옛적에.' },
+        { segmentNumber: 2, startMs: 0, endMs: 0, body: '호랑이가 살았어요.' },
+      ],
+    });
+    const audio = await openSharedTrack();
+
+    // The plain transcript stands, in order.
+    expect(lines()).toHaveLength(2);
+    expect(screen.getByText('옛날 옛적에.')).toBeInTheDocument();
+    expect(screen.getByText('호랑이가 살았어요.')).toBeInTheDocument();
+
+    // No listeners were attached — a tick can never paint a highlight.
+    audio.currentTime = 1;
+    fireEvent.timeUpdate(audio);
+    fireEvent.seeked(audio);
+    expect(
+      document.querySelector('.km-ttmik__readalong-line--active'),
+    ).toBeNull();
+    expect(document.querySelector('[aria-current="true"]')).toBeNull();
+  });
+});
