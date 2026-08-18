@@ -154,6 +154,10 @@ services:
       # F-012: where the server reads corpus mp3s (routes/ttmik.ts). Matches
       # the read-only bind mount below — fixed in-container path, both colors.
       - CORPUS_AUDIO_DIR=/corpus
+      # F-120: where the server reads TOPIK question-figure crops
+      # (routes/topik.ts GET /topik/image). Same read-only corpus mount as the
+      # audio root — a distinct variable so the roots can split later.
+      - CORPUS_IMAGE_DIR=/corpus
 
     # F-006: reach Proton Mail Bridge on the HOST. Bridge's SMTP listens on the
     # host's 127.0.0.1, unreachable from inside the container; host-gateway maps

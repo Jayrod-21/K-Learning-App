@@ -2132,7 +2132,13 @@ function ExamRunner({
             {imageSplit.body !== '' && !hideTranscriptPrompt ? (
               <p className="kr km-topik__prompt">{imageSplit.body}</p>
             ) : null}
-            <TopikImageNote description={imageSplit.description} />
+            {/* F-120: the answer-strip keeps `imageUrl` (question content,
+                like hasImage) — when mapped, the real exam figure renders
+                with the description as caption/alt; otherwise unchanged. */}
+            <TopikImageNote
+              description={imageSplit.description}
+              imageUrl={current.imageUrl}
+            />
           </>
         )}
 

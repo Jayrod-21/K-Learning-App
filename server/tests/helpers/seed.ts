@@ -408,6 +408,12 @@ export async function seedTopikItem(
     /** Curated image description (topik_items.image_text). Default NULL. */
     imageText?: string | null;
     /**
+     * Corpus-relative key of the question's cropped exam figure
+     * (topik_items.image_ref, migration 085 — F-120). Default NULL (the
+     * ships-empty state every production row starts in).
+     */
+    imageRef?: string | null;
+    /**
      * Pin the parent test's `test_number` (the `source_test` / `sourceTest`
      * filter key). Defaults to a random unique value. Pass the SAME number across
      * calls (with distinct `itemNumber`) to assemble a multi-item test, e.g. to
@@ -462,11 +468,11 @@ export async function seedTopikItem(
     `INSERT INTO topik_items (
         topik_test_id, corpus_source_id, corpus, source_id, item_number,
         section, item_type, proficiency, stem, prompt, underline,
-        options, answer, extra, has_image, image_text)
+        options, answer, extra, has_image, image_text, image_ref)
      VALUES ($1, $2, 'topik'::corpus, $3, $13,
              $4::topik_section, $5::topik_item_type,
              $6::proficiency_level, $7, $8, $9,
-             $10::jsonb, $11::jsonb, $12::jsonb, $14, $15)
+             $10::jsonb, $11::jsonb, $12::jsonb, $14, $15, $16)
      RETURNING id`,
     [
       testId,
@@ -484,6 +490,7 @@ export async function seedTopikItem(
       itemNumber,
       opts.hasImage ?? false,
       opts.imageText ?? null,
+      opts.imageRef ?? null,
     ],
   );
   return Number(rows[0]!.id);

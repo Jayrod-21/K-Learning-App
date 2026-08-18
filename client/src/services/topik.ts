@@ -135,6 +135,12 @@ function normalizeStudyItemAudio(item: TopikItem): TopikItem {
   if (typeof next.audioUrl !== 'string') {
     delete next.audioUrl;
   }
+  // F-120: same posture for the exam-figure URL — anything non-string is
+  // stripped (the strict route-shape allow-list check lives in
+  // `buildTopikImageSrc`, which the renderer calls on this value).
+  if (typeof next.imageUrl !== 'string') {
+    delete next.imageUrl;
+  }
   return next;
 }
 
@@ -259,6 +265,13 @@ function normalizeMockAudio(test: MockTest): MockTest {
     // re-check at runtime like the span above.
     if (typeof next.promptIsTranscript !== 'boolean') {
       delete next.promptIsTranscript;
+    }
+    // F-120: the exam-figure URL survives the answer strip (question content,
+    // like hasImage/imageText) — normalize it here exactly like the study
+    // items: non-string shapes are stripped; the strict route-shape
+    // allow-list check lives in `buildTopikImageSrc` at render time.
+    if (typeof next.imageUrl !== 'string') {
+      delete next.imageUrl;
     }
     return next;
   });

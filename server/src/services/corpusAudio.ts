@@ -31,41 +31,56 @@ import { NotFoundError } from '../middleware/errors.js';
 import { loadConfig } from '../config/index.js';
 import { streamFileWithRange } from './rangeStream.js';
 
+/** How a corpus surface anchors + reports its resolution (see resolveCorpusFile). */
+export interface CorpusResolveOptions {
+  /** The corpus root the stored key is anchored under (already `resolve()`d). */
+  root: string;
+  /** The ONE message every rejection serializes to (uniform 404, no oracle). */
+  notFoundMessage: string;
+  /** Log prefix identifying the calling surface (e.g. 'corpus audio'). */
+  logContext: string;
+}
+
 /**
- * Resolve a DB-stored corpus-relative audio path to a real file inside
- * CORPUS_AUDIO_DIR, or throw NotFoundError.
+ * Resolve a DB-stored corpus-relative path to a real file inside the given
+ * corpus root, or throw NotFoundError. Extracted content-type-agnostic from
+ * resolveAudioFile (F-120) when the TOPIK question-image route needed the
+ * IDENTICAL hardened resolution against CORPUS_IMAGE_DIR — one guard, no
+ * drift between the audio and image surfaces.
  *
  * Defends against (each named per Bar §0):
- *   - NULL mapping / missing row → 404 (no audio is a normal state).
+ *   - NULL mapping / missing row → 404 (no mapping is a normal state).
  *   - ABSOLUTE-PATH INJECTION: a stored `/etc/shadow` is rejected before any
- *     fs call — audio_path must be relative by contract (migration 035).
+ *     fs call — the stored key must be relative by contract (035/078/085).
  *   - DOT-DOT TRAVERSAL: `resolve(root, normalize(rel))` collapses `..`; the
  *     prefix check then catches anything that left the root.
  *   - SYMLINK ESCAPE: prefix-checking the LEXICAL path is not enough if a
  *     symlink inside the tree points outside it, so we realpath() the
  *     resolved file AND the root and re-verify containment on the kernel's
  *     answer. (Root realpath failing = mount absent → 404.)
- *   - EXISTENCE ORACLE: every rejection above is a uniform 404 — a client
- *     (or poisoned row) can never distinguish "outside root" from "no file",
- *     so probing reveals nothing about the host filesystem. The warn-level
- *     log carries the true reason for the operator.
+ *   - EXISTENCE ORACLE: every rejection above is a uniform 404 carrying the
+ *     surface's ONE notFoundMessage — a client (or poisoned row) can never
+ *     distinguish "outside root" from "no file", so probing reveals nothing
+ *     about the host filesystem. The warn-level log carries the true reason
+ *     for the operator.
  */
-export async function resolveAudioFile(
-  audioPath: string | null,
+export async function resolveCorpusFile(
+  relPath: string | null,
+  opts: CorpusResolveOptions,
 ): Promise<{ absPath: string; size: number }> {
-  if (audioPath === null || audioPath.length === 0) {
-    throw new NotFoundError('no audio for this unit');
+  if (relPath === null || relPath.length === 0) {
+    throw new NotFoundError(opts.notFoundMessage);
   }
   const log = getLogger();
-  const root = resolve(loadConfig().CORPUS_AUDIO_DIR);
-  if (isAbsolute(audioPath)) {
-    log.warn({ audioPath }, 'corpus audio: absolute audio_path rejected');
-    throw new NotFoundError('no audio for this unit');
+  const { root } = opts;
+  if (isAbsolute(relPath)) {
+    log.warn({ relPath }, `${opts.logContext}: absolute stored path rejected`);
+    throw new NotFoundError(opts.notFoundMessage);
   }
-  const lexical = resolve(root, normalize(audioPath));
+  const lexical = resolve(root, normalize(relPath));
   if (lexical !== root && !lexical.startsWith(root + sep)) {
-    log.warn({ audioPath }, 'corpus audio: traversal outside root rejected');
-    throw new NotFoundError('no audio for this unit');
+    log.warn({ relPath }, `${opts.logContext}: traversal outside root rejected`);
+    throw new NotFoundError(opts.notFoundMessage);
   }
   let realRoot: string;
   let realAbs: string;
@@ -74,17 +89,35 @@ export async function resolveAudioFile(
     realAbs = await realpath(lexical);
   } catch {
     // Root not mounted, file missing, or a dangling symlink — all 404.
-    throw new NotFoundError('no audio for this unit');
+    throw new NotFoundError(opts.notFoundMessage);
   }
   if (realAbs !== realRoot && !realAbs.startsWith(realRoot + sep)) {
-    log.warn({ audioPath }, 'corpus audio: symlink escape rejected');
-    throw new NotFoundError('no audio for this unit');
+    log.warn({ relPath }, `${opts.logContext}: symlink escape rejected`);
+    throw new NotFoundError(opts.notFoundMessage);
   }
   const info = await stat(realAbs);
   if (!info.isFile()) {
-    throw new NotFoundError('no audio for this unit');
+    throw new NotFoundError(opts.notFoundMessage);
   }
   return { absPath: realAbs, size: info.size };
+}
+
+/**
+ * Resolve a DB-stored corpus-relative audio path to a real file inside
+ * CORPUS_AUDIO_DIR, or throw NotFoundError. The guard itself lives in
+ * {@link resolveCorpusFile} (shared with the corpus-image surface, F-120);
+ * this wrapper contributes only the audio surface's root + its uniform
+ * 'no audio for this unit' 404 message — semantics are byte-identical to
+ * the pre-extraction resolveAudioFile.
+ */
+export async function resolveAudioFile(
+  audioPath: string | null,
+): Promise<{ absPath: string; size: number }> {
+  return resolveCorpusFile(audioPath, {
+    root: resolve(loadConfig().CORPUS_AUDIO_DIR),
+    notFoundMessage: 'no audio for this unit',
+    logContext: 'corpus audio',
+  });
 }
 
 /**

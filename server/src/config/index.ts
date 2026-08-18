@@ -257,6 +257,17 @@ const EnvSchema = z.object({
   // check that keeps every resolved path inside this root).
   CORPUS_AUDIO_DIR: z.string().min(1).default('/corpus'),
 
+  // Corpus image root (F-120 — TOPIK question-figure serving). Read-only tree
+  // the image route serves from; topik_items.image_ref stores paths RELATIVE
+  // to this root (migration 085 — the same contract as CORPUS_AUDIO_DIR's
+  // audio_path rows). Defaults to the SAME `:ro` corpus bind mount as the
+  // audio root (the crops live beside the MP3s in the one official-corpus
+  // tree); a distinct variable so the two roots can be split later without a
+  // code change. A missing dir is not a startup error — image requests simply
+  // 404 until the files exist (services/corpusImage.ts owns the containment
+  // check that keeps every resolved path inside this root).
+  CORPUS_IMAGE_DIR: z.string().min(1).default('/corpus'),
+
   // Session / cookie
   SESSION_COOKIE_NAME: z.string().default('km_sid'),
   SESSION_LIFETIME_DAYS: z.coerce.number().int().positive().default(30),

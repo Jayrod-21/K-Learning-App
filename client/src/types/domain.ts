@@ -205,6 +205,16 @@ export interface TopikItem {
    * `buildAudioSrc`'s strict allow-list before it ever reaches an `<audio>`.
    */
   audioUrl?: string;
+  /**
+   * F-120 — the serving URL of this question's cropped exam figure
+   * (`/topik/image/<testNumber>/<1|2>/<itemNumber>`), emitted by the server
+   * only for items with an image asset mapped (absent for every item until
+   * the corpus backfill runs — the text description remains the fallback,
+   * exactly like `imageText`). Never fed raw to an `<img>`: the renderer
+   * routes it through `buildTopikImageSrc`'s strict allow-list + API-base
+   * join first.
+   */
+  imageUrl?: string;
 }
 
 /**
@@ -283,6 +293,11 @@ export interface TopikMockItem {
   hasImage?: boolean;
   /** See `TopikItem.imageText`. */
   imageText?: string;
+  /** See `TopikItem.imageUrl` — the question's exam-figure URL (F-120). It is
+   *  question content (WHAT THE EXAM SHOWS, like `hasImage`/`imageText`),
+   *  never answer data, so it survives the answer strip — unlike `audioUrl`,
+   *  which the mock replaces with its single envelope-level stream URL. */
+  imageUrl?: string;
   /** Start (ms) of this question's window in the exam's ONE whole-section
    *  listening file (`MockTest.audioUrl`) — question metadata (timing), never
    *  answer data, so it survives the answer strip exactly like `passage`/

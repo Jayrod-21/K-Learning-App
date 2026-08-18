@@ -3030,6 +3030,18 @@ h1, h2 { font-family: var(--font-display); }
   color: var(--paper);
   white-space: pre-line; /* multi-segment descriptions join with newlines */
 }
+/* F-120: the real exam figure, when the corpus has one mapped (imageUrl).
+   The text description above becomes the figure's caption. */
+.km-topik__image-figure {
+  margin: 6px 0 0;
+}
+.km-topik__image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+  background: var(--paper); /* exam scans are white-paper crops */
+}
 .km-topik__image-hint {
   margin: 6px 0 0;
   font-size: 0.75rem;
