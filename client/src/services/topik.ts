@@ -83,7 +83,11 @@ export interface RecordAnswerBody {
  *
  * Returns the items array unwrapped from the `{ items }` envelope. The server
  * DTO already matches `TopikItem` (including `id`), so this is a typed
- * pass-through; an empty filter draws from the whole pool.
+ * pass-through EXCEPT the F-206 audio fields, which are normalized through
+ * `normalizeStudyItemAudio` below (the study sibling of `normalizeMockAudio`:
+ * they steer a real `<audio>` element's seek/clamp, so a malformed value must
+ * degrade to "no audio" rather than reach the player). An empty filter draws
+ * from the whole pool.
  */
 export async function fetchStudyDraw(
   opts: StudyDrawOptions,
@@ -101,7 +105,37 @@ export async function fetchStudyDraw(
     body,
     signal !== undefined ? { signal } : undefined,
   );
-  return res.items;
+  return res.items.map(normalizeStudyItemAudio);
+}
+
+/**
+ * Normalize one study item's F-206 audio fields off the wire, mirroring
+ * `normalizeMockAudio` below: the span must satisfy `readAudioSpan`
+ * (both-or-neither, finite non-negative ints, end > start — a half/invalid
+ * window is stripped entirely) and `audioUrl` must be a string (any other
+ * shape is stripped; the strict route-shape allow-list check lives in
+ * `buildAudioSrc`, which the study player calls on this value). These fields
+ * steer a real `<audio>` element's seek/clamp, so a malformed value must
+ * degrade to the honest "no audio" rendering rather than reach the player.
+ * Everything else passes through untouched.
+ */
+function normalizeStudyItemAudio(item: TopikItem): TopikItem {
+  const next = { ...item };
+  const span = readAudioSpan(item);
+  if (span !== null) {
+    // Re-assign the validated pair so a valid span survives verbatim.
+    next.audioStartMs = span.audioStartMs;
+    next.audioEndMs = span.audioEndMs;
+  } else {
+    delete next.audioStartMs;
+    delete next.audioEndMs;
+  }
+  // The wire type SAYS string-or-absent, but this came off the network —
+  // re-check at runtime like the span above.
+  if (typeof next.audioUrl !== 'string') {
+    delete next.audioUrl;
+  }
+  return next;
 }
 
 /**
@@ -179,7 +213,9 @@ export async function fetchMockTest(
  * (an off-window seek would leak a DIFFERENT question's audio mid-exam).
  */
 function readAudioSpan(
-  item: TopikMockItem,
+  // Structural pick, not `TopikMockItem`: the F-206 study items (`TopikItem`)
+  // carry the same optional span fields and share this exact validation.
+  item: { audioStartMs?: number; audioEndMs?: number },
 ): { audioStartMs: number; audioEndMs: number } | null {
   // The wire type SAYS number, but these came off the network — re-check at
   // runtime like the rest of the file's defensive parses.

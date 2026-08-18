@@ -186,6 +186,25 @@ export interface TopikItem {
   hasImage?: boolean;
   /** Curated text description of the image(s), when the corpus captured one. */
   imageText?: string;
+  /**
+   * F-206 — this listening question's window (ms) into its paper's
+   * whole-section MP3 (the same F-119 span the mock items carry). Present
+   * both-or-neither; `fetchStudyDraw` re-validates the pair off the wire
+   * (finite non-negative ints, end > start) and strips anything else, so a
+   * present span is always seekable.
+   */
+  audioStartMs?: number;
+  /** End (ms, exclusive) of the question's audio window — see `audioStartMs`. */
+  audioEndMs?: number;
+  /**
+   * F-206 — the streaming URL of this item's paper's whole-section listening
+   * MP3 (`/topik/audio/<testNumber>/<1|2>`). Study draws are cross-test, so
+   * each item names its OWN paper's stream (unlike the mock's single
+   * envelope-level URL). Emitted by the server only for a listening item with
+   * a valid span on an audio-mapped paper; the player still routes it through
+   * `buildAudioSrc`'s strict allow-list before it ever reaches an `<audio>`.
+   */
+  audioUrl?: string;
 }
 
 /**
