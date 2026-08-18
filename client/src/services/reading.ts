@@ -215,17 +215,31 @@ function toPosition(wire: PositionWire): ReadingPosition {
 /**
  * GET /reading/position/:uploadId — the saved resume position for one owned
  * upload, or null when none is saved yet (a normal state, not an error).
- * 404s (as `ApiError`) for a missing/foreign upload.
+ *
+ * A 404 also resolves to null (F-217): the position routes are owner-ONLY
+ * (migration 051's composite FK ties `reading_positions` to the OWNER's
+ * upload — widening them needs a migration), so a NON-owner opening a
+ * SHARED book (F-207/F-217) 404s here even though the book itself is
+ * readable. That's "no saved position for you on this book", not a failure —
+ * the chapter picker must render, just without a Resume button. A genuinely
+ * missing/foreign-private upload id also 404s into null, which is safe: any
+ * caller showing a book already fetched it via `getUpload`, and THAT 404
+ * still fails the view. Every non-404 error propagates untouched.
  */
 export async function getReadingPosition(
   uploadId: string,
   signal?: AbortSignal,
 ): Promise<ReadingPosition | null> {
-  const res = await api.get<PositionEnvelope>(
-    `/reading/position/${encodeURIComponent(uploadId)}`,
-    signal !== undefined ? { signal } : undefined,
-  );
-  return res.position === null ? null : toPosition(res.position);
+  try {
+    const res = await api.get<PositionEnvelope>(
+      `/reading/position/${encodeURIComponent(uploadId)}`,
+      signal !== undefined ? { signal } : undefined,
+    );
+    return res.position === null ? null : toPosition(res.position);
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
 }
 
 /**

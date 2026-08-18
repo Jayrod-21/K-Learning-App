@@ -174,6 +174,24 @@ export async function listUploads(signal?: AbortSignal): Promise<BookUpload[]> {
   return res.uploads.map(toBookUpload);
 }
 
+/**
+ * GET /uploads/shared — the shared curated library (F-217): every book the
+ * operator flagged `is_shared`, readable by ANY authenticated account. Same
+ * envelope/DTO as `listUploads` (the server serves the identical
+ * no-owner-PII projection — no user_id/email ever rides this wire), so the
+ * mapping is shared. The Reading shelf renders these below the owner's own
+ * sections and filters out ids the caller already owns (no double-listing).
+ */
+export async function listSharedUploads(
+  signal?: AbortSignal,
+): Promise<BookUpload[]> {
+  const res = await api.get<UploadsListEnvelope>(
+    '/uploads/shared',
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.uploads.map(toBookUpload);
+}
+
 /** GET /uploads/:id — one upload's metadata, including `pageCount` once the
  *  book has been normalized into pages (synchronous at ingest — see the
  *  design doc's REVISION; `pageCount` is present as soon as `status` is

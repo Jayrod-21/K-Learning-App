@@ -11,6 +11,12 @@
  *                       Documents (문서 — the vocab/grammar/both scans;
  *                       "this is also where uploaded documents live").
  *                       Sections window through `usePagination`+`ShowMore`.
+ *                       F-217 appends a "Shared Library" section below the
+ *                       typed sections: the operator-curated shared books
+ *                       (GET /uploads/shared), minus any the user already
+ *                       owns, openable cross-account (comics → viewer,
+ *                       others → chapter picker; the owner-only resume
+ *                       position degrades to "no resume" for a non-owner).
  *     AI stories (F-068) — `StoryGenerator` (POST /reading/generate: Claude
  *                       authors a short story at a chosen level, optional
  *                       topic) above the generated-story library
@@ -194,7 +200,11 @@ import type {
   StoryImagesEnvelope,
 } from '../services/reading';
 import { buildAudioSrc, buildStoryImageSrc } from '../services/ttmik';
-import { getUpload, listUploads } from '../services/uploads';
+import {
+  getUpload,
+  listSharedUploads,
+  listUploads,
+} from '../services/uploads';
 import { mineWord } from '../services/vocab';
 import type {
   BookUpload,
@@ -374,6 +384,7 @@ function BookShelf({
 }): JSX.Element {
   const navigate = useNavigate();
   const [books, setBooks] = useState<BookUpload[]>([]);
+  const [shared, setShared] = useState<BookUpload[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Monotonic reload trigger so Retry re-runs the fetch effect.
@@ -390,12 +401,22 @@ function BookShelf({
     setLoading(true);
     setError(null);
     /* eslint-enable react-hooks/set-state-in-effect */
-    listUploads(ctrl.signal)
-      .then((rows) => {
+    // The owner's own list keeps sole custody of the shelf's loading/error
+    // fate, exactly as before F-217. The shared curated listing rides
+    // alongside but DEGRADES to empty on failure — a broken discovery
+    // surface must never take the user's own library down with it (the
+    // aborted-signal check below already guards the cancelled-unmount case,
+    // so collapsing every shared-fetch rejection to [] loses nothing).
+    Promise.all([
+      listUploads(ctrl.signal),
+      listSharedUploads(ctrl.signal).catch(() => [] as BookUpload[]),
+    ])
+      .then(([rows, sharedRows]) => {
         if (ctrl.signal.aborted) return;
         // Only READY uploads are openable (mirrors `SourceFilterRow`'s
         // `status === 'ready'` filter); the type split happens per-section.
         setBooks(rows.filter((u) => u.status === 'ready'));
+        setShared(sharedRows.filter((u) => u.status === 'ready'));
         setLoading(false);
       })
       .catch((err: unknown) => {
@@ -424,6 +445,30 @@ function BookShelf({
     [navigate],
   );
 
+  // F-217 de-dupe: a book the user OWNS that is also shared already sits in
+  // its typed section above — the Shared Library lists only books the caller
+  // does NOT own, so nothing ever renders twice.
+  const sharedOnly = useMemo(() => {
+    const ownedIds = new Set(books.map((b) => b.id));
+    return shared.filter((b) => !ownedIds.has(b.id));
+  }, [books, shared]);
+
+  // The Shared Library mixes types in one flat section, so the comic split
+  // happens per row: comics open the page-image viewer directly (Track P —
+  // no `reading_chapters`, the `?book=ID` picker would dead-end), everything
+  // else opens the chapter picker. Same two handlers the typed sections use.
+  const openShared = useCallback(
+    (id: string) => {
+      const row = shared.find((b) => b.id === id);
+      if (row !== undefined && row.type === 'comic') {
+        openViewer(id);
+      } else {
+        onOpenBook(id);
+      }
+    },
+    [shared, onOpenBook, openViewer],
+  );
+
   if (loading) {
     return (
       <div className="km-grammar__state" role="status">
@@ -434,11 +479,15 @@ function BookShelf({
   if (error !== null) {
     return <ErrorCard message={error} onRetry={refetch} />;
   }
-  if (books.length === 0) {
+  if (books.length === 0 && sharedOnly.length === 0) {
     return (
       // Devices #3/#6 (giwa texture + hangul watermark) on the genuine
       // empty state — matches the Progress/Uploads/Mistakes/ReviewGrammar
-      // precedent (never applied to a loading/error state).
+      // precedent (never applied to a loading/error state). F-217: the
+      // prompt only shows when the SHARED library is empty too — a
+      // non-owner account with zero uploads of its own must land on the
+      // shared shelf (the entire point of the browse surface), not a
+      // dead-end upload nudge.
       <Card
         variant="flat"
         className="km-reading__empty km-giwa km-hangul-watermark"
@@ -479,6 +528,17 @@ function BookShelf({
           />
         );
       })}
+      {/* F-217: the shared curated library, BELOW the owner's typed
+          sections — additive; renders nothing when empty (nothing shared,
+          or everything shared is already owned/listed above). */}
+      {sharedOnly.length > 0 ? (
+        <BookSection
+          en="Shared Library"
+          kr="공유 서재"
+          books={sharedOnly}
+          onOpenBook={openShared}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1191,6 +1251,16 @@ function ChapterReader({ chapterId }: { chapterId: number }): JSX.Element {
     ).catch((err: unknown) => {
       if (ctrl.signal.aborted) return;
       if (err instanceof ApiError && err.code === 'canceled') return;
+      // F-217: the position routes are owner-ONLY (051's composite FK —
+      // widening needs a migration), so a NON-owner reading a SHARED book
+      // 404s on this PUT every time. That's the expected can't-save state
+      // for a borrowed book, not a failure — skip silently rather than
+      // toast an "error" on every chapter open. This also silences the one
+      // other 404 shape: an OWNED book deleted mid-read (the position save
+      // is moot for a book that no longer exists, so no toast there either).
+      // Genuine save failures on an owned, live book (5xx, network) are not
+      // 404s, so the toast below still fires for those.
+      if (err instanceof ApiError && err.status === 404) return;
       toast({
         message: "Couldn't save your reading position",
         tone: 'error',

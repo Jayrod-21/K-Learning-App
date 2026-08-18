@@ -17,6 +17,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   getGeneratedStory,
+  getReadingPosition,
   getStoryAudio,
   getStoryImages,
   listGeneratedAudio,
@@ -59,6 +60,55 @@ const PENDING_AUDIO: StoryAudio = {
   track: null,
   segments: [],
 };
+
+describe('getReadingPosition (F-069 + the F-217 non-owner 404 tolerance)', () => {
+  it('GETs /reading/position/:uploadId and maps the saved position (snake → camel)', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({
+      position: {
+        source_upload_id: 41,
+        chapter_id: 5,
+        passage_number: null,
+        page_number: 3,
+        updated_at: '2026-08-01T00:00:00Z',
+      },
+    });
+
+    const got = await getReadingPosition('41');
+
+    expect(spy.mock.calls[0][0]).toBe('/reading/position/41');
+    expect(got).toEqual({
+      sourceUploadId: 41,
+      chapterId: 5,
+      passageNumber: null,
+      pageNumber: 3,
+      updatedAt: '2026-08-01T00:00:00Z',
+    });
+  });
+
+  it('resolves null for a null-position envelope (nothing saved yet)', async () => {
+    vi.spyOn(api, 'get').mockResolvedValueOnce({ position: null });
+
+    await expect(getReadingPosition('41')).resolves.toBeNull();
+  });
+
+  it('F-217: resolves null on a 404 — the owner-only position route on a SHARED book is "no resume", never a picker-level failure', async () => {
+    vi.spyOn(api, 'get').mockRejectedValueOnce(
+      new ApiError('not found', { status: 404, code: 'not_found' }),
+    );
+
+    await expect(getReadingPosition('41')).resolves.toBeNull();
+  });
+
+  it('still rejects on every NON-404 error (a real failure must surface)', async () => {
+    vi.spyOn(api, 'get').mockRejectedValueOnce(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+
+    await expect(getReadingPosition('41')).rejects.toMatchObject({
+      status: 500,
+    });
+  });
+});
 
 describe('requestStoryAudio', () => {
   it('POSTs /reading/generated/:id/audio with no body and unwraps the envelope', async () => {

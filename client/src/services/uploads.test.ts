@@ -13,6 +13,7 @@ import {
   getUpload,
   listExtractions,
   listPages,
+  listSharedUploads,
   listUploads,
   pageUrl,
   reorderPages,
@@ -220,6 +221,39 @@ describe('listUploads', () => {
     );
 
     await expect(listUploads()).rejects.toMatchObject({ status: 500 });
+  });
+});
+
+describe('listSharedUploads (F-217)', () => {
+  it('GETs /uploads/shared and maps every row (same wire shape as listUploads)', async () => {
+    const spy = vi
+      .spyOn(api, 'get')
+      .mockResolvedValueOnce({ uploads: [UPLOAD_WIRE_READY] });
+
+    const rows = await listSharedUploads();
+
+    expect(spy).toHaveBeenCalledWith('/uploads/shared', undefined);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe(UPLOAD_WIRE_READY.id);
+    expect(rows[0]?.pageCount).toBe(UPLOAD_WIRE_READY.page_count);
+    expect(rows[0]?.byteSize).toBe(UPLOAD_WIRE_READY.byte_size);
+  });
+
+  it('threads an AbortSignal into the request config', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({ uploads: [] });
+    const ctrl = new AbortController();
+
+    await listSharedUploads(ctrl.signal);
+
+    expect(spy).toHaveBeenCalledWith('/uploads/shared', { signal: ctrl.signal });
+  });
+
+  it('rethrows ApiError on failure (the shelf degrades it to an empty shared list)', async () => {
+    vi.spyOn(api, 'get').mockRejectedValueOnce(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+
+    await expect(listSharedUploads()).rejects.toMatchObject({ status: 500 });
   });
 });
 
