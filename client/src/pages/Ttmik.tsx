@@ -196,6 +196,24 @@
  * experience. Additive only — the carousel, tiles, and every existing view
  * are untouched, and the section's own load/error/empty states can never
  * wedge the landing (see `GeneratedAudioSection`).
+ *
+ * Listen-tab story generator — the landing ALSO renders a "Create a story
+ * to listen to" section between the carousel and the voiced list: the
+ * SHARED `StoryGenerator` panel (components/StoryGenerator.tsx — the same
+ * F-068 component Reading's AI-stories tab renders), whose `onCreated`
+ * here holds the fresh story in local state instead of navigating. The
+ * inline card below the panel offers an EXPLICIT "Generate audio" button
+ * (the F-216 cost posture — never auto-voice) through the SHARED
+ * `useStoryAudio` hook (hooks/useStoryAudio.ts — the reader's exact F-210
+ * state machine: hydrate, POST, bounded ~2s poll, daily-cap 429 verbatim),
+ * an inline `<audio>` player once done (src through the same
+ * `buildAudioSrc` allow-list), and an "Open in reader" action for the
+ * read-along experience — Listen stays the listening surface. One
+ * just-created story at a time: a new create replaces the card (keyed
+ * remount → fresh audio state). A story voiced here also surfaces in the
+ * "Generated Audio" list below on its next fetch — two views of the same
+ * server state, no dedup needed. Additive only, same posture as F-210's
+ * section (see `GeneratedStoryCreator`).
  */
 import {
   useCallback,
@@ -221,6 +239,7 @@ import { PageHubHeader } from '../components/PageHubHeader';
 import { Pill, type PillTone } from '../components/Pill';
 import { ShowMore } from '../components/ShowMore';
 import { ScrollSnapCarousel } from '../components/ScrollSnapCarousel';
+import { StoryGenerator } from '../components/StoryGenerator';
 import { Tabs } from '../components/Tabs';
 import { Tapword } from '../components/Tapword';
 import { WordPopover } from '../components/WordPopover';
@@ -235,6 +254,10 @@ import {
 import { ApiError } from '../services/api';
 import { useChatContext } from '../hooks/useChatContext';
 import { usePagination } from '../hooks/usePagination';
+import {
+  AUDIO_FAILED_FALLBACK_COPY,
+  useStoryAudio,
+} from '../hooks/useStoryAudio';
 import { useTapWord } from '../hooks/useTapWord';
 import { audioUploadErrorMessage, errorMessageFor } from '../lib/errorCopy';
 import { navItem } from '../lib/nav';
@@ -248,6 +271,7 @@ import {
 import {
   listGeneratedAudio,
   type GeneratedAudioItem,
+  type GeneratedStory,
 } from '../services/reading';
 import {
   buildAudioSrc,
@@ -854,9 +878,11 @@ export default function Ttmik(): JSX.Element {
       />
       {view.kind === 'landing' ? (
         // F-210 Listen surfacing: the tile carousel is untouched; the
-        // Generated Audio section is purely ADDITIVE below it.
+        // story creator + Generated Audio sections are purely ADDITIVE
+        // below it (creator first — create, then the voiced library).
         <>
           <CollectionTiles />
+          <GeneratedStoryCreator />
           <GeneratedAudioSection />
         </>
       ) : null}
@@ -1296,6 +1322,177 @@ function GeneratedAudioSection(): JSX.Element {
         </Card>
       )}
     </section>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Listen-tab story generator — landing: create + voice without leaving Listen
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * The landing's "Create a story to listen to" section — the SHARED
+ * `StoryGenerator` panel (the same F-068 component Reading renders) whose
+ * `onCreated` holds the fresh story in state here instead of navigating:
+ * the user stays in Listen and voices the story in place via the inline
+ * card below. One just-created story at a time — a new create replaces the
+ * previous card (the `key` remount also resets its audio state machine for
+ * the new story id). Purely additive: no fetch of its own on mount, so it
+ * can never wedge the landing.
+ */
+function GeneratedStoryCreator(): JSX.Element {
+  const [createdStory, setCreatedStory] = useState<GeneratedStory | null>(
+    null,
+  );
+  return (
+    <section
+      aria-labelledby="km-ttmik-create-heading"
+      style={{ marginTop: 18 }}
+    >
+      <Eyebrow id="km-ttmik-create-heading">
+        <Bilingual en="Create a story to listen to" kr="들을 이야기 만들기" />
+      </Eyebrow>
+      <StoryGenerator onCreated={setCreatedStory} />
+      {createdStory !== null ? (
+        <CreatedStoryCard
+          // Keyed on the story id: a replacement create remounts the card,
+          // giving the new story a FRESH useStoryAudio (hydrate, no stale
+          // request error / poll from the previous story).
+          key={createdStory.id}
+          story={createdStory}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * The just-created story's inline card — title + level, an EXPLICIT
+ * "Generate audio" button (the F-216 cost posture: never auto-voice)
+ * driven by the SHARED `useStoryAudio` state machine (hydrate → POST →
+ * bounded poll → done/failed), an inline `<audio>` player once voiced
+ * (src through the strict `buildAudioSrc` allow-list — the only path to
+ * any player src on this page), and an "Open in reader" action into the
+ * story reader for the read-along experience. A dormant deploy
+ * (`ttsConfigured: false`) renders NO audio affordance at all — absence,
+ * not a dead button; only an explicit false hides (forward-compat). The
+ * daily-cap 429 and a `failed` envelope's `error` are server-authored
+ * whitelisted copy shown verbatim (the sanctioned F-210 exception).
+ */
+function CreatedStoryCard({ story }: { story: GeneratedStory }): JSX.Element {
+  const navigate = useNavigate();
+  const { audio, requesting, requestError, requestAudio } = useStoryAudio(
+    story.id,
+  );
+
+  // Hidden while the mount hydrate is in flight (the card never waits on
+  // the probe — title/reader link render immediately), and hidden outright
+  // on a dormant deploy. Matches the reader's audio-card gate exactly.
+  const showAudio = audio !== null && audio.ttsConfigured !== false;
+
+  return (
+    <CityCard
+      tone="blue"
+      className="km-ttmik__created"
+      role="group"
+      aria-label={`New story: ${story.title}`}
+    >
+      <div className="km-ttmik__created-head">
+        {/* Model-authored title — React text children (escaped), as always. */}
+        <span className="kr km-reference__row-kr">{story.title}</span>
+        <Pill tone="gold">{story.level}</Pill>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            void navigate(`/learn/reading?story=${String(story.id)}`);
+          }}
+          aria-label={`Open ${story.title} in reader`}
+        >
+          <Bilingual en="Open in reader" kr="읽기로 열기" compact />
+        </Button>
+      </div>
+
+      {showAudio ? (
+        audio.status === 'done' && audio.track !== null ? (
+          (() => {
+            // The strict allow-list resolver — the ONLY path to the
+            // <audio> src (same contract as every player on this page).
+            const audioSrc = buildAudioSrc(audio.track.streamUrl);
+            return audioSrc !== null ? (
+              /* Narrated TTS audio; the read-along transcript lives in the
+                 reader — same a11y exemption as the players above. */
+              /* eslint-disable-next-line jsx-a11y/media-has-caption */
+              <audio
+                controls
+                preload="metadata"
+                src={audioSrc}
+                aria-label={`Audio for ${story.title}`}
+                style={{ width: '100%' }}
+              />
+            ) : (
+              // Defensive only: reachable solely if a tampered streamUrl
+              // was rejected by the allow-list.
+              <p className="km-reference__empty" role="note">
+                <Bilingual
+                  en="No audio yet — check back soon."
+                  kr="아직 오디오가 없어요 — 잠시 후 다시 확인해 주세요."
+                />
+              </p>
+            );
+          })()
+        ) : audio.status === 'pending' || audio.status === 'running' ? (
+          // In flight — the hook's bounded poll lands the settle; role=status
+          // so AT hears the eventual flip via the re-render.
+          <p className="km-ttmik__created-busy" role="status">
+            <Bilingual en="Generating audio…" kr="오디오 생성 중…" />
+          </p>
+        ) : (
+          // 'none' | 'failed' — the request affordance. A degenerate `done`
+          // envelope with a null track also lands here: nothing to play, so
+          // the button renders and the idempotent POST self-heals (an
+          // already-voiced story answers 200 done with its track).
+          <>
+            {audio.status === 'failed' ? (
+              // Server-authored whitelisted failure copy — verbatim per the
+              // F-210 contract (see services/reading.ts).
+              <p className="km-ttmik__audio-error" role="alert">
+                {audio.error ?? AUDIO_FAILED_FALLBACK_COPY}
+              </p>
+            ) : null}
+            <div>
+              <Button
+                variant="gold"
+                size="sm"
+                // aria-disabled, NOT disabled: the hard attribute would drop
+                // keyboard focus to <body> the instant the call starts (the
+                // StoryGenerator pattern).
+                aria-disabled={requesting || undefined}
+                leadingIcon={<Icon name="headphones" size={14} />}
+                onClick={() => {
+                  if (requesting) return; // aria-disabled doesn't block clicks
+                  requestAudio();
+                }}
+              >
+                {requesting ? (
+                  <Bilingual en="Requesting…" kr="요청 중…" compact />
+                ) : audio.status === 'failed' ? (
+                  <Bilingual en="Try again" kr="다시 시도" compact />
+                ) : (
+                  <Bilingual en="Generate audio" kr="오디오 생성" compact />
+                )}
+              </Button>
+            </div>
+            {requestError !== null ? (
+              // The daily-cap 429's server copy verbatim, or fixed copy —
+              // the hook already discriminated (F-210 contract).
+              <div role="alert" className="km-ttmik__audio-error">
+                {requestError}
+              </div>
+            ) : null}
+          </>
+        )
+      ) : null}
+    </CityCard>
   );
 }
 

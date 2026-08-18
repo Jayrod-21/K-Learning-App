@@ -132,12 +132,10 @@
 import {
   useCallback,
   useEffect,
-  useId,
   useMemo,
   useRef,
   useState,
   type JSX,
-  type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { BackButton } from '../components/BackButton';
@@ -156,8 +154,13 @@ import { Tabs } from '../components/Tabs';
 import { Tapword } from '../components/Tapword';
 import { WordPopover } from '../components/WordPopover';
 import type { WordPopoverData } from '../components/WordPopover';
+import { StoryGenerator } from '../components/StoryGenerator';
 import { useToast } from '../components/useToast';
 import { usePagination } from '../hooks/usePagination';
+import {
+  AUDIO_FAILED_FALLBACK_COPY,
+  useStoryAudio,
+} from '../hooks/useStoryAudio';
 import { useTapWord } from '../hooks/useTapWord';
 import {
   GLOSS_DICTIONARY_ENTRY,
@@ -169,17 +172,13 @@ import { errorMessageFor } from '../lib/errorCopy';
 import { navItem } from '../lib/nav';
 import { ApiError } from '../services/api';
 import {
-  GENERATED_STORY_LEVELS,
-  generateStory,
   getChapter,
   getGeneratedStory,
   getReadingPosition,
-  getStoryAudio,
   getStoryImages,
   listChapters,
   listGeneratedStories,
   logReadingAttempt,
-  requestStoryAudio,
   requestStoryExperience,
   requestStoryImages,
   saveReadingPosition,
@@ -188,10 +187,8 @@ import {
 import type {
   AssetStatus,
   GeneratedStory,
-  GeneratedStoryLevel,
   GeneratedStorySummary,
   ReadingPosition,
-  StoryAudio,
   StoryAudioSegment,
   StoryImage,
   StoryImagesEnvelope,
@@ -955,7 +952,7 @@ function TranslatablePassage({
 }
 
 /** `TranslateSheet`'s fetch lifecycle — one state at a time, no boolean soup
- *  (mirrors `GenState` above). No 'idle' phase: the sheet only mounts once a
+ *  (mirrors StoryGenerator's `GenState`). No 'idle' phase: the sheet only mounts once a
  *  passage is selected, so it always starts loading immediately. */
 type TranslateSheetState =
   | { phase: 'loading' }
@@ -1091,7 +1088,7 @@ const MARK_READ_FAILED_COPY = "Couldn't save — try again.";
  * the story reader (F-172; there is no scroll- or position-derived
  * auto-completion signal this phase — see the scoping doc's own note that a
  * generated story has no passage/position tracking at all). `aria-disabled`
- * (not `disabled`) while saving/done, matching this file's `StoryGenerator`
+ * (not `disabled`) while saving/done, matching the shared `StoryGenerator`
  * busy-button convention — the hard attribute would drop keyboard focus.
  */
 function MarkCompleteButton({
@@ -1360,192 +1357,9 @@ function ChapterReader({ chapterId }: { chapterId: number }): JSX.Element {
 // ─────────────────────────────────────────────────────────────
 // Stories tab — generator + library (F-068)
 // ─────────────────────────────────────────────────────────────
-
-/** Generator panel lifecycle — one state at a time, no boolean soup.
- *  No 'done' phase: a successful generation opens the new story. */
-type GenState =
-  | { phase: 'idle' }
-  | { phase: 'busy' }
-  | { phase: 'error'; message: string };
-
-/** Fixed fallback copy for a failed generation (errorCopy contract). */
-const GENERATE_FAILED_COPY = 'Could not generate a story. Try again.';
-
-/**
- * "New story from Claude" panel — level radiogroup (roving tabindex, arrow
- * keys wrap: the WritingTopicGenerator/ModeToggle segmented pattern),
- * optional topic, and a Generate button that goes `aria-disabled` (NOT
- * `disabled` — the hard attribute would drop keyboard focus to <body>
- * mid-generation, WCAG 2.4.3) while POST /reading/generate is in flight.
- * 429 is a first-class path (expensive route): `errorMessageFor` renders
- * the structured `retryAfter` and the button stays enabled as the retry.
- */
-function StoryGenerator({
-  onCreated,
-}: {
-  onCreated: (story: GeneratedStory) => void;
-}): JSX.Element {
-  const [level, setLevel] = useState<GeneratedStoryLevel>('L3');
-  const [topic, setTopic] = useState('');
-  const [state, setState] = useState<GenState>({ phase: 'idle' });
-  const levelRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const abortRef = useRef<AbortController | null>(null);
-  const uid = useId();
-
-  // Abort any in-flight generation on unmount so a late resolve can't set
-  // state on a dead component (the catch below drops aborted rejections).
-  useEffect(
-    () => () => {
-      abortRef.current?.abort();
-    },
-    [],
-  );
-
-  const generate = async (): Promise<void> => {
-    // Supersede: a regenerate while one is in flight cancels the old call —
-    // exactly one outcome ever lands.
-    abortRef.current?.abort();
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    setState({ phase: 'busy' });
-    try {
-      const trimmed = topic.trim();
-      const story = await generateStory(
-        { level, ...(trimmed !== '' ? { topic: trimmed } : {}) },
-        ctrl.signal,
-      );
-      if (ctrl.signal.aborted) return;
-      // Open the fresh story — the parent navigates, unmounting this panel.
-      onCreated(story);
-    } catch (err) {
-      if (ctrl.signal.aborted) return;
-      setState({
-        phase: 'error',
-        message: errorMessageFor(err, GENERATE_FAILED_COPY),
-      });
-    }
-  };
-
-  // Roving-tabindex arrows on the level radios (WAI-ARIA radiogroup).
-  const onLevelKeyDown = (e: ReactKeyboardEvent<HTMLButtonElement>): void => {
-    const current = GENERATED_STORY_LEVELS.indexOf(level);
-    let next: number | null = null;
-    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
-      next = (current + 1) % GENERATED_STORY_LEVELS.length;
-    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
-      next =
-        (current - 1 + GENERATED_STORY_LEVELS.length) %
-        GENERATED_STORY_LEVELS.length;
-    }
-    if (next === null) return;
-    e.preventDefault();
-    const target = GENERATED_STORY_LEVELS[next];
-    if (target === undefined) return;
-    setLevel(target);
-    levelRefs.current[next]?.focus();
-  };
-
-  const busy = state.phase === 'busy';
-
-  return (
-    // The page's one hero CTA (F-068 Claude generation) — a `mint`-tone,
-    // `feat` CityCard signboard/hanji-paper card (devices #1/#2), mirroring
-    // the design mock's dedicated "Generate a short story" sign.
-    <CityCard
-      tone="mint"
-      rail
-      feat
-      className="km-reading__gen"
-      aria-busy={busy || undefined}
-    >
-      <div className="km-reading__gen-head" id={`${uid}-label`}>
-        {/* Device #9 — mother-of-pearl shimmer on the hero CTA's spark
-            glyph. Sparing by design: this is the page's ONLY najeon use. */}
-        <span className="km-reading__gen-spark km-najeon km-najeon--shimmer">
-          <Icon name="spark" size={14} />
-        </span>
-        <Bilingual en="New story from Claude" kr="새 이야기 만들기" />
-      </div>
-
-      <div
-        className="km-reading__gen-levels"
-        role="radiogroup"
-        aria-labelledby={`${uid}-label`}
-      >
-        {GENERATED_STORY_LEVELS.map((l, i) => {
-          const selected = l === level;
-          return (
-            <button
-              key={l}
-              ref={(el) => {
-                levelRefs.current[i] = el;
-              }}
-              type="button"
-              role="radio"
-              aria-checked={selected}
-              tabIndex={selected ? 0 : -1}
-              className={
-                selected
-                  ? 'km-reading__gen-level km-reading__gen-level--active focusring'
-                  : 'km-reading__gen-level focusring'
-              }
-              onClick={() => {
-                setLevel(l);
-              }}
-              onKeyDown={onLevelKeyDown}
-            >
-              {l}
-            </button>
-          );
-        })}
-      </div>
-
-      <div className="km-reading__gen-topic">
-        <label htmlFor={`${uid}-topic`}>
-          <Bilingual en="Topic (optional)" kr="주제 (선택)" compact />
-        </label>
-        <input
-          id={`${uid}-topic`}
-          type="text"
-          value={topic}
-          maxLength={500}
-          placeholder="e.g. 바닷가 마을"
-          onChange={(e) => {
-            setTopic(e.target.value);
-          }}
-        />
-      </div>
-
-      <div>
-        <Button
-          variant="gold"
-          size="sm"
-          // aria-disabled, NOT disabled: the hard attribute would move
-          // keyboard focus to <body> the instant the call starts. The busy
-          // guard below is the real re-entry gate.
-          aria-disabled={busy || undefined}
-          leadingIcon={<Icon name="spark" size={14} />}
-          onClick={() => {
-            if (busy) return; // aria-disabled doesn't block clicks — we do.
-            void generate();
-          }}
-        >
-          {busy ? (
-            <Bilingual en="Generating…" kr="생성 중…" compact />
-          ) : (
-            <Bilingual en="Generate story" kr="이야기 생성" compact />
-          )}
-        </Button>
-      </div>
-
-      {state.phase === 'error' ? (
-        <div role="alert" className="km-reading__gen-error">
-          {state.message}
-        </div>
-      ) : null}
-    </CityCard>
-  );
-}
+// The `StoryGenerator` panel moved to `components/StoryGenerator.tsx`
+// (shared with the Listen landing's story creator); this page imports it
+// and keeps its original wiring — `onCreated` opens the fresh story.
 
 /** Library date — short, locale-fixed (the app's copy is en-first), and
  *  silent on an unparseable server timestamp rather than "Invalid Date". */
@@ -1754,37 +1568,9 @@ function StoriesSection({
 // ─────────────────────────────────────────────────────────────
 // Story TTS audio (F-210) — request / poll / read-along
 // ─────────────────────────────────────────────────────────────
-
-/** Poll cadence while a TTS job is pending/running (server contract:
- *  "poll every ~2s until done or failed"). */
-const STORY_AUDIO_POLL_MS = 2000;
-
-/**
- * Poll attempt ceiling — bounded churn for a never-settling job (the
- * MyAudioDetail precedent). 150 ticks × 2s = 5 minutes, generous against a
- * short story's real synthesis time; the last known status stays on screen
- * and a reopen restarts the budget.
- */
-const STORY_AUDIO_POLL_MAX_TICKS = 150;
-
-/** Fixed fallback copy for a failed audio REQUEST (errorCopy contract). */
-const AUDIO_REQUEST_FAILED_COPY = 'Could not request audio. Try again.';
-
-/** Fixed fallback shown for a `failed` envelope whose `error` is null
- *  (defensive — the server settles a failure with copy, but never trust
- *  a nullable field to be populated). */
-const AUDIO_FAILED_FALLBACK_COPY = 'Audio generation failed. Try again.';
-
-/** The empty envelope — what a hydrate failure degrades to (the button
- *  shows; the POST is idempotent, so a tap on an already-voiced story just
- *  returns the done envelope — self-healing). */
-const NO_STORY_AUDIO: StoryAudio = {
-  status: 'none',
-  jobId: null,
-  error: null,
-  track: null,
-  segments: [],
-};
+// The `useStoryAudio` state machine (and its poll constants) moved to
+// `hooks/useStoryAudio.ts` (shared with the Listen landing's story creator
+// card); the read-along machinery below stays reader-only.
 
 /**
  * Binary-search the ordered segments for the one whose `[startMs, endMs)`
@@ -1813,164 +1599,6 @@ function activeSegmentNumberAt(
   }
   if (candidate === null) return null;
   return ms < candidate.endMs ? candidate.segmentNumber : null;
-}
-
-/**
- * F-210 story-audio state machine: hydrate once on mount (an already-voiced
- * story shows its player immediately), POST on demand, poll the GET every
- * `STORY_AUDIO_POLL_MS` while a job is pending/running, and stop on settle
- * (done/failed), unmount, a terminal mid-poll 404, or the tick ceiling.
- * Every request is abortable; cleanup aborts in-flight calls so a closed
- * reader never lands a late setState (the page-wide contract).
- *
- * Error copy: the daily-cap 429 (no `retryAfter`) and a `failed` envelope's
- * `error` are server-authored WHITELISTED copy shown verbatim — the F-210
- * contract's sanctioned exception to the fixed-copy rule (see
- * services/reading.ts `requestStoryAudio`). Everything else routes through
- * `errorMessageFor` as usual.
- */
-function useStoryAudio(storyId: number): {
-  /** Latest envelope, or null while the mount hydrate is in flight. */
-  audio: StoryAudio | null;
-  /** True while the POST itself is in flight (pre-202 button busy state). */
-  requesting: boolean;
-  /** Request failure copy (429 cap verbatim / fixed copy), or null. */
-  requestError: string | null;
-  requestAudio: () => void;
-  /** F-216 — imperatively land a fresh envelope from OUTSIDE this hook's
-   *  own request path (the combined-experience POST's audio half). Pure
-   *  setState: a pending/running envelope flips `polling` and starts the
-   *  bounded poll exactly as `requestAudio`'s 202 would; a settled one
-   *  renders directly. The hydrate/poll/abort lifecycle is untouched. */
-  seed: (env: StoryAudio) => void;
-} {
-  const [audio, setAudio] = useState<StoryAudio | null>(null);
-  const [requesting, setRequesting] = useState(false);
-  const [requestError, setRequestError] = useState<string | null>(null);
-  const hydrateCtrlRef = useRef<AbortController | null>(null);
-  const pollTickCtrlRef = useRef<AbortController | null>(null);
-  const requestCtrlRef = useRef<AbortController | null>(null);
-
-  // Hydrate once per story: a `done` shows the player with no click; a
-  // `pending`/`running` (requested in an earlier session) resumes polling.
-  useEffect(() => {
-    const ctrl = new AbortController();
-    hydrateCtrlRef.current?.abort();
-    hydrateCtrlRef.current = ctrl;
-    getStoryAudio(storyId, ctrl.signal)
-      .then((env) => {
-        if (ctrl.signal.aborted) return;
-        setAudio(env);
-      })
-      .catch((err: unknown) => {
-        if (ctrl.signal.aborted) return;
-        if (err instanceof ApiError && err.code === 'canceled') return;
-        // Degrade to 'none' rather than blocking the reader behind an audio
-        // status probe: the button renders, and the idempotent POST
-        // self-heals (an already-voiced story answers 200 done).
-        setAudio(NO_STORY_AUDIO);
-      });
-    return () => {
-      ctrl.abort();
-    };
-  }, [storyId]);
-
-  // Poll while a job is unsettled — per-tick abort-before-fetch, transient
-  // failures retried next tick, terminal 404 (story deleted mid-poll) stops
-  // immediately, and the interval + in-flight tick both die on unmount
-  // (MyAudioDetail's exact posture).
-  const status = audio?.status;
-  const polling = status === 'pending' || status === 'running';
-  useEffect(() => {
-    if (!polling) return;
-    let ticks = 0; // effect-local — every (re)start gets a fresh budget
-    const id = window.setInterval(() => {
-      ticks += 1;
-      if (ticks > STORY_AUDIO_POLL_MAX_TICKS) {
-        window.clearInterval(id);
-        return;
-      }
-      pollTickCtrlRef.current?.abort();
-      const ctrl = new AbortController();
-      pollTickCtrlRef.current = ctrl;
-      getStoryAudio(storyId, ctrl.signal)
-        .then((env) => {
-          if (ctrl.signal.aborted) return;
-          // Settling to done/failed flips `polling` false → effect teardown
-          // clears this interval.
-          setAudio(env);
-        })
-        .catch((err: unknown) => {
-          if (ctrl.signal.aborted) return;
-          if (err instanceof ApiError && err.code === 'canceled') return;
-          if (err instanceof ApiError && err.status === 404) {
-            // Story gone mid-poll — terminal: stop NOW rather than hammer a
-            // route that can only 404 again.
-            window.clearInterval(id);
-            return;
-          }
-          // Transient poll failure — next tick retries.
-        });
-    }, STORY_AUDIO_POLL_MS);
-    return () => {
-      window.clearInterval(id);
-      pollTickCtrlRef.current?.abort();
-      pollTickCtrlRef.current = null;
-    };
-  }, [polling, storyId]);
-
-  // Abort an in-flight POST on unmount (the hydrate/poll effects own their
-  // own cleanup above).
-  useEffect(
-    () => () => {
-      requestCtrlRef.current?.abort();
-    },
-    [],
-  );
-
-  const requestAudio = useCallback((): void => {
-    requestCtrlRef.current?.abort();
-    const ctrl = new AbortController();
-    requestCtrlRef.current = ctrl;
-    setRequesting(true);
-    setRequestError(null);
-    requestStoryAudio(storyId, ctrl.signal).then(
-      (env) => {
-        if (ctrl.signal.aborted) return;
-        setRequesting(false);
-        // 202 lands a pending/running envelope (polling starts via the
-        // effect above); 200 lands `done` directly (already voiced).
-        setAudio(env);
-      },
-      (err: unknown) => {
-        if (ctrl.signal.aborted) return;
-        if (err instanceof ApiError && err.code === 'canceled') return;
-        setRequesting(false);
-        if (
-          err instanceof ApiError &&
-          err.status === 429 &&
-          err.retryAfter === undefined
-        ) {
-          // The DAILY TTS cap — server-authored whitelisted copy, shown
-          // verbatim per the F-210 contract ("try again tomorrow"); the
-          // button stays available. A short-window 429 carries `retryAfter`
-          // and falls through to errorMessageFor's structured copy instead.
-          setRequestError(err.message);
-          return;
-        }
-        setRequestError(errorMessageFor(err, AUDIO_REQUEST_FAILED_COPY));
-      },
-    );
-  }, [storyId]);
-
-  const seed = useCallback((env: StoryAudio): void => {
-    // A seeded envelope supersedes any earlier per-asset failure — clear the
-    // stale error so a capped experience half doesn't render two alerts.
-    setRequestError(null);
-    setAudio(env);
-  }, []);
-
-  return { audio, requesting, requestError, requestAudio, seed };
 }
 
 // ─────────────────────────────────────────────────────────────

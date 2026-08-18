@@ -27,7 +27,7 @@
  * matching the real DOM shape the hook's `closest()` call depends on.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, within, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import type { JSX } from 'react';
@@ -45,8 +45,18 @@ import {
   logTtmikAttempt,
 } from '../services/ttmik';
 import { getAudioTrack, getSharedAudio, listMyAudio } from '../services/audio';
-import { listGeneratedAudio } from '../services/reading';
-import type { GeneratedAudioItem } from '../services/reading';
+import {
+  generateStory,
+  getStoryAudio,
+  listGeneratedAudio,
+  requestStoryAudio,
+} from '../services/reading';
+import type {
+  GeneratedAudioItem,
+  GeneratedStory,
+  StoryAudio,
+} from '../services/reading';
+import { AUDIO_FAILED_FALLBACK_COPY } from '../hooks/useStoryAudio';
 import { mineWord } from '../services/vocab';
 import type {
   AudioTrackDetail,
@@ -89,11 +99,17 @@ vi.mock('../services/audio', async (importOriginal) => {
 });
 // F-210: the landing's "Generated Audio" section fetches the voiced-story
 // list; mocked so every landing test is hermetic (default: nothing voiced).
+// Listen-tab story generator: the landing's creator section rides the SAME
+// module — generateStory (the shared StoryGenerator panel) plus the shared
+// useStoryAudio hook's getStoryAudio/requestStoryAudio pair.
 vi.mock('../services/reading', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/reading')>();
   return {
     ...actual,
     listGeneratedAudio: vi.fn(),
+    generateStory: vi.fn(),
+    getStoryAudio: vi.fn(),
+    requestStoryAudio: vi.fn(),
   };
 });
 
@@ -267,6 +283,62 @@ const GENERATED_AUDIO: GeneratedAudioItem[] = [
   },
 ];
 
+/** Listen-tab story generator fixtures — the story the shared StoryGenerator
+ *  hands back, and the audio envelopes the shared useStoryAudio machine
+ *  rides. The done track's streamUrl matches the REAL buildAudioSrc
+ *  allow-list (unmocked), so the src assertion covers the actual wiring. */
+const CREATED_STORY: GeneratedStory = {
+  id: 55,
+  title: '달빛 아래 서울',
+  level: 'L3',
+  prompt: null,
+  createdAt: '2026-08-18T00:00:00Z',
+  bodyKo: '소년은 학교에 갔다.\n\n바람이 불었다.',
+};
+
+/** Second creator fixture — the keyed-remount test's replacement story
+ *  (different id → `key={createdStory.id}` remounts the card). */
+const SECOND_STORY: GeneratedStory = {
+  id: 56,
+  title: '두 번째 이야기',
+  level: 'L2',
+  prompt: null,
+  createdAt: '2026-08-18T00:05:00Z',
+  bodyKo: '고양이가 잤다.',
+};
+
+const CREATOR_AUDIO_NONE: StoryAudio = {
+  status: 'none',
+  jobId: null,
+  error: null,
+  track: null,
+  segments: [],
+};
+
+const CREATOR_AUDIO_PENDING: StoryAudio = {
+  status: 'pending',
+  jobId: 3,
+  error: null,
+  track: null,
+  segments: [],
+};
+
+const CREATOR_AUDIO_DONE: StoryAudio = {
+  status: 'done',
+  jobId: 3,
+  error: null,
+  track: { id: 955, streamUrl: '/audio/tracks/955/stream', durationMs: 61_000 },
+  segments: [],
+};
+
+const CREATOR_AUDIO_FAILED: StoryAudio = {
+  status: 'failed',
+  jobId: 3,
+  error: 'The voice service is unavailable right now. Try again later.',
+  track: null,
+  segments: [],
+};
+
 /** F-207: surfaces the router location so Read-button navigation (into the
  *  reading routes this page doesn't render) is assertable. */
 function LocationProbe(): JSX.Element {
@@ -354,6 +426,11 @@ beforeEach(() => {
   vi.mocked(getAudioTrack).mockReset().mockResolvedValue(SHARED_TRACK_DETAIL);
   // F-210: default = nothing voiced yet — the landing renders the hint.
   vi.mocked(listGeneratedAudio).mockReset().mockResolvedValue([]);
+  // Listen-tab story generator: nothing fires until a test clicks Generate;
+  // the card's mount hydrate defaults to a fresh never-voiced envelope.
+  vi.mocked(generateStory).mockReset();
+  vi.mocked(getStoryAudio).mockReset().mockResolvedValue(CREATOR_AUDIO_NONE);
+  vi.mocked(requestStoryAudio).mockReset();
   // F-162: each test gets a clean scroll-restore slate — a saved position
   // from one test must never leak into the next.
   window.sessionStorage.clear();
@@ -658,6 +735,332 @@ describe('Ttmik page — landing "Generated Audio" section (F-210)', () => {
       await within(section).findByRole('list', { name: 'Generated audio' }),
     ).toBeInTheDocument();
     expect(vi.mocked(listGeneratedAudio)).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('Ttmik page — landing story creator (Listen-tab story generator)', () => {
+  /** Fake-timer helper (the MyAudio.test.tsx GOTCHA: `userEvent` deadlocks
+   *  against `vi.useFakeTimers()`, so polling tests use `fireEvent` +
+   *  `advanceTimersByTimeAsync`). */
+  async function flushAsync(ms = 0): Promise<void> {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  /** Drive the shared generator to a created story (real timers). */
+  async function createStory(
+    user: ReturnType<typeof userEvent.setup>,
+  ): Promise<HTMLElement> {
+    vi.mocked(generateStory).mockResolvedValue(CREATED_STORY);
+    await user.click(screen.getByRole('button', { name: /Generate story/ }));
+    return await screen.findByRole('group', {
+      name: 'New story: 달빛 아래 서울',
+    });
+  }
+
+  it('renders the SHARED StoryGenerator on the landing, between the carousel and the voiced list', () => {
+    renderPage();
+
+    const section = screen.getByRole('region', {
+      name: /Create a story to listen to/,
+    });
+    // The shared panel's own furniture: the level radiogroup + Generate CTA.
+    expect(within(section).getByRole('radiogroup')).toBeInTheDocument();
+    expect(
+      within(section).getByRole('radio', { name: 'L3', checked: true }),
+    ).toBeInTheDocument();
+    expect(
+      within(section).getByRole('button', { name: /Generate story/ }),
+    ).toBeInTheDocument();
+    // Nothing fetched on mount — the creator is inert until clicked.
+    expect(vi.mocked(generateStory)).not.toHaveBeenCalled();
+    expect(vi.mocked(getStoryAudio)).not.toHaveBeenCalled();
+    // The existing landing around it is untouched: carousel above, the
+    // voiced Generated Audio section still below (empty-state hint here).
+    expect(
+      screen.getByRole('region', { name: 'Listen collections' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('region', { name: /Generated Audio/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('onCreated shows the inline card (title + level + audio affordance) and does NOT navigate', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    const card = await createStory(user);
+
+    // Stayed in Listen — the creator holds the story instead of routing
+    // into the reader (Reading's onCreated behavior).
+    expect(screen.getByTestId('location')).toHaveTextContent(/^\/learn\/listen$/);
+    expect(within(card).getByText('달빛 아래 서울')).toBeInTheDocument();
+    expect(within(card).getByText('L3')).toBeInTheDocument();
+    // The hydrate ('none' envelope) landed → the EXPLICIT audio affordance
+    // renders; nothing was auto-voiced (the F-216 cost posture).
+    expect(
+      await within(card).findByRole('button', { name: /Generate audio/ }),
+    ).toBeInTheDocument();
+    expect(vi.mocked(requestStoryAudio)).not.toHaveBeenCalled();
+    // The generate request carried the picked level and omitted the empty
+    // topic (the shared panel's contract).
+    expect(vi.mocked(generateStory).mock.calls[0]![0]).toEqual({ level: 'L3' });
+  });
+
+  it('Generate audio → 202 → ~2s polling → done renders an inline player with the REAL allow-listed src', async () => {
+    vi.useFakeTimers();
+    vi.mocked(generateStory).mockResolvedValue(CREATED_STORY);
+    vi.mocked(getStoryAudio)
+      .mockResolvedValueOnce(CREATOR_AUDIO_NONE) // card-mount hydrate
+      .mockResolvedValueOnce(CREATOR_AUDIO_PENDING) // poll tick 1
+      .mockResolvedValue(CREATOR_AUDIO_DONE); // poll tick 2+
+    vi.mocked(requestStoryAudio).mockResolvedValue(CREATOR_AUDIO_PENDING);
+    renderPage();
+    await flushAsync();
+
+    fireEvent.click(screen.getByRole('button', { name: /Generate story/ }));
+    await flushAsync();
+    const card = screen.getByRole('group', { name: 'New story: 달빛 아래 서울' });
+
+    fireEvent.click(
+      within(card).getByRole('button', { name: /Generate audio/ }),
+    );
+    await flushAsync();
+    expect(vi.mocked(requestStoryAudio)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(requestStoryAudio).mock.calls[0]![0]).toBe(55);
+    // 202 landed a pending envelope → the busy status replaces the button.
+    expect(within(card).getByText(/Generating audio/)).toBeInTheDocument();
+
+    // Tick 1 (2s): still pending — the shared hook's bounded poll rides on.
+    await flushAsync(2000);
+    expect(within(card).getByText(/Generating audio/)).toBeInTheDocument();
+
+    // Tick 2 (2s): done — the inline player mounts, src through the REAL
+    // buildAudioSrc (empty API base → the app-relative allow-listed route).
+    await flushAsync(2000);
+    const player = card.querySelector('audio');
+    expect(player).not.toBeNull();
+    expect(player!.getAttribute('src')).toBe('/audio/tracks/955/stream');
+    expect(player!.hasAttribute('controls')).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it('a failed envelope shows the server-authored copy VERBATIM and "Try again" re-POSTs', async () => {
+    vi.mocked(getStoryAudio).mockResolvedValue(CREATOR_AUDIO_FAILED);
+    vi.mocked(requestStoryAudio).mockResolvedValue(CREATOR_AUDIO_PENDING);
+    const user = userEvent.setup();
+    renderPage();
+
+    const card = await createStory(user);
+    const alert = await within(card).findByRole('alert');
+    // The F-210 contract's sanctioned exception: whitelisted server copy,
+    // shown untouched.
+    expect(alert).toHaveTextContent(
+      'The voice service is unavailable right now. Try again later.',
+    );
+
+    await user.click(within(card).getByRole('button', { name: /Try again/ }));
+    await waitFor(() => {
+      expect(vi.mocked(requestStoryAudio)).toHaveBeenCalledWith(
+        55,
+        expect.any(AbortSignal),
+      );
+    });
+    expect(
+      await within(card).findByText(/Generating audio/),
+    ).toBeInTheDocument();
+  });
+
+  it('a failed envelope with a NULL error shows the fixed fallback copy (never a blank alert)', async () => {
+    vi.mocked(getStoryAudio).mockResolvedValue({
+      ...CREATOR_AUDIO_FAILED,
+      error: null,
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    const card = await createStory(user);
+    // Pins this card's `?? AUDIO_FAILED_FALLBACK_COPY` (the Reading reader
+    // covers its own copy of the same fallback).
+    const alert = await within(card).findByRole('alert');
+    expect(alert).toHaveTextContent(AUDIO_FAILED_FALLBACK_COPY);
+  });
+
+  it('the daily-cap 429 (no retryAfter) shows the server message verbatim and keeps the button', async () => {
+    vi.mocked(requestStoryAudio).mockRejectedValue(
+      new ApiError(
+        'daily story-audio limit reached: 3 of 3 generations used today. Try again tomorrow.',
+        { status: 429, code: 'rate_limited' },
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    const card = await createStory(user);
+    await user.click(
+      await within(card).findByRole('button', { name: /Generate audio/ }),
+    );
+
+    const alert = await within(card).findByRole('alert');
+    expect(alert).toHaveTextContent(
+      'daily story-audio limit reached: 3 of 3 generations used today. Try again tomorrow.',
+    );
+    // Not terminal: the button stays for tomorrow and is not stuck busy.
+    const button = within(card).getByRole('button', {
+      name: /Generate audio/,
+    });
+    expect(button).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('a second create REPLACES the card with FRESH audio state — no stale error/player from the first story (keyed remount)', async () => {
+    // Drive story A's card into a dirty state: its audio request dies on the
+    // daily cap, landing the verbatim server alert in per-card hook state.
+    vi.mocked(requestStoryAudio).mockRejectedValue(
+      new ApiError('daily story-audio limit reached: 3 of 3 generations used today. Try again tomorrow.', {
+        status: 429,
+        code: 'rate_limited',
+      }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    const cardA = await createStory(user); // story 55
+    await user.click(
+      await within(cardA).findByRole('button', { name: /Generate audio/ }),
+    );
+    await within(cardA).findByRole('alert'); // the stale-state candidate
+
+    // Create a SECOND story — the creator holds one card at a time, so the
+    // new story replaces the old card entirely.
+    vi.mocked(generateStory).mockResolvedValue(SECOND_STORY);
+    await user.click(screen.getByRole('button', { name: /Generate story/ }));
+    const cardB = await screen.findByRole('group', {
+      name: 'New story: 두 번째 이야기',
+    });
+    expect(
+      screen.queryByRole('group', { name: 'New story: 달빛 아래 서울' }),
+    ).toBeNull();
+    expect(within(cardB).getByText('L2')).toBeInTheDocument();
+
+    // FRESH state machine: the `key={createdStory.id}` remount re-ran the
+    // hydrate for the NEW id and reset the hook — a clean Generate-audio
+    // affordance with NO stale 429 alert (requestError lives in hook state
+    // that ONLY the remount clears), no player, no leaked poll.
+    expect(
+      await within(cardB).findByRole('button', { name: /Generate audio/ }),
+    ).toBeInTheDocument();
+    expect(within(cardB).queryByRole('alert')).toBeNull();
+    expect(within(cardB).queryByText(/Generating audio/)).toBeNull();
+    expect(cardB.querySelector('audio')).toBeNull();
+    await waitFor(() => {
+      expect(vi.mocked(getStoryAudio)).toHaveBeenCalledWith(
+        56,
+        expect.any(AbortSignal),
+      );
+    });
+    // Still in Listen throughout — the replacement never navigates.
+    expect(screen.getByTestId('location')).toHaveTextContent(
+      /^\/learn\/listen$/,
+    );
+  });
+
+  it('a degenerate done envelope with a NULL track falls back to the Generate-audio affordance (no broken player)', async () => {
+    vi.mocked(getStoryAudio).mockResolvedValue({
+      ...CREATOR_AUDIO_DONE,
+      track: null,
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    const card = await createStory(user);
+    // Nothing to play: no <audio>, no alert — the explicit button renders
+    // instead, and the idempotent POST self-heals (an already-voiced story
+    // answers 200 done with its track).
+    expect(
+      await within(card).findByRole('button', { name: /Generate audio/ }),
+    ).toBeInTheDocument();
+    expect(card.querySelector('audio')).toBeNull();
+    expect(within(card).queryByRole('alert')).toBeNull();
+  });
+
+  it('a done envelope whose streamUrl fails the allow-list renders the defensive note — never a broken <audio>', async () => {
+    vi.mocked(getStoryAudio).mockResolvedValue({
+      ...CREATOR_AUDIO_DONE,
+      track: {
+        id: 955,
+        streamUrl: 'https://evil.example/a.mp3', // REAL buildAudioSrc rejects
+        durationMs: 61_000,
+      },
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    const card = await createStory(user);
+    expect(
+      await within(card).findByText(/No audio yet — check back soon/),
+    ).toBeInTheDocument();
+    expect(card.querySelector('audio')).toBeNull();
+  });
+
+  it('ttsConfigured:false hides the audio affordance entirely — the card still offers the reader', async () => {
+    vi.mocked(getStoryAudio).mockResolvedValue({
+      ...CREATOR_AUDIO_NONE,
+      ttsConfigured: false,
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    const card = await createStory(user);
+    // The hydrate settled dormant — absence, not a dead button.
+    await waitFor(() => {
+      expect(vi.mocked(getStoryAudio)).toHaveBeenCalled();
+    });
+    expect(
+      within(card).queryByRole('button', { name: /Generate audio/ }),
+    ).not.toBeInTheDocument();
+    expect(card.querySelector('audio')).toBeNull();
+    // The non-audio affordances stand.
+    expect(
+      within(card).getByRole('button', {
+        name: 'Open 달빛 아래 서울 in reader',
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it('"Open in reader" deep-links into the story reader (/learn/reading?story=N)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    const card = await createStory(user);
+    await user.click(
+      within(card).getByRole('button', { name: 'Open 달빛 아래 서울 in reader' }),
+    );
+    expect(screen.getByTestId('location')).toHaveTextContent(
+      '/learn/reading?story=55',
+    );
+  });
+
+  it('the existing voiced Generated Audio section still renders BELOW the creator (no regression)', async () => {
+    vi.mocked(listGeneratedAudio).mockResolvedValue(GENERATED_AUDIO);
+    renderPage();
+
+    const creator = screen.getByRole('region', {
+      name: /Create a story to listen to/,
+    });
+    const voiced = await screen.findByRole('region', {
+      name: /Generated Audio/,
+    });
+    // Both sections coexist; the voiced list keeps its full row rendering.
+    expect(
+      within(voiced).getByRole('list', { name: 'Generated audio' }),
+    ).toBeInTheDocument();
+    expect(within(voiced).getByText('겨울 산책')).toBeInTheDocument();
+    // DOM order: creator sits ABOVE the voiced section (additive layout).
+    expect(
+      creator.compareDocumentPosition(voiced) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 });
 
