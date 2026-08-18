@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildAudioSrc,
   buildStoryImageSrc,
+  buildTopikImageSrc,
   getIyagiEpisode,
   getIyagiEpisodes,
   getTtmikLesson,
@@ -297,5 +298,52 @@ describe('buildStoryImageSrc', () => {
     // trailing newline).
     expect(buildStoryImageSrc('/reading/generated/7/image/1/blob\n', '')).toBeNull();
     expect(buildStoryImageSrc('/reading/generated/7/image/1/blob ', '')).toBeNull();
+  });
+});
+
+// F-120 — TOPIK question exam figures get their own strict resolver.
+describe('buildTopikImageSrc', () => {
+  it('returns the app-relative path verbatim on an empty base (prod same-origin)', () => {
+    expect(buildTopikImageSrc('/topik/image/60/2/1', '')).toBe('/topik/image/60/2/1');
+  });
+
+  it('prefixes the API base when one is configured (dev split-origin)', () => {
+    expect(buildTopikImageSrc('/topik/image/60/1/17', 'http://localhost:4000')).toBe(
+      'http://localhost:4000/topik/image/60/1/17',
+    );
+  });
+
+  it('accepts only level segments 1 and 2 (the route contract)', () => {
+    expect(buildTopikImageSrc('/topik/image/60/1/1', '')).not.toBeNull();
+    expect(buildTopikImageSrc('/topik/image/60/2/1', '')).not.toBeNull();
+    expect(buildTopikImageSrc('/topik/image/60/3/1', '')).toBeNull();
+    expect(buildTopikImageSrc('/topik/image/60/12/1', '')).toBeNull();
+  });
+
+  it('rejects a non-app-relative imageUrl (absolute / protocol-relative / normalization bypass)', () => {
+    expect(buildTopikImageSrc('https://evil.example/x.png', '')).toBeNull();
+    expect(buildTopikImageSrc('//evil.example/x.png', '')).toBeNull();
+    expect(buildTopikImageSrc('evil.example/x.png', '')).toBeNull();
+    // The F-012 R3 family: leading backslash / embedded whitespace
+    // normalizes to `//` in the browser's URL parser.
+    expect(buildTopikImageSrc('/\\evil.example/topik/image/60/2/1', '')).toBeNull();
+    expect(buildTopikImageSrc('/\tevil.example/topik/image/60/2/1', '')).toBeNull();
+    expect(buildTopikImageSrc('/\nevil.example/topik/image/60/2/1', '')).toBeNull();
+  });
+
+  it('rejects near-misses of the image shape (the anchor holds)', () => {
+    expect(buildTopikImageSrc('/topik/image/60/2/1x', '')).toBeNull();
+    expect(buildTopikImageSrc('/topik/image/60/2/1/', '')).toBeNull();
+    expect(buildTopikImageSrc('/topik/image/60/2/1?x=1', '')).toBeNull();
+    expect(buildTopikImageSrc('/topik/image/60/2/1/../2', '')).toBeNull();
+    expect(buildTopikImageSrc('/topik/image/x/2/1', '')).toBeNull();
+    expect(buildTopikImageSrc('/topik/image/60/2/', '')).toBeNull();
+    // A different (even legitimate) route family is NOT an exam figure.
+    expect(buildTopikImageSrc('/topik/audio/60/2', '')).toBeNull();
+    expect(buildTopikImageSrc('/reading/generated/7/image/1/blob', '')).toBeNull();
+    // Whitespace near-misses (the unflagged `$` must not tolerate a
+    // trailing newline).
+    expect(buildTopikImageSrc('/topik/image/60/2/1\n', '')).toBeNull();
+    expect(buildTopikImageSrc('/topik/image/60/2/1 ', '')).toBeNull();
   });
 });

@@ -9,6 +9,8 @@
  *   POST /topik/:itemId/answer → grade a pick, log the attempt, reveal the answer
  *   GET  /topik/audio/:testNumber/:level → a paper's official listening MP3
  *                                (Range-capable stream — F-119 Phase 4)
+ *   GET  /topik/image/:testNumber/:level/:itemNumber → a question's cropped
+ *                                exam figure (F-120 Phase 1 — migration 085)
  *
  * SECURITY (see SECURITY.md §14):
  *   - TOPIK items are PUBLIC reference data. This is a study tool, not a secured
@@ -39,6 +41,7 @@ import { query, withTransaction } from '../db/pool.js';
 import { NotFoundError } from '../middleware/errors.js';
 import { sharedPassageFor } from '../services/topik/passages.js';
 import { streamCorpusAudio } from '../services/corpusAudio.js';
+import { sendCorpusImage, CORPUS_IMAGE_NOT_FOUND } from '../services/corpusImage.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -230,6 +233,19 @@ interface TopikItemDTO {
    */
   readonly audioUrl?: string;
   /**
+   * F-120 Phase 1 — the serving URL of this question's cropped exam figure
+   * (`/topik/image/<testNumber>/<1|2>/<itemNumber>`, the F-120 route), emitted
+   * ONLY when the item has an `image_ref` mapped (migration 085 — NULL for
+   * every row until the backfill runs, so today's wire is unchanged). The raw
+   * stored key is never emitted. QUESTION content (the picture the exam shows,
+   * exactly like `hasImage`/`imageText`), never answer data — so unlike
+   * `audioUrl` (a study-surface convenience the mock replaces with its one
+   * envelope URL) this SURVIVES the mock answer-strip: the timed exam needs
+   * the figure to render an image-dependent item answerably (see
+   * `toMockItemDTO`).
+   */
+  readonly imageUrl?: string;
+  /**
    * F-119 decision #2 (fix-pass S-1) — the server-authoritative answer to "is
    * this item's `prompt` text the SPOKEN transcript?". The prompt slot is
    * decided right here in `mapRowToDTO` (`prompt` column when non-empty, else
@@ -257,6 +273,14 @@ interface TopikItemRow {
   answer: unknown;
   has_image: boolean;
   image_text: string | null;
+  /**
+   * This question's cropped exam figure as a corpus-relative key under
+   * CORPUS_IMAGE_DIR (migration 085), or NULL = no image mapped (every row's
+   * state until load_topik_image.py runs). `mapRowToDTO` turns a non-null
+   * value into the item's `/topik/image/...` URL; the raw key itself is
+   * never emitted on any wire (078's audio_path stance).
+   */
+  image_ref: string | null;
   extra: Record<string, unknown> | null;
   /**
    * The parent test's `passages` JSONB (migration 005): an object keyed by
@@ -448,6 +472,20 @@ function mapRowToDTO(row: TopikItemRow): TopikItemDTO | null {
           }`,
         }
       : {}),
+    // F-120 Phase 1: a question with a mapped exam figure (image_ref non-null,
+    // migration 085) names its serving URL — never the raw stored key. The
+    // level ternary matches the audio URLs exactly ('TOPIK II' → 2, else 1).
+    // NOT section-pinned (reading AND listening items carry figures) and not
+    // tied to hasImage: image_ref is the sole source of truth for "an asset
+    // exists"; hasImage keeps meaning "the source PDF showed one". All rows
+    // are NULL until the backfill runs, so today's wire is byte-identical.
+    ...(row.image_ref !== null
+      ? {
+          imageUrl: `/topik/image/${String(row.test_number)}/${
+            row.test_topik_level === 'TOPIK II' ? '2' : '1'
+          }/${String(row.item_number)}`,
+        }
+      : {}),
   };
 }
 
@@ -470,7 +508,7 @@ function mapRows(rows: readonly TopikItemRow[]): TopikItemDTO[] {
 // mock item would fail to compile, so the answer cannot leak by accident — the
 // only field on a mock choice is `{ id, kr, en }`, and the only fields on a mock
 // item are id/section/number/level/prompt/passage/passageRef/options plus the
-// image metadata (`hasImage`/`imageText`), the audio window
+// image metadata (`hasImage`/`imageText`/`imageUrl` — F-120), the audio window
 // (`audioStartMs`/`audioEndMs` — F-119), and the prompt-provenance flag
 // (`promptIsTranscript` — F-119 decision #2 / fix-pass S-1). `passage` is the shared reading text
 // the QUESTION is about (B-008) — question content, not answer data, exactly
@@ -487,7 +525,10 @@ type TopikMockChoiceDTO = Omit<TopikChoiceDTO, 'correct'>;
  *  (F-206, a study/browse-surface field) is Omitted too — the mock keeps its
  *  F-119 one-envelope-URL contract (every item indexes into the single paper
  *  stream `POST /mock` names), so a per-item URL here would be redundant and
- *  the Omit keeps the mock wire byte-identical by construction. */
+ *  the Omit keeps the mock wire byte-identical by construction. `imageUrl`
+ *  (F-120) is deliberately NOT Omitted: unlike audio there is no envelope
+ *  equivalent — the figure is per-question content like `hasImage`/
+ *  `imageText`, and the timed exam needs it (see `toMockItemDTO`). */
 type TopikMockItemDTO = Omit<TopikItemDTO, 'options' | 'explanation' | 'audioUrl'> & {
   readonly options: readonly TopikMockChoiceDTO[];
 };
@@ -526,6 +567,12 @@ function toMockItemDTO(item: TopikItemDTO): TopikMockItemDTO {
     // `hasImage`; the choice objects stay `{ id, kr, en }` only.
     promptIsTranscript: item.promptIsTranscript,
     ...(item.imageText !== undefined ? { imageText: item.imageText } : {}),
+    // F-120: the question's exam-figure URL survives the strip exactly like
+    // `hasImage`/`imageText` — it is WHAT THE EXAM SHOWS, carries no answer
+    // information, and an image-dependent item is unanswerable without it.
+    // (Contrast `audioUrl`, which the mock Omits in favor of its one
+    // envelope-level stream URL — images have no envelope equivalent.)
+    ...(item.imageUrl !== undefined ? { imageUrl: item.imageUrl } : {}),
     ...(item.audioStartMs !== undefined && item.audioEndMs !== undefined
       ? { audioStartMs: item.audioStartMs, audioEndMs: item.audioEndMs }
       : {}),
@@ -563,7 +610,7 @@ const ITEM_COLUMNS = `i.id::text AS id,
                       i.item_number,
                       i.proficiency::text AS proficiency,
                       i.stem, i.prompt, i.options, i.answer,
-                      i.has_image, i.image_text, i.extra,
+                      i.has_image, i.image_text, i.image_ref, i.extra,
                       i.audio_start_ms, i.audio_end_ms,
                       t.passages AS test_passages,
                       t.audio_path AS test_audio_path,
@@ -893,6 +940,74 @@ router.get('/audio/:testNumber/:level', mediaLimiter(), async (req, res, next) =
     // No row and a NULL audio_path collapse to the same uniform 404 inside
     // streamCorpusAudio ("no such paper" vs "no audio mapped" is not leaked).
     await streamCorpusAudio(req, res, next, rows[0]?.audio_path ?? null);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /topik/image/:testNumber/:level/:itemNumber — a question's cropped exam
+// figure (F-120 Phase 1)
+// ---------------------------------------------------------------------------
+
+// Positive int, capped at int4 (item_number is INTEGER — same boundary stance
+// as TopikAudioTestNumberSchema: an overflowing path value must die here,
+// never reach pg as a 22003 → 500).
+const TopikImageItemNumberSchema = z.coerce.number().int().positive().max(INT4_MAX);
+
+/**
+ * GET /topik/image/:testNumber/:level/:itemNumber — serve a question's
+ * cropped exam figure (F-120 Phase 1; migration 085). `:level` ∈ {1, 2} maps
+ * to 'TOPIK I'/'TOPIK II' via the SAME resolver as the audio route (the
+ * migration-029 natural key needs it — the sittings share every test_number).
+ * NOT section-pinned: reading AND listening items carry figures; the item is
+ * resolved by (test_number, topik_level, item_number) with a non-null
+ * image_ref, ordered by section for the (theoretical) paper whose reading and
+ * listening items share a number AND both carry a mapped figure — a
+ * deterministic pick, and Phase 2 (the full backfill) revisits the key if the
+ * real corpus ever produces that collision. This mirrors the F-120 build
+ * spec's URL contract exactly (the client allow-list pins the same shape).
+ *
+ * Semantics + posture (the audio route's, restated for images):
+ *   - UNIFORM 404 for everything that isn't a servable figure: malformed
+ *     testNumber/level/itemNumber, unknown item, NULL image_ref (the
+ *     ships-empty state), a hostile stored key, an unknown extension, and a
+ *     missing file are all indistinguishable NotFoundErrors — the message
+ *     stays byte-identical to corpusImage.ts's CORPUS_IMAGE_NOT_FOUND so the
+ *     wire never distinguishes a malformed URL from a missing item/file, and
+ *     a garbage URL can never produce a 500.
+ *   - NON-user-scoped BY DESIGN: shared licensed corpus content, exactly like
+ *     the exam MP3s — requireAuth (router-level) is the only gate.
+ *   - mediaLimiter: media-asset burst profile (a study draw renders several
+ *     figures at once — the audio-route precedent, not cheapLimiter).
+ *   - Path resolution + traversal/symlink defenses + the Content-Type
+ *     allow-map live in services/corpusImage.ts (guard shared with the audio
+ *     surface via resolveCorpusFile — one hardened resolver, no drift).
+ */
+router.get('/image/:testNumber/:level/:itemNumber', mediaLimiter(), async (req, res, next) => {
+  try {
+    const testNumber = TopikAudioTestNumberSchema.safeParse(req.params.testNumber);
+    const itemNumber = TopikImageItemNumberSchema.safeParse(req.params.itemNumber);
+    // Own-property-guarded level resolution (Object.hasOwn) — prototype-chain
+    // keys 404 at the boundary like any other bad level (the audio route's
+    // hardening, same resolver).
+    const topikLevel = resolveTopikAudioLevel(req.params.level);
+    if (!testNumber.success || !itemNumber.success || topikLevel === undefined) {
+      throw new NotFoundError(CORPUS_IMAGE_NOT_FOUND);
+    }
+    const { rows } = await query<{ image_ref: string | null }>(
+      `SELECT i.image_ref
+         FROM topik_items i
+         JOIN topik_tests t ON t.id = i.topik_test_id
+        WHERE t.test_number = $1 AND t.topik_level = $2 AND i.item_number = $3
+          AND i.image_ref IS NOT NULL
+        ORDER BY i.section
+        LIMIT 1`,
+      [testNumber.data, topikLevel, itemNumber.data],
+    );
+    // No row and a NULL image_ref collapse to the same uniform 404 inside
+    // sendCorpusImage ("no such item" vs "no image mapped" is not leaked).
+    await sendCorpusImage(req, res, next, rows[0]?.image_ref ?? null);
   } catch (err) {
     next(err);
   }

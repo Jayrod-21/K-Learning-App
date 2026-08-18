@@ -1199,7 +1199,13 @@ function TopikBody({
           {imageSplit.body !== '' ? (
             <p className="kr km-topik__prompt">{imageSplit.body}</p>
           ) : null}
-          <TopikImageNote description={imageSplit.description} />
+          {/* F-120: when the server mapped a real exam figure (imageUrl),
+              TopikImageNote renders it with the description as caption/alt;
+              otherwise the text-only rendering is unchanged. */}
+          <TopikImageNote
+            description={imageSplit.description}
+            imageUrl={item.imageUrl}
+          />
         </>
       )}
 

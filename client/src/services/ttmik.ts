@@ -162,6 +162,41 @@ export function buildStoryImageSrc(
   return base === '' ? blobUrl : `${base}${blobUrl}`;
 }
 
+/**
+ * The ONLY app-relative shape the server emits for a TOPIK question's exam
+ * figure (F-120 — routes/topik.ts `GET /topik/image/:testNumber/:level/
+ * :itemNumber`; the `level` segment is exactly `1` or `2`, the route's own
+ * contract, mirroring the `/topik/audio` shape one segment deeper). Same
+ * anchored digits-and-literals stance as {@link buildAudioSrc}'s allow-list —
+ * a prefix heuristic is bypassable via backslash/whitespace normalization,
+ * an exact shape is not.
+ */
+const TOPIK_IMAGE_URL_ALLOW = /^\/topik\/image\/\d+\/[12]\/\d+$/;
+
+/**
+ * Resolve a TOPIK item's `imageUrl` into an `<img src>` (F-120).
+ *
+ * The `<img>` element cannot use axios; this joins the SAME API base the
+ * axios instance uses (`getApiBaseUrl()`), so the cookie-auth image route
+ * works in dev (Vite on :5173, API on :4000 — same-site) and in prod
+ * (empty base → same-origin relative path through the LB) — exactly
+ * {@link buildStoryImageSrc}'s mechanics against the TOPIK route shape.
+ *
+ * Returns `null` for any value that does not match the strict allow-list —
+ * a tampered response body cannot steer the image element to an attacker
+ * origin; the caller simply renders the text-description fallback for a
+ * rejected value.
+ *
+ * `base` is injectable for tests; production callers use the default.
+ */
+export function buildTopikImageSrc(
+  imageUrl: string,
+  base: string = getApiBaseUrl(),
+): string | null {
+  if (!TOPIK_IMAGE_URL_ALLOW.test(imageUrl)) return null;
+  return base === '' ? imageUrl : `${base}${imageUrl}`;
+}
+
 // ─────────────────────────────────────────────────────────────
 // Listening attempts (F-172 — listening_attempts, migration 061)
 // ─────────────────────────────────────────────────────────────
