@@ -83,3 +83,40 @@
 .km-pastexams__mistakes-cta:hover {
   text-decoration: underline;
 }
+
+/* ── F-198 desktop polish (additive — ≥768px only, mobile byte-identical) ─
+ *
+ * The completed-exam list: one-line rows across the full desktop shell
+ * column waste most of it. The rows' shared `<ul>` (inside the
+ * `.km-reference__list` Card) becomes two fixed columns at ≥768px — the
+ * shipped ReviewLibrary.css idiom (`repeat(2, minmax(0, 1fr))`, not
+ * auto-fit, so the divider/orphan rules below hold at every width). All
+ * selectors are scoped under `.km-pastexams` — `.km-reference__list` is a
+ * SHARED chrome class (ReviewVocab/ReviewGrammar/Ttmik listings) and must
+ * not change anywhere else. */
+@media (min-width: 768px) {
+  .km-pastexams .km-reference__list ul {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 28px;
+  }
+
+  .km-pastexams .km-reference__list .km-reference__row {
+    min-width: 0;
+  }
+
+  /* Orphan guard (Today.css / ReviewLibrary.css fix-pass rule): a trailing
+   * odd row spans the full row instead of sitting alone at half width. */
+  .km-pastexams .km-reference__list .km-reference__row:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+
+  /* Hairline evener: with an EVEN count the final grid row pairs an
+   * odd-indexed left cell (border-bottom still on) with the borderless
+   * `:last-child` right cell — drop the left one so the bottom edge is
+   * clean. Inert for odd counts (second-to-last is even-indexed there and
+   * correctly keeps its divider above the spanning orphan). */
+  .km-pastexams .km-reference__list .km-reference__row:nth-last-child(2):nth-child(odd) {
+    border-bottom: none;
+  }
+}

@@ -234,3 +234,37 @@
   flex: none;
   white-space: nowrap;
 }
+
+/* ── F-198 desktop polish (additive — ≥768px only, mobile byte-identical) ─
+ * Deliberately light touch: the question-tile grids already adapt (their
+ * `auto-fill minmax(44px, 1fr)` tracks simply fit more tiles per row at
+ * desktop width), so the session cards stay full-width single-column.
+ * Only the graded-writing history rows get the desktop treatment — the
+ * same two-fixed-column grid PastExams.css applies to the IDENTICAL row
+ * shape (its own comment cites `.km-mistakes__writing-row` as the model),
+ * scoped under `.km-mistakes__writing` because `.km-reference__list` is a
+ * shared chrome class that must not change anywhere else. */
+@media (min-width: 768px) {
+  .km-mistakes__writing .km-reference__list ul {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 28px;
+  }
+
+  .km-mistakes__writing .km-reference__row {
+    min-width: 0;
+  }
+
+  /* Orphan guard (Today.css / ReviewLibrary.css fix-pass rule): a trailing
+   * odd row spans the full row instead of sitting alone at half width. */
+  .km-mistakes__writing .km-reference__row:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+
+  /* Hairline evener — same rule + rationale as PastExams.css: with an even
+   * count, drop the border-bottom on the final row's left cell so the
+   * bottom edge is clean; inert for odd counts. */
+  .km-mistakes__writing .km-reference__row:nth-last-child(2):nth-child(odd) {
+    border-bottom: none;
+  }
+}

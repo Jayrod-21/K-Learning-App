@@ -254,3 +254,46 @@
   border-top: 1px solid var(--line, rgba(0, 0, 0, 0.08));
   padding-top: 12px;
 }
+
+/* ── F-198 desktop polish (additive — ≥768px only, mobile byte-identical) ─
+ *
+ * Ticket list: full-width CityCard rows waste the desktop shell column.
+ * Two fixed columns at ≥768px — the shipped ReviewLibrary.css idiom,
+ * including its equal-height chain (grid cell stretches the `<li>`;
+ * flexing li → card makes the card's painted surface fill the cell so a
+ * row pair never reads ragged) and its `minmax(0, …)`/`min-width: 0`
+ * truncation guards (the row titles ellipsize, F-129's convention). */
+@media (min-width: 768px) {
+  .km-tickets__list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .km-tickets__list > .km-tickets__row-wrap {
+    min-width: 0;
+    display: flex;
+  }
+
+  .km-tickets__row-wrap > .km-tickets__card.km-citycard {
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* Orphan guard (Today.css / ReviewLibrary.css fix-pass rule): a trailing
+   * odd row spans the full row instead of sitting alone at half width. */
+  .km-tickets__list > .km-tickets__row-wrap:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
+
+/* Ticket detail: a prose surface (title, body, comment thread + form) that
+ * reads as a wall at full desktop width. Capped + centered at
+ * Progress.css's shipped 640px readability measure. Width-only; the
+ * file-a-ticket form lives in the shared Sheet and is untouched. */
+@media (min-width: 768px) {
+  .km-tickets__detail {
+    max-width: 640px;
+    margin-inline: auto;
+  }
+}
