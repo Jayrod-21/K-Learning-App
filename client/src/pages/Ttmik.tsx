@@ -1447,7 +1447,10 @@ function CreatedStoryCard({ story }: { story: GeneratedStory }): JSX.Element {
             <Bilingual en="Generating audio…" kr="오디오 생성 중…" />
           </p>
         ) : (
-          // 'none' | 'failed' — the request affordance.
+          // 'none' | 'failed' — the request affordance. A degenerate `done`
+          // envelope with a null track also lands here: nothing to play, so
+          // the button renders and the idempotent POST self-heals (an
+          // already-voiced story answers 200 done with its track).
           <>
             {audio.status === 'failed' ? (
               // Server-authored whitelisted failure copy — verbatim per the

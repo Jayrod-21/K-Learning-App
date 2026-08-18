@@ -56,6 +56,7 @@ import type {
   GeneratedStory,
   StoryAudio,
 } from '../services/reading';
+import { AUDIO_FAILED_FALLBACK_COPY } from '../hooks/useStoryAudio';
 import { mineWord } from '../services/vocab';
 import type {
   AudioTrackDetail,
@@ -293,6 +294,17 @@ const CREATED_STORY: GeneratedStory = {
   prompt: null,
   createdAt: '2026-08-18T00:00:00Z',
   bodyKo: '소년은 학교에 갔다.\n\n바람이 불었다.',
+};
+
+/** Second creator fixture — the keyed-remount test's replacement story
+ *  (different id → `key={createdStory.id}` remounts the card). */
+const SECOND_STORY: GeneratedStory = {
+  id: 56,
+  title: '두 번째 이야기',
+  level: 'L2',
+  prompt: null,
+  createdAt: '2026-08-18T00:05:00Z',
+  bodyKo: '고양이가 잤다.',
 };
 
 const CREATOR_AUDIO_NONE: StoryAudio = {
@@ -860,6 +872,21 @@ describe('Ttmik page — landing story creator (Listen-tab story generator)', ()
     ).toBeInTheDocument();
   });
 
+  it('a failed envelope with a NULL error shows the fixed fallback copy (never a blank alert)', async () => {
+    vi.mocked(getStoryAudio).mockResolvedValue({
+      ...CREATOR_AUDIO_FAILED,
+      error: null,
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    const card = await createStory(user);
+    // Pins this card's `?? AUDIO_FAILED_FALLBACK_COPY` (the Reading reader
+    // covers its own copy of the same fallback).
+    const alert = await within(card).findByRole('alert');
+    expect(alert).toHaveTextContent(AUDIO_FAILED_FALLBACK_COPY);
+  });
+
   it('the daily-cap 429 (no retryAfter) shows the server message verbatim and keeps the button', async () => {
     vi.mocked(requestStoryAudio).mockRejectedValue(
       new ApiError(
@@ -884,6 +911,96 @@ describe('Ttmik page — landing story creator (Listen-tab story generator)', ()
       name: /Generate audio/,
     });
     expect(button).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('a second create REPLACES the card with FRESH audio state — no stale error/player from the first story (keyed remount)', async () => {
+    // Drive story A's card into a dirty state: its audio request dies on the
+    // daily cap, landing the verbatim server alert in per-card hook state.
+    vi.mocked(requestStoryAudio).mockRejectedValue(
+      new ApiError('daily story-audio limit reached: 3 of 3 generations used today. Try again tomorrow.', {
+        status: 429,
+        code: 'rate_limited',
+      }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    const cardA = await createStory(user); // story 55
+    await user.click(
+      await within(cardA).findByRole('button', { name: /Generate audio/ }),
+    );
+    await within(cardA).findByRole('alert'); // the stale-state candidate
+
+    // Create a SECOND story — the creator holds one card at a time, so the
+    // new story replaces the old card entirely.
+    vi.mocked(generateStory).mockResolvedValue(SECOND_STORY);
+    await user.click(screen.getByRole('button', { name: /Generate story/ }));
+    const cardB = await screen.findByRole('group', {
+      name: 'New story: 두 번째 이야기',
+    });
+    expect(
+      screen.queryByRole('group', { name: 'New story: 달빛 아래 서울' }),
+    ).toBeNull();
+    expect(within(cardB).getByText('L2')).toBeInTheDocument();
+
+    // FRESH state machine: the `key={createdStory.id}` remount re-ran the
+    // hydrate for the NEW id and reset the hook — a clean Generate-audio
+    // affordance with NO stale 429 alert (requestError lives in hook state
+    // that ONLY the remount clears), no player, no leaked poll.
+    expect(
+      await within(cardB).findByRole('button', { name: /Generate audio/ }),
+    ).toBeInTheDocument();
+    expect(within(cardB).queryByRole('alert')).toBeNull();
+    expect(within(cardB).queryByText(/Generating audio/)).toBeNull();
+    expect(cardB.querySelector('audio')).toBeNull();
+    await waitFor(() => {
+      expect(vi.mocked(getStoryAudio)).toHaveBeenCalledWith(
+        56,
+        expect.any(AbortSignal),
+      );
+    });
+    // Still in Listen throughout — the replacement never navigates.
+    expect(screen.getByTestId('location')).toHaveTextContent(
+      /^\/learn\/listen$/,
+    );
+  });
+
+  it('a degenerate done envelope with a NULL track falls back to the Generate-audio affordance (no broken player)', async () => {
+    vi.mocked(getStoryAudio).mockResolvedValue({
+      ...CREATOR_AUDIO_DONE,
+      track: null,
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    const card = await createStory(user);
+    // Nothing to play: no <audio>, no alert — the explicit button renders
+    // instead, and the idempotent POST self-heals (an already-voiced story
+    // answers 200 done with its track).
+    expect(
+      await within(card).findByRole('button', { name: /Generate audio/ }),
+    ).toBeInTheDocument();
+    expect(card.querySelector('audio')).toBeNull();
+    expect(within(card).queryByRole('alert')).toBeNull();
+  });
+
+  it('a done envelope whose streamUrl fails the allow-list renders the defensive note — never a broken <audio>', async () => {
+    vi.mocked(getStoryAudio).mockResolvedValue({
+      ...CREATOR_AUDIO_DONE,
+      track: {
+        id: 955,
+        streamUrl: 'https://evil.example/a.mp3', // REAL buildAudioSrc rejects
+        durationMs: 61_000,
+      },
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    const card = await createStory(user);
+    expect(
+      await within(card).findByText(/No audio yet — check back soon/),
+    ).toBeInTheDocument();
+    expect(card.querySelector('audio')).toBeNull();
   });
 
   it('ttsConfigured:false hides the audio affordance entirely — the card still offers the reader', async () => {
