@@ -149,3 +149,36 @@
 .km-ttmik__reader-card {
   width: 100%;
 }
+
+/* Listen-tab story generator — the landing's just-created story card (a
+ * `blue`-tone CityCard, mirroring the reader's F-210 audio-card tone).
+ * Layout only: CityCard.css owns the surface/border/shadow/glow paint. */
+.km-ttmik__created {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.km-ttmik__created-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* "Generating audio…" while the bounded poll rides a pending/running job —
+ * quiet status copy, not an error. */
+.km-ttmik__created-busy {
+  margin: 0;
+  font-size: 0.78125rem;
+  color: var(--paper-dim);
+}
+
+/* Mirror the shared .km-btn:disabled paint for the card's aria-disabled
+ * "Generate audio" button (the StoryGenerator.css recipe — busy LOOKS
+ * inert while keyboard focus stays put). */
+.km-ttmik__created .km-btn[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
