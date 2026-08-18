@@ -27,7 +27,7 @@
  * matching the real DOM shape the hook's `closest()` call depends on.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, render, screen, within, fireEvent, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, within, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import type { JSX } from 'react';
@@ -2206,5 +2206,84 @@ describe('Ttmik page — Listen read-along (track player transcript)', () => {
       document.querySelector('.km-ttmik__readalong-line--active'),
     ).toBeNull();
     expect(document.querySelector('[aria-current="true"]')).toBeNull();
+  });
+
+  it('unmount removes the timeupdate/seeked/ended listeners the effect attached', async () => {
+    vi.mocked(getAudioTrack).mockResolvedValue(TIMED_TRACK_DETAIL);
+    // The read-along effect wires exactly these three. Match by LISTENER
+    // IDENTITY, not bare event name: React itself attaches its own handler
+    // for every media event directly on the element (media events don't
+    // bubble) and never detaches those on unmount — only OUR (type, fn)
+    // pairs must come back off.
+    const READALONG_EVENTS = ['timeupdate', 'seeked', 'ended'];
+    const added = vi.spyOn(HTMLMediaElement.prototype, 'addEventListener');
+    const removed = vi.spyOn(HTMLMediaElement.prototype, 'removeEventListener');
+    try {
+      await openSharedTrack();
+      // Each of the three was attached at least once beyond React's own
+      // single per-event handler — i.e. the effect really wired them.
+      for (const event of READALONG_EVENTS) {
+        expect(
+          added.mock.calls.filter(([type]) => type === event).length,
+        ).toBeGreaterThanOrEqual(2);
+      }
+
+      // Unmount the whole tree — the effect's cleanup must detach, for each
+      // event, a listener that was previously ADDED for that event. A mutant
+      // that drops the cleanup removes nothing and fails here.
+      cleanup();
+      for (const event of READALONG_EVENTS) {
+        const addedFns = added.mock.calls
+          .filter(([type]) => type === event)
+          .map(([, fn]) => fn);
+        const matchingRemovals = removed.mock.calls.filter(
+          ([type, fn]) => type === event && addedFns.includes(fn),
+        );
+        expect(matchingRemovals.length).toBeGreaterThanOrEqual(1);
+      }
+    } finally {
+      added.mockRestore();
+      removed.mockRestore();
+    }
+  });
+
+  it('the active line auto-scrolls only while playing — a paused scrub never scrolls', async () => {
+    vi.mocked(getAudioTrack).mockResolvedValue(TIMED_TRACK_DETAIL);
+    // happy-dom has no real layout; stub scrollIntoView on the prototype so
+    // every rendered line shares the spy, and restore afterwards.
+    const proto = HTMLElement.prototype as unknown as {
+      scrollIntoView?: (options?: ScrollIntoViewOptions) => void;
+    };
+    const original = proto.scrollIntoView;
+    const scrollSpy = vi.fn();
+    proto.scrollIntoView = scrollSpy;
+    try {
+      const audio = await openSharedTrack();
+
+      // Paused (the happy-dom default) — the highlight moves, but no scroll.
+      audio.currentTime = 1;
+      fireEvent.timeUpdate(audio);
+      expect(lines()[0]).toHaveClass('km-ttmik__readalong-line--active');
+      expect(scrollSpy).not.toHaveBeenCalled();
+
+      // Playing — the newly-active line glides into view.
+      Object.defineProperty(audio, 'paused', {
+        configurable: true,
+        get: () => false,
+      });
+      audio.currentTime = 5;
+      fireEvent.timeUpdate(audio);
+      expect(lines()[1]).toHaveClass('km-ttmik__readalong-line--active');
+      expect(scrollSpy).toHaveBeenCalledWith({
+        block: 'nearest',
+        behavior: 'smooth',
+      });
+    } finally {
+      if (original !== undefined) {
+        proto.scrollIntoView = original;
+      } else {
+        delete proto.scrollIntoView;
+      }
+    }
   });
 });

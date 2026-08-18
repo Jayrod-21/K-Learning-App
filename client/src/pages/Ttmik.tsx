@@ -3600,6 +3600,10 @@ function MyAudioDetail({
       el.removeEventListener('timeupdate', sync);
       el.removeEventListener('seeked', sync);
       el.removeEventListener('ended', clear);
+      // Defensive: also drop any lingering highlight — if `readAlong` ever
+      // flips false mid-view (e.g. a refresh loses timing), no stale line
+      // stays lit. (No-op re-set on the happy-path re-run; next tick re-syncs.)
+      setActiveSegmentNumber(null);
     };
   }, [readAlong, orderedSegments]);
 
