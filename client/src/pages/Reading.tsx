@@ -169,6 +169,7 @@ import {
 } from '../lib/tapChain';
 import { cn } from '../lib/cn';
 import { errorMessageFor } from '../lib/errorCopy';
+import { activeSegmentNumberAt } from '../lib/readAlong';
 import { navItem } from '../lib/nav';
 import { ApiError } from '../services/api';
 import {
@@ -189,7 +190,6 @@ import type {
   GeneratedStory,
   GeneratedStorySummary,
   ReadingPosition,
-  StoryAudioSegment,
   StoryImage,
   StoryImagesEnvelope,
 } from '../services/reading';
@@ -1570,36 +1570,9 @@ function StoriesSection({
 // ─────────────────────────────────────────────────────────────
 // The `useStoryAudio` state machine (and its poll constants) moved to
 // `hooks/useStoryAudio.ts` (shared with the Listen landing's story creator
-// card); the read-along machinery below stays reader-only.
-
-/**
- * Binary-search the ordered segments for the one whose `[startMs, endMs)`
- * window contains `ms` — O(log n) per `timeupdate` tick (~4 Hz), the same
- * model as the Listen surface. Returns that segment's `segmentNumber`, or
- * null when the playhead sits in no window (before the first sentence,
- * inside an inter-sentence gap, or past the end).
- */
-function activeSegmentNumberAt(
-  segments: readonly StoryAudioSegment[],
-  ms: number,
-): number | null {
-  let lo = 0;
-  let hi = segments.length - 1;
-  let candidate: StoryAudioSegment | null = null;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    const seg = segments[mid];
-    if (seg === undefined) return null; // unreachable — bounds are checked
-    if (seg.startMs <= ms) {
-      candidate = seg;
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
-    }
-  }
-  if (candidate === null) return null;
-  return ms < candidate.endMs ? candidate.segmentNumber : null;
-}
+// card), and `activeSegmentNumberAt` to `lib/readAlong.ts` (shared with the
+// Listen track player's read-along); the ref/listener wiring below stays
+// reader-only.
 
 // ─────────────────────────────────────────────────────────────
 // Story illustrations (F-211) — request / poll / gallery

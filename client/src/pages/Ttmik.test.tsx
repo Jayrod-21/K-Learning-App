@@ -27,7 +27,7 @@
  * matching the real DOM shape the hook's `closest()` call depends on.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, render, screen, within, fireEvent, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, within, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import type { JSX } from 'react';
@@ -2092,5 +2092,198 @@ describe('Ttmik page — F-207 shared curated corpus', () => {
     expect(
       await screen.findByText("That audio set couldn't be found."),
     ).toBeInTheDocument();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Listen read-along — track-player transcript highlighting (the shared
+// F-210 mechanism, lib/readAlong). Exercised via the sharedTrack deep-link
+// mount path — the SAME MyAudioDetail serves the My Audio flow.
+// ─────────────────────────────────────────────────────────────
+
+describe('Ttmik page — Listen read-along (track player transcript)', () => {
+  /** Three timed lines with a 500ms gap between #2 and #3, so a mid-gap
+   *  position clears rather than sticking to a neighbor. */
+  const TIMED_TRACK_DETAIL: AudioTrackDetail = {
+    track: { ...SHARED_TRACK_DETAIL.track },
+    segments: [
+      { segmentNumber: 1, startMs: 0, endMs: 4000, body: '옛날 옛적에.' },
+      { segmentNumber: 2, startMs: 4000, endMs: 8000, body: '호랑이가 살았어요.' },
+      { segmentNumber: 3, startMs: 8500, endMs: 12_000, body: '끝.' },
+    ],
+  };
+
+  /** Deep-link into the shared folktales track player and wait for it. */
+  async function openSharedTrack(): Promise<HTMLAudioElement> {
+    renderPage('/learn/listen?corpus=shared&set=korean-folktales&track=7201');
+    await screen.findByRole('heading', { name: '전래 동화 모음 1' });
+    const audio = document.querySelector('audio');
+    expect(audio).not.toBeNull();
+    return audio as HTMLAudioElement;
+  }
+
+  const lines = (): NodeListOf<Element> =>
+    document.querySelectorAll('.km-ttmik__readalong-line');
+
+  it('advancing the playhead past a segment start highlights that line (aria-current) and clears the previous', async () => {
+    vi.mocked(getAudioTrack).mockResolvedValue(TIMED_TRACK_DETAIL);
+    const audio = await openSharedTrack();
+    expect(lines()).toHaveLength(3);
+
+    // 1s → 1000ms sits in segment 1's [0, 4000).
+    audio.currentTime = 1;
+    fireEvent.timeUpdate(audio);
+    expect(lines()[0]).toHaveClass('km-ttmik__readalong-line--active');
+    expect(lines()[0]).toHaveAttribute('aria-current', 'true');
+    expect(lines()[1]).not.toHaveClass('km-ttmik__readalong-line--active');
+
+    // 5s crosses into segment 2's [4000, 8000) — the previous line clears.
+    audio.currentTime = 5;
+    fireEvent.timeUpdate(audio);
+    expect(lines()[1]).toHaveClass('km-ttmik__readalong-line--active');
+    expect(lines()[1]).toHaveAttribute('aria-current', 'true');
+    expect(lines()[0]).not.toHaveClass('km-ttmik__readalong-line--active');
+    expect(lines()[0]).not.toHaveAttribute('aria-current');
+
+    // Exactly one active line, ever.
+    expect(
+      document.querySelectorAll('.km-ttmik__readalong-line--active'),
+    ).toHaveLength(1);
+  });
+
+  it('a seek re-syncs the highlight — into a window, and clear in a gap', async () => {
+    vi.mocked(getAudioTrack).mockResolvedValue(TIMED_TRACK_DETAIL);
+    const audio = await openSharedTrack();
+
+    // Scrub straight into segment 3's [8500, 12000).
+    audio.currentTime = 9;
+    fireEvent.seeked(audio);
+    expect(lines()[2]).toHaveClass('km-ttmik__readalong-line--active');
+    expect(lines()[2]).toHaveAttribute('aria-current', 'true');
+
+    // Scrub into the 8000–8500 gap → nothing highlighted.
+    audio.currentTime = 8.2;
+    fireEvent.seeked(audio);
+    expect(
+      document.querySelector('.km-ttmik__readalong-line--active'),
+    ).toBeNull();
+  });
+
+  it('ended clears the highlight', async () => {
+    vi.mocked(getAudioTrack).mockResolvedValue(TIMED_TRACK_DETAIL);
+    const audio = await openSharedTrack();
+
+    audio.currentTime = 1;
+    fireEvent.timeUpdate(audio);
+    expect(lines()[0]).toHaveClass('km-ttmik__readalong-line--active');
+
+    fireEvent.ended(audio);
+    expect(
+      document.querySelector('.km-ttmik__readalong-line--active'),
+    ).toBeNull();
+  });
+
+  it('no usable timings (all-zero windows) → the transcript still renders, but nothing ever highlights', async () => {
+    vi.mocked(getAudioTrack).mockResolvedValue({
+      track: { ...SHARED_TRACK_DETAIL.track },
+      segments: [
+        { segmentNumber: 1, startMs: 0, endMs: 0, body: '옛날 옛적에.' },
+        { segmentNumber: 2, startMs: 0, endMs: 0, body: '호랑이가 살았어요.' },
+      ],
+    });
+    const audio = await openSharedTrack();
+
+    // The plain transcript stands, in order.
+    expect(lines()).toHaveLength(2);
+    expect(screen.getByText('옛날 옛적에.')).toBeInTheDocument();
+    expect(screen.getByText('호랑이가 살았어요.')).toBeInTheDocument();
+
+    // No listeners were attached — a tick can never paint a highlight.
+    audio.currentTime = 1;
+    fireEvent.timeUpdate(audio);
+    fireEvent.seeked(audio);
+    expect(
+      document.querySelector('.km-ttmik__readalong-line--active'),
+    ).toBeNull();
+    expect(document.querySelector('[aria-current="true"]')).toBeNull();
+  });
+
+  it('unmount removes the timeupdate/seeked/ended listeners the effect attached', async () => {
+    vi.mocked(getAudioTrack).mockResolvedValue(TIMED_TRACK_DETAIL);
+    // The read-along effect wires exactly these three. Match by LISTENER
+    // IDENTITY, not bare event name: React itself attaches its own handler
+    // for every media event directly on the element (media events don't
+    // bubble) and never detaches those on unmount — only OUR (type, fn)
+    // pairs must come back off.
+    const READALONG_EVENTS = ['timeupdate', 'seeked', 'ended'];
+    const added = vi.spyOn(HTMLMediaElement.prototype, 'addEventListener');
+    const removed = vi.spyOn(HTMLMediaElement.prototype, 'removeEventListener');
+    try {
+      await openSharedTrack();
+      // Each of the three was attached at least once beyond React's own
+      // single per-event handler — i.e. the effect really wired them.
+      for (const event of READALONG_EVENTS) {
+        expect(
+          added.mock.calls.filter(([type]) => type === event).length,
+        ).toBeGreaterThanOrEqual(2);
+      }
+
+      // Unmount the whole tree — the effect's cleanup must detach, for each
+      // event, a listener that was previously ADDED for that event. A mutant
+      // that drops the cleanup removes nothing and fails here.
+      cleanup();
+      for (const event of READALONG_EVENTS) {
+        const addedFns = added.mock.calls
+          .filter(([type]) => type === event)
+          .map(([, fn]) => fn);
+        const matchingRemovals = removed.mock.calls.filter(
+          ([type, fn]) => type === event && addedFns.includes(fn),
+        );
+        expect(matchingRemovals.length).toBeGreaterThanOrEqual(1);
+      }
+    } finally {
+      added.mockRestore();
+      removed.mockRestore();
+    }
+  });
+
+  it('the active line auto-scrolls only while playing — a paused scrub never scrolls', async () => {
+    vi.mocked(getAudioTrack).mockResolvedValue(TIMED_TRACK_DETAIL);
+    // happy-dom has no real layout; stub scrollIntoView on the prototype so
+    // every rendered line shares the spy, and restore afterwards.
+    const proto = HTMLElement.prototype as unknown as {
+      scrollIntoView?: (options?: ScrollIntoViewOptions) => void;
+    };
+    const original = proto.scrollIntoView;
+    const scrollSpy = vi.fn();
+    proto.scrollIntoView = scrollSpy;
+    try {
+      const audio = await openSharedTrack();
+
+      // Paused (the happy-dom default) — the highlight moves, but no scroll.
+      audio.currentTime = 1;
+      fireEvent.timeUpdate(audio);
+      expect(lines()[0]).toHaveClass('km-ttmik__readalong-line--active');
+      expect(scrollSpy).not.toHaveBeenCalled();
+
+      // Playing — the newly-active line glides into view.
+      Object.defineProperty(audio, 'paused', {
+        configurable: true,
+        get: () => false,
+      });
+      audio.currentTime = 5;
+      fireEvent.timeUpdate(audio);
+      expect(lines()[1]).toHaveClass('km-ttmik__readalong-line--active');
+      expect(scrollSpy).toHaveBeenCalledWith({
+        block: 'nearest',
+        behavior: 'smooth',
+      });
+    } finally {
+      if (original !== undefined) {
+        proto.scrollIntoView = original;
+      } else {
+        delete proto.scrollIntoView;
+      }
+    }
   });
 });
