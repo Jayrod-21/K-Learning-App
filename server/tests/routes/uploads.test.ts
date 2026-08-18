@@ -1188,6 +1188,37 @@ describe('F-217 — GET /uploads/shared (the shared-books browse list)', () => {
     }
   });
 
+  it("serves ONLY ready shared books — a processing/failed shared book's title/metadata never reaches a non-owner", async () => {
+    // Pins the server-side `AND status = 'ready'` filter (review nit): the
+    // client filters to ready too, but a cross-account list must not rely on
+    // client-side filtering. A mutant dropping the status clause fails here.
+    const a = await registerUser(t.app, pg.pool);
+    const readyShared = await seedBookUpload(pg.pool, a.userId, {
+      title: 'Ready Shared Book',
+      status: 'ready',
+    });
+    const processingShared = await seedBookUpload(pg.pool, a.userId, {
+      title: 'Still Processing Shared Book',
+      status: 'processing',
+    });
+    const failedShared = await seedBookUpload(pg.pool, a.userId, {
+      title: 'Failed Shared Book',
+      status: 'failed',
+    });
+    await shareBook(readyShared);
+    await shareBook(processingShared);
+    await shareBook(failedShared);
+
+    const b = await registerUser(t.app, pg.pool);
+    const res = await b.agent.get('/uploads/shared');
+    expect(res.status).toBe(200);
+    // The ready shared book IS listed; the non-ready shared pair is NOT.
+    expect(res.body.uploads.map((u: { id: string }) => Number(u.id))).toEqual([readyShared]);
+    // Belt-and-suspenders: no non-ready title leaks anywhere in the payload.
+    const titles = res.body.uploads.map((u: { title: string }) => u.title);
+    expect(titles).toEqual(['Ready Shared Book']);
+  });
+
   it("no shared books → 200 with an empty list, proving the literal /shared route resolves (not '/:id' capturing \"shared\" → 400/404)", async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.get('/uploads/shared');

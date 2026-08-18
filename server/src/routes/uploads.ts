@@ -76,7 +76,8 @@
  *     page vanish — books, unlike audio, have no Listen-tile surface). A
  *     NON-owner still sees only their own here; browsing the shared library
  *     as a non-owner is GET /uploads/shared (F-217), which serves the same
- *     no-owner-PII projection with `is_shared = true` as its entire filter.
+ *     no-owner-PII projection filtered to `is_shared = true AND status =
+ *     'ready'` (a non-owner never sees a processing/failed book's metadata).
  *   - MASS ASSIGNMENT: `title`/`type` (POST) and `page_ids` (PATCH order) are
  *     the only writable body fields, all validated by a `.strict()` Zod
  *     schema — an extra field is REJECTED, not ignored.
@@ -313,8 +314,12 @@ router.get('/shared', cheapLimiter(), async (_req, res, next) => {
     // F-217 (the F-207 phase-3 follow-up): the shared-books browse surface.
     // DELIBERATELY NON-user-scoped — every authenticated account
     // (router.use(requireAuth) above) sees the same curated library;
-    // `is_shared = true` is the ENTIRE filter, so a private row (any
-    // owner's) can never appear here. The projection is the SAME UploadRow →
+    // `is_shared = true` scopes it, so a private row (any owner's) can
+    // never appear here, and `status = 'ready'` keeps the server
+    // authoritative: a processing/failed shared book's title/metadata is
+    // never exposed cross-account (the client filters to ready too, but a
+    // list served to non-owners must not rely on client-side filtering).
+    // The projection is the SAME UploadRow →
     // toDTO as GET /uploads: no user_id, no email, no blob_ref — these are
     // another account's rows served cross-account, and the owner's identity
     // is not the client's business (no-owner-PII is asserted by the route
@@ -323,7 +328,7 @@ router.get('/shared', cheapLimiter(), async (_req, res, next) => {
     const { rows } = await query<UploadRow>(
       `SELECT id, title, type, status, page_count, byte_size, created_at
          FROM book_uploads
-        WHERE is_shared = true
+        WHERE is_shared = true AND status = 'ready'
         ORDER BY created_at DESC, id DESC
         LIMIT $1`,
       [GET_SHARED_UPLOADS_LIMIT],

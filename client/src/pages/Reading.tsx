@@ -1255,8 +1255,11 @@ function ChapterReader({ chapterId }: { chapterId: number }): JSX.Element {
       // widening needs a migration), so a NON-owner reading a SHARED book
       // 404s on this PUT every time. That's the expected can't-save state
       // for a borrowed book, not a failure — skip silently rather than
-      // toast an "error" on every chapter open. A real save failure on an
-      // OWNED book is never a 404, so the toast below still fires for those.
+      // toast an "error" on every chapter open. This also silences the one
+      // other 404 shape: an OWNED book deleted mid-read (the position save
+      // is moot for a book that no longer exists, so no toast there either).
+      // Genuine save failures on an owned, live book (5xx, network) are not
+      // 404s, so the toast below still fires for those.
       if (err instanceof ApiError && err.status === 404) return;
       toast({
         message: "Couldn't save your reading position",
