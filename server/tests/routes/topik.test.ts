@@ -2419,6 +2419,163 @@ describe('TOPIK mock audio (F-119 Phase 5) — item spans + envelope audioUrl', 
       message: 'no audio for this unit',
     });
   });
+
+  describe('F-206 — study/browse per-item audioUrl (cross-test draw names its own paper stream)', () => {
+    it('a study listening item with a span on a mapped paper carries its own audioUrl; TOPIK II → /2, TOPIK I → /1', async () => {
+      // Two DIFFERENT papers in one draw — the whole point of the per-item
+      // URL: the study draw is cross-test, so one envelope URL cannot exist.
+      const q2 = await seedTopikItem(pg.pool, {
+        section: 'listening',
+        testNumber: 3110,
+        itemNumber: 1,
+        topikLevel: 'TOPIK II',
+      });
+      await setAudioSpan(q2, 0, 15_000); // 0 start — null-check, not truthiness
+      await setTestAudioPath(
+        3110,
+        'TOPIK II',
+        'TOPIK TEST/3110 - Test/TOPIK-II/3110th-TOPIK-II-Listening-Audio.mp3',
+      );
+      const q1 = await seedTopikItem(pg.pool, {
+        section: 'listening',
+        testNumber: 3111,
+        itemNumber: 1,
+        topikLevel: 'TOPIK I',
+      });
+      await setAudioSpan(q1, 30_000, 55_000);
+      await setTestAudioPath(
+        3111,
+        'TOPIK I',
+        'TOPIK TEST/3111 - Test/TOPIK-I/3111th-TOPIK-I-Listening-Audio.mp3',
+      );
+      const { agent } = await registerUser(t.app, pg.pool);
+
+      const study = await agent
+        .post('/topik/study')
+        .send({ section: 'listening', limit: 50 });
+      expect(study.status).toBe(200);
+      const byId = new Map(
+        (study.body.items as Array<{ id: string; audioUrl?: string }>).map(
+          (i) => [i.id, i],
+        ),
+      );
+      const item2 = byId.get(String(q2));
+      const item1 = byId.get(String(q1));
+      expect(item2?.audioUrl).toBe('/topik/audio/3110/2');
+      expect(item1?.audioUrl).toBe('/topik/audio/3111/1');
+      // The span still rides alongside — the URL without the window (or vice
+      // versa) is unplayable.
+      expect(item2).toMatchObject({ audioStartMs: 0, audioEndMs: 15_000 });
+      expect(item1).toMatchObject({ audioStartMs: 30_000, audioEndMs: 55_000 });
+
+      // Browse serves the same mapper — the field appears there too.
+      const browse = await agent.get('/topik/items').query({ source_test: 3110 });
+      expect(browse.status).toBe(200);
+      expect(browse.body.items[0].audioUrl).toBe('/topik/audio/3110/2');
+    });
+
+    it('a span-less listening item on a mapped paper carries NO audioUrl (nothing to seek)', async () => {
+      const spanless = await seedTopikItem(pg.pool, {
+        section: 'listening',
+        testNumber: 3112,
+        itemNumber: 1,
+      });
+      await setTestAudioPath(
+        3112,
+        'TOPIK II',
+        'TOPIK TEST/3112 - Test/TOPIK-II/3112th-TOPIK-II-Listening-Audio.mp3',
+      );
+      const { agent } = await registerUser(t.app, pg.pool);
+
+      const study = await agent
+        .post('/topik/study')
+        .send({ section: 'listening', limit: 50 });
+      expect(study.status).toBe(200);
+      const item = (study.body.items as Array<{ id: string }>).find(
+        (i) => i.id === String(spanless),
+      );
+      expect(item).toBeDefined();
+      expect(item).not.toHaveProperty('audioUrl');
+      expect(item).not.toHaveProperty('audioStartMs');
+      expect(item).not.toHaveProperty('audioEndMs');
+    });
+
+    it('a listening item on a transcript-only paper (no audio_path) carries NO audioUrl even with a span', async () => {
+      // The 96th TOPIK I/II shape: spans were aligned but no MP3 is mapped.
+      const q = await seedTopikItem(pg.pool, {
+        section: 'listening',
+        testNumber: 3113,
+        itemNumber: 1,
+      });
+      await setAudioSpan(q, 5_000, 20_000);
+      const { agent } = await registerUser(t.app, pg.pool);
+
+      const study = await agent
+        .post('/topik/study')
+        .send({ section: 'listening', limit: 50 });
+      expect(study.status).toBe(200);
+      const item = (study.body.items as Array<{ id: string }>).find(
+        (i) => i.id === String(q),
+      );
+      // The span itself still rides (question metadata) — only the URL is
+      // withheld: there is no stream to point at.
+      expect(item).toMatchObject({ audioStartMs: 5_000, audioEndMs: 20_000 });
+      expect(item).not.toHaveProperty('audioUrl');
+    });
+
+    it('a READING item never carries audioUrl, even with a stray span + audio_path on its paper', async () => {
+      // Mirrors the mock envelope's section re-assertion: 078 does not
+      // CHECK-pin audio_path (or spans) to listening rows, so the mapper must.
+      const q = await seedTopikItem(pg.pool, {
+        section: 'reading',
+        testNumber: 3114,
+        itemNumber: 1,
+      });
+      await setAudioSpan(q, 1_000, 9_000);
+      await pg.pool.query(
+        `UPDATE topik_tests SET audio_path = $3
+          WHERE test_number = $1 AND topik_level = $2 AND section = 'reading'::topik_section`,
+        [3114, 'TOPIK II', 'TOPIK TEST/3114 - Test/TOPIK-II/3114th-TOPIK-II-Listening-Audio.mp3'],
+      );
+      const { agent } = await registerUser(t.app, pg.pool);
+
+      const study = await agent
+        .post('/topik/study')
+        .send({ section: 'reading', limit: 50 });
+      expect(study.status).toBe(200);
+      const item = (study.body.items as Array<{ id: string }>).find(
+        (i) => i.id === String(q),
+      );
+      expect(item).toBeDefined();
+      expect(item).not.toHaveProperty('audioUrl');
+    });
+
+    it('the MOCK wire is unchanged: items carry NO per-item audioUrl — only the F-119 envelope URL', async () => {
+      const q = await seedTopikItem(pg.pool, {
+        section: 'listening',
+        testNumber: 3115,
+        itemNumber: 1,
+      });
+      await setAudioSpan(q, 2_000, 12_000);
+      await setTestAudioPath(
+        3115,
+        'TOPIK II',
+        'TOPIK TEST/3115 - Test/TOPIK-II/3115th-TOPIK-II-Listening-Audio.mp3',
+      );
+      const { agent } = await registerUser(t.app, pg.pool);
+
+      const mock = await agent
+        .post('/topik/mock')
+        .send({ sourceTest: 3115, section: 'listening' });
+      expect(mock.status).toBe(200);
+      expect(mock.body.audioUrl).toBe('/topik/audio/3115/2');
+      const [item] = mock.body.items as Array<Record<string, unknown>>;
+      // The exact same row WOULD carry audioUrl on the study wire (proven
+      // above) — its absence here pins the strip, not a missing precondition.
+      expect(item).toMatchObject({ audioStartMs: 2_000, audioEndMs: 12_000 });
+      expect(item).not.toHaveProperty('audioUrl');
+    });
+  });
 });
 
 describe('F-UP-014 — a delayed save cannot resurrect a submitted attempt (fresh-completed guard)', () => {

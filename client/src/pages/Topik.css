@@ -180,3 +180,41 @@
     flex-direction: column;
   }
 }
+
+/* ── F-206 — study-mode per-question listening audio ─────────── */
+/* Mirrors MockMode's .km-mock__audio-* treatment so the two players read
+   as the same control family. */
+.km-topik__audio {
+  margin: 10px 0;
+}
+.km-topik__audio-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.km-topik__audio-hint {
+  color: var(--paper-mute);
+  font-size: 0.82rem;
+}
+/* The honest "no audio for this question" note — dashed, muted. */
+.km-topik__audio-note {
+  margin: 10px 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px dashed var(--line-strong);
+  color: var(--paper-mute);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+/* Runtime stream failure — visually distinct from the dashed "no audio"
+   note: solid warning border, alert-toned text. */
+.km-topik__audio-error {
+  margin: 10px 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}

@@ -345,6 +345,110 @@ describe('Topik (Study mode)', () => {
     expect(probe.textContent).toContain('mode=topik_prep');
   });
 
+  describe('F-206 — study-mode per-question listening audio', () => {
+    // A listening item as the F-206 server emits it: per-item paper-stream
+    // URL + F-119 span, dialogue prompt, shared passage. Study is LEARN
+    // mode — unlike the timed mock, ALL of that text stays visible while
+    // the audio is playable.
+    const ITEM_LISTEN_AUDIO: TopikItem = {
+      id: '401',
+      section: '듣기',
+      number: 21,
+      level: 4,
+      prompt: '남자는 누구인지 고르십시오.',
+      passage:
+        '여자: 한지 공예를 시작하신 지 얼마나 되셨어요?\n남자: 삼십 년쯤 됐습니다.',
+      options: [
+        { id: 'a', kr: '공예가', en: 'Artisan', correct: true },
+        { id: 'b', kr: '기자', en: 'Reporter', correct: false },
+      ],
+      explanation: '',
+      audioUrl: '/topik/audio/64/2',
+      audioStartMs: 60_000,
+      audioEndMs: 95_000,
+    };
+
+    it('renders the player for a listening item with audioUrl + span — transcript and passage stay visible (learn mode)', async () => {
+      setDraw([ITEM_LISTEN_AUDIO]);
+      const user = userEvent.setup();
+      render(<Topik />, { wrapper: MemoryRouter });
+
+      const audio = document.querySelector('audio');
+      expect(audio).not.toBeNull();
+      expect(audio).toHaveAttribute('src', '/topik/audio/64/2');
+      const playBtn = screen.getByRole('button', {
+        name: /Play question audio/i,
+      });
+      // The seek + clamp are wired to THIS item's window.
+      await user.click(playBtn);
+      expect((audio as HTMLAudioElement).currentTime).toBe(60);
+      expect((audio as HTMLAudioElement).paused).toBe(false);
+
+      // Study = learn mode: the printed question AND the spoken dialogue stay
+      // visible alongside the player (the mock's transcript-hiding must NOT
+      // leak into study).
+      expect(screen.getByText('남자는 누구인지 고르십시오.')).toBeInTheDocument();
+      expect(screen.getByText(/한지 공예를 시작하신 지/)).toBeInTheDocument();
+      // No "no audio" note when the player is live.
+      expect(
+        screen.queryByText(/No audio for this question yet/),
+      ).not.toBeInTheDocument();
+    });
+
+    it('renders the honest note (no player) for a listening item without audio', () => {
+      // ITEM_B is 듣기 with no audioUrl/span — the span-less shape.
+      setDraw([ITEM_B]);
+      render(<Topik />, { wrapper: MemoryRouter });
+
+      expect(document.querySelector('audio')).toBeNull();
+      expect(
+        screen.queryByRole('button', { name: /Play question audio/i }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByText(/No audio for this question yet/),
+      ).toBeInTheDocument();
+      // The item is still fully takeable from its transcript.
+      expect(
+        screen.getByText('여자가 다음에 할 행동으로 알맞은 것은?'),
+      ).toBeInTheDocument();
+    });
+
+    it('renders neither player nor note for a READING item', () => {
+      setDraw([ITEM_A]);
+      render(<Topik />, { wrapper: MemoryRouter });
+
+      expect(document.querySelector('audio')).toBeNull();
+      expect(
+        screen.queryByRole('button', { name: /Play question audio/i }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(/No audio for this question yet/),
+      ).not.toBeInTheDocument();
+    });
+
+    it('advancing to the next item re-keys the player: the outgoing item’s audio is paused, the new item has no player', async () => {
+      setDraw([ITEM_LISTEN_AUDIO, ITEM_A]);
+      const user = userEvent.setup();
+      render(<Topik />, { wrapper: MemoryRouter });
+
+      const audio = document.querySelector('audio') as HTMLAudioElement;
+      await user.click(
+        screen.getByRole('button', { name: /Play question audio/i }),
+      );
+      expect(audio.paused).toBe(false);
+
+      // Answer + advance to the reading item.
+      await user.click(screen.getAllByRole('radio')[0]!);
+      await user.click(screen.getByRole('button', { name: /submit/i }));
+      await user.click(screen.getByRole('button', { name: /next/i }));
+
+      // The keyed player unmounted: its cleanup paused the outgoing audio,
+      // and the reading item renders no element at all.
+      expect(audio.paused).toBe(true);
+      expect(document.querySelector('audio')).toBeNull();
+    });
+  });
+
   it('F-020: a CORRECT pick seeds no "My answer" but keeps the explanation the reveal shows', async () => {
     setDraw([ITEM_A]);
     const user = userEvent.setup();

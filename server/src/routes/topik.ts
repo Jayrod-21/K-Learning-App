@@ -217,6 +217,19 @@ interface TopikItemDTO {
   /** End (ms, exclusive) of the question's audio window — see `audioStartMs`. */
   readonly audioEndMs?: number;
   /**
+   * F-206 (study-mode listening audio) — the streaming URL of THIS item's
+   * paper's whole-section listening MP3 (`/topik/audio/<testNumber>/<1|2>`,
+   * the F-119 Phase-4 route), for the study/browse surfaces whose draw is
+   * cross-test and therefore cannot use a single envelope-level URL the way
+   * `POST /mock` does. Emitted ONLY when the item is a LISTENING item that
+   * carries a valid span (`audioStartMs`/`audioEndMs`) AND its paper has an
+   * `audio_path` mapped — an item without all three has nothing playable, so
+   * the field is omitted and the client renders its honest no-audio state.
+   * NOT on the mock wire: `TopikMockItemDTO` Omits it (the mock keeps its
+   * one-envelope-URL contract; per-item URLs there would be redundant bytes).
+   */
+  readonly audioUrl?: string;
+  /**
    * F-119 decision #2 (fix-pass S-1) — the server-authoritative answer to "is
    * this item's `prompt` text the SPOKEN transcript?". The prompt slot is
    * decided right here in `mapRowToDTO` (`prompt` column when non-empty, else
@@ -262,10 +275,26 @@ interface TopikItemRow {
   /**
    * The parent test's `audio_path` (topik_tests, migration 078) — non-null when
    * the paper's whole-section listening MP3 is mapped. Used by `POST /mock` to
-   * decide whether the envelope carries an `audioUrl`; never emitted on the
-   * item DTO itself (the client gets one URL per exam, not one per item).
+   * decide whether the envelope carries an `audioUrl`, and by `mapRowToDTO`
+   * (F-206) to decide whether a STUDY/browse listening item carries a per-item
+   * `audioUrl`. The raw path itself is never emitted on any wire.
    */
   test_audio_path: string | null;
+  /**
+   * The parent test's `test_number` (F-206) — with `test_topik_level` below it
+   * identifies the paper, so `mapRowToDTO` can build a study item's per-item
+   * `/topik/audio/<testNumber>/<1|2>` streaming URL. The study draw is
+   * cross-test (`ORDER BY random()`), so unlike the mock (one resolved paper,
+   * one envelope URL) each item must name its OWN paper's stream.
+   */
+  test_number: number;
+  /**
+   * The parent test's `topik_level` — TEXT constrained to 'TOPIK I'/'TOPIK II'
+   * (migration 005 ck_topik_tests_topik_level). Maps to the audio route's
+   * numeric level segment ('TOPIK II' → 2, else 1 — the same ternary
+   * `POST /mock`'s envelope URL uses).
+   */
+  test_topik_level: string;
 }
 
 /**
@@ -401,6 +430,24 @@ function mapRowToDTO(row: TopikItemRow): TopikItemDTO | null {
     ...(row.audio_start_ms !== null && row.audio_end_ms !== null
       ? { audioStartMs: row.audio_start_ms, audioEndMs: row.audio_end_ms }
       : {}),
+    // F-206: a study/browse LISTENING item with a valid span AND a mapped
+    // paper MP3 names its own paper's stream (cross-test draw — no envelope
+    // URL exists on these surfaces). Section-pinned like the mock envelope:
+    // a stray audio_path on a reading paper must never make a reading item
+    // advertise the listening MP3. The level ternary matches `POST /mock`'s
+    // envelope-URL build exactly ('TOPIK II' → 2, else 1). The mock item
+    // wire is UNTOUCHED: `toMockItemDTO` never copies this field and
+    // `TopikMockItemDTO` Omits it at the type level.
+    ...(row.section === 'listening' &&
+    row.audio_start_ms !== null &&
+    row.audio_end_ms !== null &&
+    row.test_audio_path !== null
+      ? {
+          audioUrl: `/topik/audio/${String(row.test_number)}/${
+            row.test_topik_level === 'TOPIK II' ? '2' : '1'
+          }`,
+        }
+      : {}),
   };
 }
 
@@ -436,8 +483,12 @@ function mapRows(rows: readonly TopikItemRow[]): TopikItemDTO[] {
 type TopikMockChoiceDTO = Omit<TopikChoiceDTO, 'correct'>;
 
 /** A mock item — the study item with `options[].correct` and `explanation`
- *  removed (type-level). `passageRef` is preserved if present. */
-type TopikMockItemDTO = Omit<TopikItemDTO, 'options' | 'explanation'> & {
+ *  removed (type-level). `passageRef` is preserved if present. `audioUrl`
+ *  (F-206, a study/browse-surface field) is Omitted too — the mock keeps its
+ *  F-119 one-envelope-URL contract (every item indexes into the single paper
+ *  stream `POST /mock` names), so a per-item URL here would be redundant and
+ *  the Omit keeps the mock wire byte-identical by construction. */
+type TopikMockItemDTO = Omit<TopikItemDTO, 'options' | 'explanation' | 'audioUrl'> & {
   readonly options: readonly TopikMockChoiceDTO[];
 };
 
@@ -515,7 +566,9 @@ const ITEM_COLUMNS = `i.id::text AS id,
                       i.has_image, i.image_text, i.extra,
                       i.audio_start_ms, i.audio_end_ms,
                       t.passages AS test_passages,
-                      t.audio_path AS test_audio_path`;
+                      t.audio_path AS test_audio_path,
+                      t.test_number,
+                      t.topik_level AS test_topik_level`;
 
 /**
  * The answerable-item guard, shared by every draw/assembly so they all agree:

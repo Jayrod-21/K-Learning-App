@@ -104,6 +104,106 @@ describe('fetchStudyDraw', () => {
 
     await expect(fetchStudyDraw({})).rejects.toMatchObject({ status: 500 });
   });
+
+  // ── F-206 — study-item audio normalization (the mock's readAudioSpan
+  // posture applied per item: these values steer a real <audio> seek/clamp,
+  // so a malformed wire value must degrade to "no audio", never reach the
+  // player). ─────────────────────────────────────────────────────────────
+  const LISTEN_ITEM: TopikItem = {
+    id: '301',
+    section: '듣기',
+    number: 4,
+    level: 3,
+    prompt: '남자: 학생이에요?\n여자: 네, 학생이에요.',
+    options: [
+      { id: 'a', kr: '가', en: 'A', correct: true },
+      { id: 'b', kr: '나', en: 'B', correct: false },
+    ],
+    explanation: '',
+  };
+
+  it('F-206: carries a well-formed audioUrl + span through verbatim', async () => {
+    vi.spyOn(api, 'post').mockResolvedValueOnce({
+      items: [
+        {
+          ...LISTEN_ITEM,
+          audioUrl: '/topik/audio/64/2',
+          audioStartMs: 0,
+          audioEndMs: 15_000,
+        },
+      ],
+    });
+
+    const items = await fetchStudyDraw({ section: '듣기' });
+
+    // A 0 start survives (null-vs-truthy discipline) and the URL rides along.
+    expect(items[0]).toMatchObject({
+      audioUrl: '/topik/audio/64/2',
+      audioStartMs: 0,
+      audioEndMs: 15_000,
+    });
+  });
+
+  it('F-206: strips a non-string audioUrl (tampered/malformed wire) entirely', async () => {
+    vi.spyOn(api, 'post').mockResolvedValueOnce({
+      items: [
+        {
+          ...LISTEN_ITEM,
+          audioUrl: { href: 'https://evil.example/a.mp3' },
+          audioStartMs: 1_000,
+          audioEndMs: 5_000,
+        },
+      ],
+    });
+
+    const items = await fetchStudyDraw({});
+
+    expect(items[0]).not.toHaveProperty('audioUrl');
+    // The (valid) span itself still survives — the two normalizations are
+    // independent, exactly like the mock envelope's.
+    expect(items[0]).toMatchObject({ audioStartMs: 1_000, audioEndMs: 5_000 });
+  });
+
+  it('F-206: drops a HALF span (one bound) — both fields stripped, both-or-neither', async () => {
+    vi.spyOn(api, 'post').mockResolvedValueOnce({
+      items: [{ ...LISTEN_ITEM, audioUrl: '/topik/audio/64/2', audioStartMs: 12_000 }],
+    });
+
+    const items = await fetchStudyDraw({});
+
+    expect(items[0]).not.toHaveProperty('audioStartMs');
+    expect(items[0]).not.toHaveProperty('audioEndMs');
+    // The URL survives on its own; the player component refuses to render a
+    // seekable control without a span, so nothing dangerous leaks through.
+    expect(items[0]).toHaveProperty('audioUrl', '/topik/audio/64/2');
+  });
+
+  it('F-206: drops an inverted/empty window (end <= start) entirely', async () => {
+    vi.spyOn(api, 'post').mockResolvedValueOnce({
+      items: [
+        { ...LISTEN_ITEM, audioStartMs: 20_000, audioEndMs: 20_000 },
+        { ...LISTEN_ITEM, id: '302', audioStartMs: 30_000, audioEndMs: 5_000 },
+      ],
+    });
+
+    const items = await fetchStudyDraw({});
+
+    for (const item of items) {
+      expect(item).not.toHaveProperty('audioStartMs');
+      expect(item).not.toHaveProperty('audioEndMs');
+    }
+  });
+
+  it('F-206: leaves an item with no audio fields untouched (no keys invented)', async () => {
+    vi.spyOn(api, 'post').mockResolvedValueOnce({ items: [ITEM] });
+
+    const items = await fetchStudyDraw({});
+
+    expect(items[0]).not.toHaveProperty('audioUrl');
+    expect(items[0]).not.toHaveProperty('audioStartMs');
+    expect(items[0]).not.toHaveProperty('audioEndMs');
+    expect(items[0]).toMatchObject({ id: '101', explanation: ITEM.explanation });
+  });
 });
 
 describe('recordTopikAnswer', () => {

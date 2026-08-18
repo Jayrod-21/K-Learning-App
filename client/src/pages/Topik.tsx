@@ -135,6 +135,7 @@ import {
   type ResultsReviewRow,
   type ResultsSummary,
 } from './topik/MockMode';
+import { TopikStudyAudio, TopikStudyAudioNote } from './topik/TopikStudyAudio';
 import './Topik.css';
 
 const CHOICE_MARKERS = ['①', '②', '③', '④'] as const;
@@ -1166,6 +1167,30 @@ function TopikBody({
           />
         </span>
       </div>
+
+      {/* F-206 — per-question listening audio in study mode. The player owns
+          its own element per item (the study draw is cross-test, so each item
+          names its OWN paper's stream — unlike the mock's one persistent
+          envelope-URL element), keyed by item id so navigating re-mounts it
+          (fresh src, unmount pauses the outgoing item's playback). Study is
+          LEARN mode: the transcript/passage below stays visible either way —
+          only the timed mock hides it. A listening item the server sent no
+          playable audio for gets the honest note, never a broken player;
+          reading/writing items get neither. */}
+      {item.section === '듣기' ? (
+        item.audioUrl !== undefined &&
+        item.audioStartMs !== undefined &&
+        item.audioEndMs !== undefined ? (
+          <TopikStudyAudio
+            key={item.id}
+            audioUrl={item.audioUrl}
+            startMs={item.audioStartMs}
+            endMs={item.audioEndMs}
+          />
+        ) : (
+          <TopikStudyAudioNote />
+        )
+      ) : null}
 
       {imageSplit === null ? (
         <p className="kr km-topik__prompt">{item.prompt}</p>
