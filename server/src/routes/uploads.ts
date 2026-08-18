@@ -17,6 +17,8 @@
  *                                       upsert the row (idempotent replace by
  *                                       (user, title))
  *   GET    /uploads                  → this user's uploads, newest first
+ *   GET    /uploads/shared           → the shared curated library (F-217) —
+ *                                       every is_shared book, all accounts
  *   GET    /uploads/:id              → one upload's metadata (incl. page_count)
  *   GET    /uploads/:id/page/:n      → page n's image bytes (user-scoped)
  *   GET    /uploads/:id/pages        → the ordered list of {id, page_number}
@@ -73,7 +75,8 @@
  *     `AND is_shared = false` decision-#2 filter then made his whole Reading
  *     page vanish — books, unlike audio, have no Listen-tile surface). A
  *     NON-owner still sees only their own here; browsing the shared library
- *     as a non-owner is a separate follow-up.
+ *     as a non-owner is GET /uploads/shared (F-217), which serves the same
+ *     no-owner-PII projection with `is_shared = true` as its entire filter.
  *   - MASS ASSIGNMENT: `title`/`type` (POST) and `page_ids` (PATCH order) are
  *     the only writable body fields, all validated by a `.strict()` Zod
  *     schema — an extra field is REJECTED, not ignored.
@@ -274,14 +277,56 @@ router.get('/', cheapLimiter(), async (req, res, next) => {
     // Reading page. Sharing is a READ-access flag for OTHER accounts; it must
     // never hide an owner's own content from them.) Cross-account read of a
     // shared book is handled by GET /uploads/:id + the reading routes;
-    // browsing the shared library as a NON-owner is a separate follow-up
-    // (no "shared library" list surface exists yet).
+    // browsing the shared library as a NON-owner is GET /uploads/shared
+    // (F-217, below).
     const { rows } = await query<UploadRow>(
       `SELECT id, title, type, status, page_count, byte_size, created_at
          FROM book_uploads
         WHERE user_id = $1
         ORDER BY created_at DESC, id DESC`,
       [userId],
+    );
+    res.status(200).json({ uploads: rows.map(toDTO) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /uploads/shared — the shared curated library (F-217), every account.
+// ---------------------------------------------------------------------------
+
+/**
+ * Upper bound on the shared listing (audio.ts's GET_SOURCES_LIMIT posture):
+ * the curated corpus is operator-sized (the F-207 cutover flipped 18 books),
+ * so 200 is a generous fixed ceiling against a runaway listing — not a
+ * pagination scheme. Matches the client shelf's `usePagination` max.
+ */
+const GET_SHARED_UPLOADS_LIMIT = 200;
+
+// Registered as a LITERAL path ABOVE `/:id` — Express matches in declaration
+// order, so declared below it "shared" would be captured as an :id param
+// value (IdParamsSchema's numeric coercion would 400 and this handler could
+// never run). Mirrors routes/audio.ts's GET /audio/shared ordering note.
+router.get('/shared', cheapLimiter(), async (_req, res, next) => {
+  try {
+    // F-217 (the F-207 phase-3 follow-up): the shared-books browse surface.
+    // DELIBERATELY NON-user-scoped — every authenticated account
+    // (router.use(requireAuth) above) sees the same curated library;
+    // `is_shared = true` is the ENTIRE filter, so a private row (any
+    // owner's) can never appear here. The projection is the SAME UploadRow →
+    // toDTO as GET /uploads: no user_id, no email, no blob_ref — these are
+    // another account's rows served cross-account, and the owner's identity
+    // is not the client's business (no-owner-PII is asserted by the route
+    // tests). READ-only surface; every write route keeps its strict owner
+    // scope, and is_shared itself stays operator-set only.
+    const { rows } = await query<UploadRow>(
+      `SELECT id, title, type, status, page_count, byte_size, created_at
+         FROM book_uploads
+        WHERE is_shared = true
+        ORDER BY created_at DESC, id DESC
+        LIMIT $1`,
+      [GET_SHARED_UPLOADS_LIMIT],
     );
     res.status(200).json({ uploads: rows.map(toDTO) });
   } catch (err) {

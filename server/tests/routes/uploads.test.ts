@@ -162,6 +162,7 @@ async function bookPageRows(uploadId: string | number) {
 describe('uploads — auth required', () => {
   it.each([
     ['GET', '/uploads'],
+    ['GET', '/uploads/shared'],
     ['GET', '/uploads/1'],
     ['GET', '/uploads/1/page/1'],
     ['GET', '/uploads/1/pages'],
@@ -1125,7 +1126,7 @@ describe('F-207 — GET /uploads lists the owner OWN books (shared or not); a no
     expect(ids).toEqual([sharedId, privateId]);
   });
 
-  it("a NON-owner's GET /uploads never lists anyone's shared book either — shared books surface only via the Listen tiles, not this list", async () => {
+  it("a NON-owner's GET /uploads never lists anyone's shared book either — shared books surface via GET /uploads/shared (F-217), not this list", async () => {
     const a = await registerUser(t.app, pg.pool);
     const sharedId = await seedBookUpload(pg.pool, a.userId, { title: 'Curated Book' });
     await shareBook(sharedId);
@@ -1134,6 +1135,80 @@ describe('F-207 — GET /uploads lists the owner OWN books (shared or not); a no
     const res = await b.agent.get('/uploads');
     expect(res.status).toBe(200);
     expect(res.body.uploads).toEqual([]);
+  });
+});
+
+describe('F-217 — GET /uploads/shared (the shared-books browse list)', () => {
+  it('lists every is_shared book to a NON-owner — exact no-owner-PII DTO, newest first', async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const olderShared = await seedBookUpload(pg.pool, a.userId, {
+      title: 'Shared Folktales',
+      type: 'literature',
+      status: 'ready',
+      pageCount: 12,
+      createdAt: new Date('2026-08-01T00:00:00Z'),
+    });
+    const newerShared = await seedBookUpload(pg.pool, a.userId, {
+      title: 'Shared Comics',
+      type: 'comic',
+      status: 'ready',
+      pageCount: 24,
+      createdAt: new Date('2026-08-10T00:00:00Z'),
+    });
+    await shareBook(olderShared);
+    await shareBook(newerShared);
+    // A's PRIVATE book must never leak into the shared listing.
+    await seedBookUpload(pg.pool, a.userId, { title: 'My Private Book' });
+
+    const b = await registerUser(t.app, pg.pool);
+    const res = await b.agent.get('/uploads/shared');
+    expect(res.status).toBe(200);
+    // Only the shared pair, newest first (created_at DESC, id DESC).
+    expect(res.body.uploads.map((u: { id: string }) => Number(u.id))).toEqual([
+      newerShared,
+      olderShared,
+    ]);
+    expect(res.body.uploads.map((u: { title: string }) => u.title)).toEqual([
+      'Shared Comics',
+      'Shared Folktales',
+    ]);
+    // No-owner-PII contract (the GET /uploads/:id shared-read pin, applied
+    // to the LIST): these are another account's rows served cross-account,
+    // so assert the exact key set — no user_id, no email, no blob_ref.
+    for (const upload of res.body.uploads as Record<string, unknown>[]) {
+      expect(Object.keys(upload).sort()).toEqual([
+        'byte_size',
+        'created_at',
+        'id',
+        'page_count',
+        'status',
+        'title',
+        'type',
+      ]);
+    }
+  });
+
+  it("no shared books → 200 with an empty list, proving the literal /shared route resolves (not '/:id' capturing \"shared\" → 400/404)", async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/uploads/shared');
+    // Declaration-order pin: were `/:id` to capture "shared",
+    // IdParamsSchema's numeric coercion would 400 before any handler ran —
+    // this 200 + envelope is only reachable through the literal route.
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ uploads: [] });
+  });
+
+  it("the OWNER's own shared book lists here too (one shared library for every account; the client de-dupes against the owner list)", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const id = await seedBookUpload(pg.pool, a.userId, {
+      title: 'My Curated Book',
+      status: 'ready',
+    });
+    await shareBook(id);
+
+    const res = await a.agent.get('/uploads/shared');
+    expect(res.status).toBe(200);
+    expect(res.body.uploads.map((u: { id: string }) => Number(u.id))).toEqual([id]);
   });
 });
 
