@@ -25,7 +25,9 @@
  * append-only insert + DISTINCT ON current-value read. Writing is estimated
  * on request but never sampled — its metric set is a Phase-3 decision.
  * Persistence is best-effort: a failed sample write is logged and never fails
- * the read that produced a perfectly good estimate.
+ * the read that produced a perfectly good estimate. Callers that must stay
+ * pure reads (F-212 P4: /plan/today) pass `persist: false` to skip the sample
+ * entirely; the default (true) keeps /ability/estimate behavior unchanged.
  */
 
 import { query } from '../../db/pool.js';
@@ -90,6 +92,13 @@ export interface EstimateOptions {
   now?: Date;
   /** Config override (tests / Phase-3 tuning); defaults to the locked set. */
   config?: EstimatorConfig;
+  /**
+   * Write the daily user_progress sample (default TRUE — GET /ability/estimate
+   * behavior unchanged). F-212 P4: /plan/today estimates with persist:false so
+   * the plan endpoint stays the pure read its contract documents — the sampled
+   * θ history is only ever appended by the explicit /ability/estimate surface.
+   */
+  persist?: boolean;
 }
 
 /**
@@ -113,6 +122,7 @@ export async function estimateAbility(
     const rows = await getAbilityEvidence(userId, { dimension, since });
     const estimate = estimateDimension(dimension, rows, now, config);
     if (
+      opts.persist !== false &&
       !estimate.insufficient &&
       (DIMENSION_ORDER as readonly string[]).includes(dimension)
     ) {

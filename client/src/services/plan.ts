@@ -19,15 +19,24 @@
  * line up, so they pass through unchanged.
  */
 import { api } from './api';
-import type { TodayPlan, TodayTask } from '../types/domain';
+import type { Recommendation, TodayPlan, TodayTask } from '../types/domain';
 
-/** Raw `GET /plan/today` envelope as the server sends it. */
+/** Raw `GET /plan/today` envelope as the server sends it.
+ *
+ * `recommendation`/`alternatives` (F-212 Phase 4) are typed optional here —
+ * additive server fields, so a not-yet-flipped blue/green color (or a cached
+ * pre-P4 response) may legitimately omit them. `fetchToday` normalizes an
+ * absent `recommendation` to `null`, which the Today screen already treats as
+ * "no card, existing tiles carry the day" — deploy-order skew degrades to the
+ * cold-start fallback instead of a type error. */
 export interface PlanTodayResponse {
   dueCount: number;
   reading: TodayTask | null;
   listening: TodayTask | null;
   writing: TodayTask | null;
   largestGap: TodayTask['tag'] | null;
+  recommendation?: Recommendation | null;
+  alternatives?: Recommendation[];
 }
 
 /**
@@ -48,11 +57,18 @@ export async function fetchToday(signal?: AbortSignal): Promise<TodayPlan> {
     '/plan/today',
     signal !== undefined ? { signal } : undefined,
   );
-  return {
+  const plan: TodayPlan = {
     reviewCount: res.dueCount,
     reading: res.reading,
     listening: res.listening,
     writing: res.writing,
     largestGap: res.largestGap,
+    // F-212 P4 — absent (older server color) and explicit null (cold-start)
+    // both land on null: no card, existing tiles unchanged.
+    recommendation: res.recommendation ?? null,
   };
+  if (res.alternatives !== undefined) {
+    plan.alternatives = res.alternatives;
+  }
+  return plan;
 }

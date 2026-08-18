@@ -35,6 +35,24 @@ export const TODAY_FIXTURE: TodayPlan = {
   // Listening is the design's default emphasis; the live endpoint overrides
   // this with the user's weakest modality from their diagnostic snapshot.
   largestGap: 'Listening',
+  // F-212 P4 — the evidence-driven "Recommended next" pick. The mock mirrors
+  // the live envelope's happy path (a sufficient-estimate, weakest-dimension
+  // pick) so the mock path renders the featured card; the live endpoint sends
+  // `null` at cold-start instead (all dimensions insufficient), which renders
+  // NO card — the fixture deliberately exercises the card-present branch.
+  recommendation: {
+    dimension: 'listening',
+    exploratory: false,
+    reasonCode: 'weakest_dimension',
+    reasonEn: 'Listening is currently your weakest measured skill.',
+    reasonKr: '현재 측정된 실력 중 듣기가 가장 약해요.',
+    level: 'L3',
+    deepLink: '/learn/listen?corpus=iyagi&episode=12',
+    title: '이야기 #12 — 서울의 겨울',
+    mins: 6,
+    corpus: 'iyagi',
+    episodeNumber: 12,
+  },
 };
 
 /** Async loader — 60–120 ms simulated delay then resolves with the fixture. */

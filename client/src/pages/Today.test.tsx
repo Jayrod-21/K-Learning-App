@@ -62,7 +62,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { cwd } from 'node:process';
 import type { JSX } from 'react';
-import type { TodayPlan } from '../types/domain';
+import type { Recommendation, TodayPlan } from '../types/domain';
 import type { AttemptState } from '../services/topik';
 
 // Hook mock — control loading + data per key. `vi.hoisted` is necessary
@@ -151,6 +151,9 @@ vi.mock('../services/ttmik', () => ({
 // Pull the page AFTER the hook mock is set up so the screen wires to it.
 import { Today } from './Today';
 import { getChatContext } from '../lib/chatContext';
+// F-212 P4 — the real mock fixture, to pin that the mock path renders the
+// Recommended-next card (fixture parity, not a hand-rolled stand-in).
+import { TODAY_FIXTURE } from '../data/mocks/today';
 
 const PLAN: TodayPlan = {
   reviewCount: 24,
@@ -183,6 +186,11 @@ const PLAN: TodayPlan = {
     promptKr: '재택근무의 장점과 단점에 대해 200~300자로 쓰십시오.',
   },
   largestGap: 'Listening',
+  // F-212 P4 — the default plan carries NO recommendation (cold-start /
+  // pre-P4 shape), so every pre-existing test above the P4 describe block
+  // also implicitly pins the additive-only contract: no card, everything
+  // else unchanged. The P4 block below swaps in real recommendations.
+  recommendation: null,
 };
 
 /** A saved F-007 mock attempt, as GET /topik/attempt returns it. `totalItems`
@@ -1610,6 +1618,437 @@ describe('Today', () => {
       )?.[0] ?? '';
     expect(reducedMotionBlock).not.toBe('');
     expect(reducedMotionBlock).toContain('animation: none;');
+  });
+});
+
+/**
+ * F-212 Phase 4 — the "Recommended next" featured card.
+ *
+ * Contract pinned here:
+ *   - A non-null `plan.recommendation` renders ONE featured ActivityTile
+ *     (CityCard `feat` + the gold "Recommended" pill — the TOPIK tile's
+ *     treatment) in its own labeled section ABOVE the Suggested-learning
+ *     rail, wearing the dimension's canonical skill tone.
+ *   - The WHY is honest and bilingual: the server-composed `reasonEn`/
+ *     `reasonKr` render verbatim (never client-re-derived copy that could
+ *     drift from the real ranking), plus a client framing line —
+ *     "Suggested next step" normally, or the exploration framing ("let's
+ *     build a read on your <dimension>", NO deficit claim) when
+ *     `exploratory` is true. reasonEn is folded into the button's
+ *     accessible name (the subtree is presentational to AT).
+ *   - Navigation is id-built via the same href builders as every other tile
+ *     (`?chapter=`/`?story=`, `?corpus=&episode=`, `/learn/vocab?study=due`,
+ *     `/learn/grammar`) — NEVER the server's free-form `deepLink` string.
+ *   - `recommendation: null` (cold-start, or an older server color) renders
+ *     NO card and leaves the existing gap pill, tiles, and rails fully
+ *     intact — the additive-only contract. (Every test in the main block
+ *     above also runs with `recommendation: null`, so the whole legacy
+ *     surface is implicitly pinned against regression too.)
+ *   - Copy discipline: "Recommended" / "Suggested next step" — the page
+ *     never claims "optimal" or a "best path".
+ */
+describe('Today — Recommended next card (F-212 P4)', () => {
+  /** A sufficient-estimate weakest-dimension pick (the happy path). */
+  const REC_LISTENING: Recommendation = {
+    dimension: 'listening',
+    exploratory: false,
+    reasonCode: 'weakest_dimension',
+    reasonEn: 'Listening is currently your weakest measured skill.',
+    reasonKr: '현재 측정된 실력 중 듣기가 가장 약해요.',
+    level: 'L3',
+    deepLink: '/learn/listen?corpus=iyagi&episode=12',
+    title: '이야기 #12 — 서울의 겨울',
+    mins: 6,
+    corpus: 'iyagi',
+    episodeNumber: 12,
+  };
+
+  function loadWithRecommendation(rec: Recommendation): void {
+    loadDefaults();
+    hoisted.today.state = {
+      kind: 'data',
+      data: { ...PLAN, recommendation: rec },
+    };
+  }
+
+  it('renders ONE featured card above the Suggested-learning rail, wearing the dimension\'s canonical tone + CityCard feat', () => {
+    loadWithRecommendation(REC_LISTENING);
+    renderTodayAt();
+
+    const region = screen.getByRole('region', { name: 'Recommended next' });
+    const buttons = within(region).getAllByRole('button');
+    expect(buttons).toHaveLength(1);
+
+    // Featured treatment: CityCard `feat` + the listening dimension's
+    // canonical mint tone (the same SKILL_COLOR token the Listening tile
+    // wears — one skill, one color, everywhere).
+    const card = buttons[0]?.querySelector('.km-citycard');
+    expect(card).toHaveClass('km-citycard--feat');
+    expect(card).toHaveClass('km-tone--mint');
+
+    // Position: strictly ABOVE the Suggested-learning rail, and below the
+    // Review & drills carousel (slotted between the two).
+    const suggested = screen.getByRole('region', { name: 'Suggested learning' });
+    const drills = screen.getByRole('region', { name: 'Review and drills' });
+    expect(
+      region.compareDocumentPosition(suggested) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      drills.compareDocumentPosition(region) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('shows the title, a dimension · level · mins meta line, and the gold Recommended pill', () => {
+    loadWithRecommendation(REC_LISTENING);
+    renderTodayAt();
+
+    const region = screen.getByRole('region', { name: 'Recommended next' });
+    expect(
+      within(region).getByText('이야기 #12 — 서울의 겨울'),
+    ).toBeInTheDocument();
+    expect(within(region).getByText('Listening · L3 · 6 min')).toBeInTheDocument();
+    expect(within(region).getByText('듣기 · L3 · 6분')).toBeInTheDocument();
+
+    // The gold "Recommended" pill — the same treatment the TOPIK tile uses.
+    const pill = within(region).getByText('Recommended').closest('.km-pill');
+    expect(pill).toHaveClass('km-pill--gold');
+    expect(within(region).getByText('추천')).toBeInTheDocument();
+  });
+
+  it('renders the server-composed WHY bilingually, verbatim, and folds reasonEn into the accessible name', () => {
+    loadWithRecommendation(REC_LISTENING);
+    renderTodayAt();
+
+    const region = screen.getByRole('region', { name: 'Recommended next' });
+    expect(
+      within(region).getByText(
+        'Listening is currently your weakest measured skill.',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(region).getByText('현재 측정된 실력 중 듣기가 가장 약해요.'),
+    ).toBeInTheDocument();
+
+    // aria-label REPLACES the button's accessible name (its subtree is
+    // presentational to AT), so the WHY must be folded into the label —
+    // same convention as the Writing tile's prompt preview.
+    expect(within(region).getByRole('button')).toHaveAccessibleName(
+      'Recommended next — 이야기 #12 — 서울의 겨울. Listening is currently your weakest measured skill.',
+    );
+  });
+
+  it.each([
+    ['weakest_dimension', false],
+    ['due_backlog', false],
+    ['low_confidence', false],
+    ['baseline', false],
+    ['exploration', true],
+  ] as const)(
+    'renders the card for reasonCode=%s with its server reason verbatim and the honest framing line',
+    (reasonCode, exploratory) => {
+      loadWithRecommendation({
+        ...REC_LISTENING,
+        reasonCode,
+        exploratory,
+        reasonEn: `Server reason for ${reasonCode}.`,
+        reasonKr: `${reasonCode} 서버 사유.`,
+      });
+      renderTodayAt();
+
+      const region = screen.getByRole('region', { name: 'Recommended next' });
+      // The WHY is always the server's composed reason for THAT code —
+      // rendered verbatim, whatever the code, so client copy can never
+      // drift from the actual dominant scoring term.
+      expect(
+        within(region).getByText(`Server reason for ${reasonCode}.`),
+      ).toBeInTheDocument();
+      expect(
+        within(region).getByText(`${reasonCode} 서버 사유.`),
+      ).toBeInTheDocument();
+      if (exploratory) {
+        // Exploration framing — signal-gathering, never a deficit claim.
+        expect(
+          within(region).getByText("Let's build a read on your listening"),
+        ).toBeInTheDocument();
+        expect(
+          within(region).queryByText('Suggested next step'),
+        ).not.toBeInTheDocument();
+      } else {
+        expect(
+          within(region).getByText('Suggested next step'),
+        ).toBeInTheDocument();
+      }
+    },
+  );
+
+  it('exploratory pick frames as exploration in BOTH languages — no deficit wording', () => {
+    loadWithRecommendation({
+      ...REC_LISTENING,
+      dimension: 'grammar',
+      exploratory: true,
+      reasonCode: 'exploration',
+      reasonEn: 'We do not have enough grammar signal yet.',
+      reasonKr: '아직 문법 데이터가 충분하지 않아요.',
+      level: 'L3',
+      title: 'Grammar drills',
+    });
+    renderTodayAt();
+
+    const region = screen.getByRole('region', { name: 'Recommended next' });
+    expect(
+      within(region).getByText("Let's build a read on your grammar"),
+    ).toBeInTheDocument();
+    expect(
+      within(region).getByText('문법 감각을 함께 알아봐요'),
+    ).toBeInTheDocument();
+    expect(
+      within(region).queryByText('Suggested next step'),
+    ).not.toBeInTheDocument();
+    // No deficit claim anywhere in the card for an unmeasured dimension.
+    expect(within(region).queryByText(/weakest/i)).not.toBeInTheDocument();
+  });
+
+  it('cold-start (recommendation: null) renders NO card and leaves the existing rail + gap pill fully intact', () => {
+    loadDefaults(); // PLAN carries recommendation: null
+    renderTodayAt();
+
+    expect(
+      screen.queryByRole('region', { name: 'Recommended next' }),
+    ).not.toBeInTheDocument();
+    // The pre-P4 surface is untouched: all three suggested tiles, the
+    // largest-gap pill, and the Review & drills carousel still render.
+    const suggested = screen.getByRole('region', { name: 'Suggested learning' });
+    expect(within(suggested).getAllByRole('button')).toHaveLength(3);
+    expect(screen.getByText('Largest gap')).toBeInTheDocument();
+    expect(
+      screen.getByRole('region', { name: 'Review and drills' }),
+    ).toBeInTheDocument();
+  });
+
+  it('renders no card while the plan is still loading or after it failed (no fabricated pick)', () => {
+    hoisted.today.state = { kind: 'loading' };
+    hoisted.attempt.state = { kind: 'data', data: null };
+    hoisted.grammarAttempts.state = { kind: 'data', data: GRAMMAR_ATTEMPTS_EMPTY };
+    hoisted.writingAttempts.state = { kind: 'data', data: WRITING_ATTEMPTS_EMPTY };
+    hoisted.topikAttempts.state = { kind: 'data', data: TOPIK_ATTEMPTS_EMPTY };
+    hoisted.hanjaAttempts.state = { kind: 'data', data: HANJA_ATTEMPTS_EMPTY };
+    hoisted.readingAttempts.state = { kind: 'data', data: READING_ATTEMPTS_EMPTY };
+    hoisted.listeningAttempts.state = { kind: 'data', data: LISTENING_ATTEMPTS_EMPTY };
+    const { unmount } = renderTodayAt();
+    expect(
+      screen.queryByRole('region', { name: 'Recommended next' }),
+    ).not.toBeInTheDocument();
+    unmount();
+
+    hoisted.today.state = { kind: 'error' };
+    renderTodayAt();
+    expect(
+      screen.queryByRole('region', { name: 'Recommended next' }),
+    ).not.toBeInTheDocument();
+  });
+
+  // ── Deep links — id-built via the shared href builders, per dimension ──
+
+  it('deep-links a listening recommendation to the exact episode — /learn/listen?corpus=iyagi&episode=<n>', async () => {
+    loadWithRecommendation(REC_LISTENING);
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    await user.click(
+      within(
+        screen.getByRole('region', { name: 'Recommended next' }),
+      ).getByRole('button'),
+    );
+    expect(
+      screen.getByText('LISTENING PAGE /learn/listen?corpus=iyagi&episode=12'),
+    ).toBeInTheDocument();
+  });
+
+  it('deep-links a reading recommendation to the exact chapter — /learn/reading?chapter=<id>', async () => {
+    loadWithRecommendation({
+      ...REC_LISTENING,
+      dimension: 'reading',
+      reasonCode: 'low_confidence',
+      reasonEn: 'Your reading estimate is still uncertain.',
+      reasonKr: '읽기 추정치가 아직 불확실해요.',
+      deepLink: '/learn/reading?chapter=88',
+      title: '3장 — 한강의 밤',
+      sourceKind: 'chapter',
+      chapterId: 88,
+    });
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    await user.click(
+      within(
+        screen.getByRole('region', { name: 'Recommended next' }),
+      ).getByRole('button'),
+    );
+    expect(
+      screen.getByText('READING PAGE /learn/reading?chapter=88'),
+    ).toBeInTheDocument();
+  });
+
+  it('deep-links a story-sourced reading recommendation — /learn/reading?story=<id>', async () => {
+    loadWithRecommendation({
+      ...REC_LISTENING,
+      dimension: 'reading',
+      deepLink: '/learn/reading?story=12',
+      title: '옛날 이야기',
+      sourceKind: 'story',
+      storyId: 12,
+    });
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    await user.click(
+      within(
+        screen.getByRole('region', { name: 'Recommended next' }),
+      ).getByRole('button'),
+    );
+    expect(
+      screen.getByText('READING PAGE /learn/reading?story=12'),
+    ).toBeInTheDocument();
+  });
+
+  it('sends a vocab recommendation to the FSRS due-review session — /learn/vocab?study=due', async () => {
+    loadWithRecommendation({
+      ...REC_LISTENING,
+      dimension: 'vocab',
+      reasonCode: 'due_backlog',
+      reasonEn: 'You have vocabulary reviews piling up.',
+      reasonKr: '밀린 어휘 복습이 있어요.',
+      deepLink: '/learn/vocab?study=due',
+      title: 'Due vocabulary review',
+      mins: 5,
+    });
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    await user.click(
+      within(
+        screen.getByRole('region', { name: 'Recommended next' }),
+      ).getByRole('button'),
+    );
+    expect(
+      screen.getByText('VOCAB PAGE /learn/vocab?study=due'),
+    ).toBeInTheDocument();
+  });
+
+  it('sends a grammar recommendation to the drills landing — /learn/grammar', async () => {
+    loadWithRecommendation({
+      ...REC_LISTENING,
+      dimension: 'grammar',
+      deepLink: '/learn/grammar',
+      title: 'Grammar drills',
+    });
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    await user.click(
+      within(
+        screen.getByRole('region', { name: 'Recommended next' }),
+      ).getByRole('button'),
+    );
+    expect(screen.getByText('GRAMMAR PAGE')).toBeInTheDocument();
+  });
+
+  it('NEVER navigates on the server deepLink string — a listening pick with no episode key falls back to the bare landing, ignoring deepLink entirely', async () => {
+    const rec: Recommendation = {
+      ...REC_LISTENING,
+      // A hostile/garbage deepLink must be inert: navigation is id-built
+      // (threat model — integer ids/enums only, no free-text URL surface).
+      deepLink: 'https://evil.example/phish',
+    };
+    delete rec.corpus;
+    delete rec.episodeNumber;
+    loadWithRecommendation(rec);
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    await user.click(
+      within(
+        screen.getByRole('region', { name: 'Recommended next' }),
+      ).getByRole('button'),
+    );
+    expect(screen.getByText('LISTENING PAGE /learn/listen')).toBeInTheDocument();
+  });
+
+  it('copy discipline: the page never claims "optimal" or a "best path"', () => {
+    loadWithRecommendation(REC_LISTENING);
+    renderTodayAt();
+
+    expect(screen.queryByText(/optimal/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/best path/i)).not.toBeInTheDocument();
+
+    // The button's ACCESSIBLE NAME too — its aria-label replaces the
+    // subtree for AT, so queryByText alone can't see a claim smuggled into
+    // the label. Screen-reader users get the same honest copy.
+    const button = within(
+      screen.getByRole('region', { name: 'Recommended next' }),
+    ).getByRole('button');
+    const label = button.getAttribute('aria-label') ?? '';
+    expect(label).not.toBe('');
+    expect(label).not.toMatch(/optimal/i);
+    expect(label).not.toMatch(/best path/i);
+  });
+
+  it('keeps exactly THREE .km-today__section-title h2 headers WITH the card present — the Recommended-next section adds no fourth header', () => {
+    // Pins the locked layout decision: the card slots between Review &
+    // drills and Suggested learning WITHOUT its own section header — the
+    // page's h2 count must not grow when the recommendation renders.
+    loadWithRecommendation(REC_LISTENING);
+    renderTodayAt();
+
+    expect(
+      screen.getByRole('region', { name: 'Recommended next' }),
+    ).toBeInTheDocument();
+    expect(
+      document.querySelectorAll('.km-today__section-title'),
+    ).toHaveLength(3);
+    const headings = screen.getAllByRole('heading', { level: 2 });
+    expect(headings).toHaveLength(3);
+    expect(headings[0]).toHaveTextContent('Review & drills');
+    expect(headings[1]).toHaveTextContent('Suggested learning');
+    expect(headings[2]).toHaveTextContent('TOPIK');
+  });
+
+  it('reading: a hostile deepLink is inert even WITH id fields present — navigation is id-built, never the server string', async () => {
+    // Mirror of the listening hostile-deepLink test above, for the reading
+    // dimension WITH its id fields intact: the id-built href must win and
+    // the hostile string must never be navigated.
+    loadWithRecommendation({
+      ...REC_LISTENING,
+      dimension: 'reading',
+      deepLink: 'https://evil.example/phish',
+      title: '3장 — 한강의 밤',
+      sourceKind: 'chapter',
+      chapterId: 88,
+    });
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    await user.click(
+      within(
+        screen.getByRole('region', { name: 'Recommended next' }),
+      ).getByRole('button'),
+    );
+    expect(
+      screen.getByText('READING PAGE /learn/reading?chapter=88'),
+    ).toBeInTheDocument();
+  });
+
+  it('the mock fixture renders the card too (mock path parity)', () => {
+    loadDefaults();
+    hoisted.today.state = { kind: 'data', data: TODAY_FIXTURE };
+    renderTodayAt();
+
+    const region = screen.getByRole('region', { name: 'Recommended next' });
+    expect(TODAY_FIXTURE.recommendation).not.toBeNull();
+    expect(
+      within(region).getByText(TODAY_FIXTURE.recommendation?.title ?? ''),
+    ).toBeInTheDocument();
   });
 });
 

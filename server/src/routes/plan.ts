@@ -13,6 +13,12 @@
  *     listening:  TodayTask | null,            // one Iyagi episode
  *     writing:    TodayTask | null,            // one writing_prompts row
  *     largestGap: 'Reading'|'Listening'|'Writing'|null   // weakest modality
+ *     recommendation: Recommendation | null,   // F-212 P4 (additive): the
+ *                                              // evidence-driven "do this
+ *                                              // next" pick; null on cold
+ *                                              // start (client keeps tiles)
+ *     alternatives?: Recommendation[]          // runner-up dimensions' picks
+ *                                              // (present iff recommendation)
  *   }
  *
  * WAVE 2 (backend batch, TODAY_NAV_SCOPING.md B4/B5/B6): three additive
@@ -82,6 +88,16 @@ import { Router } from 'express';
 import { getUserId, requireAuth } from '../middleware/auth.js';
 import { cheapLimiter } from '../middleware/rateLimits.js';
 import { query } from '../db/pool.js';
+import { getLogger } from '../logging.js';
+import { estimateAbility } from '../services/ability/estimate.js';
+import { fetchCandidates } from '../services/ability/candidates.js';
+import {
+  rankRecommendations,
+  targetDifficulty,
+  type DimensionSignal,
+  type RecommendDimension,
+  type Recommendation,
+} from '../services/ability/recommend.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -104,6 +120,42 @@ export function planDateSql(tsExpr = 'now()'): string {
 }
 
 const PLAN_DATE_SQL = planDateSql();
+
+/**
+ * The `reading_chapters ∪ generated_stories` candidate UNION — the personal
+ * reading corpus the Wave-2 pick (below) selects from. Extracted to a shared
+ * helper (F-212 P4) so the ability recommender's reading candidate generator
+ * (services/ability/candidates.ts) reuses THIS EXACT source query instead of
+ * growing a parallel one that could drift; the interpolated text is unchanged
+ * from the original inline form, so the Wave-2 selection query is byte-for-
+ * byte what it was.
+ *
+ * `userParam` is the caller's placeholder for the session user id (e.g.
+ * `'$1'`) — only ever a trusted literal, same contract as `planDateSql`'s
+ * `tsExpr`: no injection surface. Both legs are scoped to it (user-owned
+ * tables — see the THREAT MODEL note above).
+ */
+export function readingCandidatesUnionSql(userParam: string): string {
+  return `SELECT 'chapter'::text AS source_kind,
+                c.id AS row_id,
+                c.title,
+                c.chapter_number,
+                NULL::text AS level,
+                (SELECT COALESCE(sum(length(p.body)), 0)::int
+                   FROM reading_passages p
+                  WHERE p.chapter_id = c.id) AS char_count
+           FROM reading_chapters c
+          WHERE c.user_id = ${userParam}
+          UNION ALL
+         SELECT 'story'::text AS source_kind,
+                s.id AS row_id,
+                s.title,
+                NULL::int AS chapter_number,
+                s.level::text AS level,
+                length(s.body_ko) AS char_count
+           FROM generated_stories s
+          WHERE s.user_id = ${userParam}`;
+}
 
 // ---------------------------------------------------------------------------
 // Pure derivation helpers (exported for unit testing — no DB dependency).
@@ -302,25 +354,7 @@ router.get('/today', cheapLimiter(), async (req, res, next) => {
       char_count: string;
     }>(
       `WITH candidates AS (
-         SELECT 'chapter'::text AS source_kind,
-                c.id AS row_id,
-                c.title,
-                c.chapter_number,
-                NULL::text AS level,
-                (SELECT COALESCE(sum(length(p.body)), 0)::int
-                   FROM reading_passages p
-                  WHERE p.chapter_id = c.id) AS char_count
-           FROM reading_chapters c
-          WHERE c.user_id = $1
-          UNION ALL
-         SELECT 'story'::text AS source_kind,
-                s.id AS row_id,
-                s.title,
-                NULL::int AS chapter_number,
-                s.level::text AS level,
-                length(s.body_ko) AS char_count
-           FROM generated_stories s
-          WHERE s.user_id = $1
+         ${readingCandidatesUnionSql('$1')}
        )
        SELECT candidates.source_kind,
               candidates.row_id::text AS row_id,
@@ -440,12 +474,107 @@ router.get('/today', cheapLimiter(), async (req, res, next) => {
       writing: writingEstimate,
     });
 
+    // 6. F-212 P4 — evidence-driven "best next exercise" (ADDITIVE field).
+    //    The Phase-2 continuous estimator (NOT the diagnostic snapshot above —
+    //    the two surfaces stay separate; the snapshot keeps owning band
+    //    preference + largestGap) picks the dimension + item to do next; see
+    //    services/ability/recommend.ts for the locked two-stage scoring.
+    //
+    //    persist:false — /plan/today is documented as a PURE READ (see the
+    //    module note + THREAT MODEL); the estimator's daily user_progress
+    //    sample stays exclusive to GET /ability/estimate.
+    //
+    //    Best-effort: the block is additive UX, so a recommender failure logs
+    //    and degrades to `recommendation: null` (the client keeps its
+    //    existing deterministic tiles) rather than failing the whole plan.
+    let recommendation: Recommendation | null = null;
+    let alternatives: Recommendation[] = [];
+    try {
+      const abilityEstimates = await estimateAbility(userId, { persist: false });
+
+      // Per-dimension due split — the SAME predicate as the dueCount query in
+      // step 1 (live, due, non-suspended, non-deleted, non-hanja), partitioned
+      // by card kind: a grammar PRODUCTION card (grammar_entry_id IS NOT NULL)
+      // feeds the grammar dimension, everything else the vocab dimension —
+      // so vocabDue + grammarDue always reconciles with dueCount above.
+      const dueSplit = await query<{ kind: 'grammar' | 'vocab'; n: number }>(
+        `SELECT CASE WHEN grammar_entry_id IS NOT NULL
+                     THEN 'grammar' ELSE 'vocab' END AS kind,
+                count(*)::int AS n
+           FROM vocab_cards
+          WHERE user_id = $1
+            AND due_at <= now()
+            AND suspended_at IS NULL
+            AND deleted_at IS NULL
+            AND hanja_character_id IS NULL
+          GROUP BY 1`,
+        [userId],
+      );
+      const dueByKind = { vocab: 0, grammar: 0 };
+      for (const row of dueSplit.rows) dueByKind[row.kind] = row.n;
+
+      // estimateAbility without includeWriting returns exactly the four
+      // recommendable dimensions (writing HELD in v1 — the locked decision).
+      const dimensions: DimensionSignal[] = abilityEstimates
+        .filter((e): e is typeof e & { dimension: RecommendDimension } =>
+          e.dimension !== 'writing')
+        .map((e) => ({
+          dimension: e.dimension,
+          theta: e.theta,
+          se: e.se,
+          insufficient: e.insufficient,
+          dueCount:
+            e.dimension === 'vocab'
+              ? dueByKind.vocab
+              : e.dimension === 'grammar'
+                ? dueByKind.grammar
+                : 0,
+        }));
+
+      // Cold start (no dimension has enough evidence) → null, and skip the
+      // candidate queries entirely — there is nothing to rank against.
+      if (!dimensions.every((d) => d.insufficient)) {
+        // The Seoul plan date — the SAME rollover boundary every selection
+        // hash above pins — seeds the recommender's deterministic tie-breaks.
+        const dayRow = await query<{ d: string }>(`SELECT ${PLAN_DATE_SQL} AS d`);
+        const dayKey = dayRow.rows[0]!.d;
+
+        const targets = Object.fromEntries(
+          dimensions.map((d) => [
+            d.dimension,
+            targetDifficulty(d.insufficient ? null : d.theta),
+          ]),
+        ) as Record<RecommendDimension, number>;
+        const candidates = await fetchCandidates(userId, targets);
+        const ranked = rankRecommendations({
+          userKey,
+          dayKey,
+          dimensions,
+          candidates,
+        });
+        recommendation = ranked.recommendation;
+        alternatives = ranked.alternatives;
+      }
+    } catch (err) {
+      getLogger().warn(
+        {
+          userId,
+          err: { name: (err as Error).name, message: (err as Error).message },
+        },
+        'plan: next-exercise recommendation failed (plan still served)',
+      );
+    }
+
     res.status(200).json({
       dueCount,
       reading: readingTask,
       listening: listeningTask,
       writing: writingTask,
       largestGap,
+      // F-212 P4 (additive): null on cold start / recommender failure — the
+      // client falls back to the existing deterministic tiles.
+      recommendation,
+      ...(recommendation !== null ? { alternatives } : {}),
     });
   } catch (err) {
     next(err);
