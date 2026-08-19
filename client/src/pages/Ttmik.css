@@ -203,3 +203,38 @@
 .km-ttmik__readalong-line--active {
   background: color-mix(in srgb, var(--vermilion) 14%, transparent);
 }
+
+/* ── F-198 desktop polish (additive — everything below is ≥768px only,
+ * mobile stays byte-identical) ───────────────────────────────────────────
+ *
+ * Landing tiles: the fixed 2-across square grid is the DESIGNED mobile
+ * layout (F-071's "2 across, flowing down" — intentional, kept as-is), but
+ * at the desktop shell width two 1:1 tiles balloon to ~400px squares. At
+ * ≥768px the tracks become `auto-fill minmax(220px, 1fr)` — the same 220px
+ * floor Today.css's shipped tile grid uses — so tiles stay tile-sized and
+ * a wide row simply fits more of them. `auto-fill` (NOT `auto-fit`,
+ * deliberately unlike Today): a carousel tile-page can hold only 2–3
+ * tiles, and auto-fit would collapse the unused tracks and stretch those
+ * few tiles wide again — auto-fill keeps the empty tracks so sparse pages
+ * hold the same tile size as full ones (the Mistakes.css qtile-grid
+ * rationale). */
+@media (min-width: 768px) {
+  .km-ttmik__tiles {
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  }
+}
+
+/* Detail view: the persistent player + the Highlights/Transcript reading
+ * surface are prose-and-controls cards, and stretched to the full desktop
+ * shell column they read as a wall. Capped + centered at the same 640px
+ * measure Progress.css's readability guard ships (`.km-progress__note`),
+ * so the two cards stay edge-aligned with each other. Width-only —
+ * CityCard's own paint is untouched, and `margin-inline` leaves the cards'
+ * existing block margins alone. */
+@media (min-width: 768px) {
+  .km-ttmik__player,
+  .km-ttmik__reader-card {
+    max-width: 640px;
+    margin-inline: auto;
+  }
+}

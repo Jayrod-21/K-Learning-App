@@ -35,3 +35,35 @@
 .km-uploads__card.km-citycard {
   padding: 0;
 }
+
+/* ── F-198 desktop polish (additive — ≥768px only, mobile byte-identical) ─
+ *
+ * The upload/book list: full-width one-line CityCard rows waste the
+ * desktop shell column. Two fixed columns at ≥768px — the shipped
+ * ReviewLibrary.css idiom, including its equal-height chain (the grid cell
+ * stretches the `<li>`; flexing li → card makes the CARD's painted surface
+ * fill the cell too, so a row pair never reads ragged) and its
+ * `minmax(0, …)`/`min-width: 0` truncation guards (F-129's convention). */
+@media (min-width: 768px) {
+  .km-uploads__list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .km-uploads__list > .km-uploads__row {
+    min-width: 0;
+    display: flex;
+  }
+
+  .km-uploads__row > .km-uploads__card.km-citycard {
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* Orphan guard (Today.css / ReviewLibrary.css fix-pass rule): a trailing
+   * odd row spans the full row instead of sitting alone at half width. */
+  .km-uploads__list > .km-uploads__row:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}

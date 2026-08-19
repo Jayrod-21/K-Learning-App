@@ -523,3 +523,27 @@
   .km-chat__layout--collapsed .km-chat__side { width: 44px; }
   .km-chat__bubble { max-width: 88%; }
 }
+
+/* ── F-198 desktop polish (additive — ≥768px only, mobile byte-identical) ─
+ * A chat thread stretched to the full 1160px desktop shell reads wrong —
+ * every chat app keeps the conversation a comfortable centered column.
+ * This is a MEASURE-CAP, not a grid: the message column (thread +
+ * composer, i.e. `.km-chat__main`) caps at 780px, and the whole
+ * [rail | conversation] pair is itself capped and centered so the rail
+ * hugs the conversation instead of pinning to the far shell edge
+ * (`justify-content: center` re-centers the pair when the rail is
+ * collapsed to 44px and `__main` has hit its cap — the base flex layout's
+ * default is flex-start, so this only takes effect where `__main` stops
+ * growing, which is exactly the ≥768px case). Bubbles keep their own
+ * `min(78%, 560px)` cap inside the column, unchanged. */
+@media (min-width: 768px) {
+  .km-chat__layout {
+    max-width: 1010px;
+    margin-inline: auto;
+    justify-content: center;
+  }
+
+  .km-chat__main {
+    max-width: 780px;
+  }
+}

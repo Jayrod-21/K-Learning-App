@@ -182,3 +182,27 @@
   color: var(--paper-mute);
   font-size: 0.75rem;
 }
+
+/* ── F-198 desktop polish (additive — ≥768px only, mobile byte-identical) ─
+ * At the desktop shell width a fit-width book scan blows up to ~900px —
+ * wider than a physical page wants to be. Cap the WHOLE viewer column
+ * (toolbar → status strip → reorder panel → page card → pager → hint) at a
+ * comfortable page width and center it, so every control stays
+ * edge-aligned with the image card rather than floating at the far shell
+ * edge. Width-only and safe with the component's inline `pageLayout()`
+ * sizing: it computes from the MEASURED container width, so a narrower
+ * container simply yields a proportionally smaller fit-width page — zoom,
+ * rotation, drag and scroll arbitration are untouched. (`margin-inline`
+ * leaves each rule's existing block margins alone, including the
+ * `__extract--idle` collapse above.) */
+@media (min-width: 768px) {
+  .km-upload-viewer__toolbar,
+  .km-upload-viewer__extract,
+  .km-upload-viewer__reorder,
+  .km-upload-viewer__card,
+  .km-upload-viewer__pager,
+  .km-upload-viewer__hint {
+    max-width: 720px;
+    margin-inline: auto;
+  }
+}

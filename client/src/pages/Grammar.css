@@ -193,3 +193,54 @@
   border-radius: var(--radius-lg);
   overflow: hidden;
 }
+
+/* ── F-198 desktop polish (additive — ≥768px only, mobile byte-identical) ─
+ *
+ * Pattern rows (browse groups + practice history): one-line rows stretched
+ * across the full desktop shell column waste most of it. Two fixed columns
+ * at ≥768px — the shipped ReviewLibrary.css idiom (`repeat(2, minmax(0,
+ * 1fr))`, not auto-fit, so the divider/orphan rules below are sound at
+ * every width; `minmax(0, …)` + `min-width: 0` keep the rows' ellipsis
+ * truncation working inside grid tracks, F-129's convention). */
+@media (min-width: 768px) {
+  .km-grammar__list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 28px;
+  }
+
+  .km-grammar__list > .km-grammar__row {
+    min-width: 0;
+  }
+
+  /* Orphan guard (the Today.css / ReviewLibrary.css fix-pass rule): a
+   * trailing odd row would sit alone at half width in the last grid row —
+   * span it instead. `:last-child:nth-child(odd)` is exactly "last row
+   * with no right-hand partner" in a fixed 2-column grid. */
+  .km-grammar__list > .km-grammar__row:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+
+  /* Hairline evener: with an EVEN row count the final grid row pairs an
+   * odd-indexed left cell (still carrying its border-bottom) with the
+   * borderless `:last-child` right cell — drop the left cell's hairline so
+   * the bottom edge is clean. Inert for odd counts (the second-to-last row
+   * is even-indexed there, and correctly keeps its divider above the
+   * spanning orphan). */
+  .km-grammar__list > .km-grammar__row:nth-last-child(2):nth-child(odd) {
+    border-bottom: none;
+  }
+}
+
+/* Drill surface: the practice card is a single-focus form (prompt +
+ * textarea), and full desktop width makes the input line unreadably long.
+ * Capped + centered at Progress.css's shipped 640px readability measure;
+ * the continuous-drill banner directly above it gets the same cap so the
+ * two stay edge-aligned. Width-only, paint untouched. */
+@media (min-width: 768px) {
+  .km-grammar__card,
+  .km-grammar__continuous-note {
+    max-width: 640px;
+    margin-inline: auto;
+  }
+}

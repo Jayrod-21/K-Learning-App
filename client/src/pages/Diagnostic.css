@@ -30,3 +30,19 @@
 .km-diagnostic .km-diagnostic__choice:hover:not(:disabled) {
   border-color: var(--vermilion);
 }
+
+/* ── F-198 desktop polish (additive — ≥768px only, mobile byte-identical) ─
+ * Intro + results are prose-and-summary surfaces that stretch as walls at
+ * the desktop shell width. Capped + centered at Progress.css's shipped
+ * 640px readability measure. DELIBERATELY not the taking flow
+ * (`.km-diagnostic__taking`) — the question-answering surface stays
+ * narrow/single-focus by design, same as MockMode. Same co-located-additive
+ * stance as the F-131 hover rule above: pure addition over the base
+ * `.km-diagnostic__*` layout in styles/index.css, no override. */
+@media (min-width: 768px) {
+  .km-diagnostic__intro,
+  .km-diagnostic__results {
+    max-width: 640px;
+    margin-inline: auto;
+  }
+}
