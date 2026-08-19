@@ -27,9 +27,9 @@ per-item status line in the same PR that lands the work).** Reconciliation trail
 
 **Features**
 - 🟡 **F-081** P2 — question-paired images: client shipped; backend is F-120.
-- 🔴 **F-109** P4 — retain `source_format` on uploads (enables literal source-format filter).
+- ⏸️ **F-109** P4 — retain `source_format` on uploads (enables literal source-format filter). **DEFERRED 2026-08-18** (Jared): needs a new `source_format` migration for a filter F-058 already respecced away (shipped the honest viewable-rendition filter); pre-existing rows are format-unrecoverable (NULL). No current demand → build only if the literal filter is actually wanted.
 - 🔴 **F-120** P3 — TOPIK question images — extract + serve (the F-081 data gap; sibling to the now-done F-119 audio).
-- 🔴 **F-194** P3 — 064 down-migration can't distinguish backfilled from real pre-064 rows.
+- ⛔ **F-194** P3 — 064 down-migration can't distinguish backfilled from real pre-064 rows. **CLOSED as won't-fix 2026-08-18** (Jared): the precise fix is impossible now — 064 already ran in prod WITHOUT an insert-marker, so which rows it inserted is unrecoverable. Exposure is rollback-only (`--allow-destructive`), single-user, worst case = a recreatable email-schedule row; already documented in the down-migration header + README. Accepted caveat, not real work.
 - 🟡 **F-197** P2 — Track A "my audio" pipeline shipped (#146–153) AND the **bulk corpus ingest has RUN**: live DB = 21 `audio_sources` / **982 `audio_tracks`, all 982 transcription jobs done** (news-in-korean, jindo-dog, ttmik-grammar-level-1..10, korean-folktales, real-life-conversations, easy-korean-reading, topik mocks). **RECLASSIFIED 2026-08-18:** the "per-slot mapping (track→lesson)" concept is OBSOLETE — verified the 982 tracks are standalone content (grammar-textbook CDs w/ ordinal titles, folktales, news, conversations, easy-reading, TOPIK mocks), NOT lesson slots; TOPIK is already per-slot mapped via F-119. The useful part (read-along on this content) SHIPPED as B-025. Remaining latent value = a fuller browse surface exposing ALL standalone sources (some aren't in the curated F-207 tile set) — deferred/optional, NOT built. Effectively DONE for the mapping intent.
 - 🟡 **F-198** P2 — device-adaptive layouts epic (D2 shipped #123; remaining breakpoints ongoing).
 - ⚪ **F-200** P4 — clear legacy pre-070 mine-written tags from `vocab_entries.source_upload_id`. **AUDIT 2026-08-12: OBSOLETE — no target data.** Live DB has 0 `user-mined` legacy tags (the 147 tagged `vocab_entries` are all legitimate F-108 upload extractions). Close; re-open only if a pre-070 dump is ever restored.
@@ -260,7 +260,7 @@ Launch one focused session per group; cross-cutting items noted.
 | F-106 | Feature | 🟢 | P2 | BACKEND (API) | `GET /writing/attempts` — per-response writing history |
 | F-107 | Feature | 🟢 | P2 | BACKEND (API, DATABASE) | Upload provenance on vocab/grammar save paths + saved-from-uploads read |
 | F-108 | Feature | 🟢 | P2 | BACKEND (API) | U2 extraction/OCR pipeline (backend) |
-| F-109 | Feature | 🔴 | P4 | BACKEND (DATABASE) | Retain `source_format` on uploads (enables literal source-format filter) |
+| F-109 | Feature | ⏸️ | P4 | BACKEND (DATABASE) | Retain `source_format` on uploads — DEFERRED 2026-08-18 (F-058 respecced it away; no demand; needs a migration) |
 | F-110 | Feature | 🟢 | P2 | BACKEND (API) | `GET /grammar-drill/attempts` — past drill history (grammar F-065 backend) |
 | F-111 | Feature | 🟢 | P3 | BACKEND (API) | Per-pattern grammar production-card schedule read (grammar F-063 backend) |
 | F-112 | Feature | 🟢 | P3 | BACKEND (API) | Vocab list detail rows should carry example sentences |
@@ -284,7 +284,7 @@ Launch one focused session per group; cross-cutting items noted.
 | F-189 | Feature | ✅ | P2 | design-system · cross-cutting | Distinct per-skill highlight colors — shared across Today tiles AND the LEARN honeycomb |
 | F-190 | Feature | ✅ | P2 | ui-polish | Center the default carousel card — Review & Drills → Vocab, Suggested Learning → Reading |
 | F-191 | Feature | ✅ | P3 | design-system consistency | TOPIK's own page + mock mode carried the old accent/blue chrome (not its new stone hue) |
-| F-194 | Feature | 🔴 | P3 | DATABASE | 064's down-migration can't distinguish "backfilled" from "a real pre-064 row that happens to match the shape" |
+| F-194 | Feature | ⛔ | P3 | DATABASE | 064 down-migration provenance — CLOSED won't-fix 2026-08-18 (unrecoverable post-run; rollback-only; documented in-file) |
 | F-195 | Feature | 🟢 | P3 | error-hygiene | `services/kiwi.ts` forwards raw upstream error `{name,message}` to the client |
 | F-196 | Feature | 🟢 | P4 | resilience | Replace the PastExams exhaustiveness `throw` with a page-scoped guard |
 | F-197 | Feature | 🟡 | P2 | content | Ingest the Downloads audio corpus — pipeline shipped (#146–153) + bulk ingest DONE (982 tracks transcribed); only Track-N→slot pairing open |
