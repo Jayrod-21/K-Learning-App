@@ -155,10 +155,10 @@ export interface ExtractionRunDTO {
   readonly created_at: string;
 }
 
-/** Raw row shape (pg returns BIGINT as string, TIMESTAMPTZ as Date). */
+/** Raw row shape (int8 ids parse to numbers — db/pool parser; TIMESTAMPTZ as Date). */
 export interface ExtractionRunRow {
-  id: string;
-  upload_id: string | null;
+  id: number;
+  upload_id: number | null;
   status: ExtractionStatus;
   page_from: number;
   page_to: number;
@@ -366,7 +366,7 @@ export async function persistExtraction(
 ): Promise<PersistCounts> {
   // Resolve the shared user_mined corpus source (seeded by migration 022) —
   // a hard dependency; fail loudly rather than mint dangling provenance.
-  const src = await client.query<{ id: string }>(
+  const src = await client.query<{ id: number }>(
     `SELECT id FROM corpus_sources WHERE corpus = 'user_mined'::corpus LIMIT 1`,
   );
   const srcRow = src.rows[0];
@@ -445,7 +445,7 @@ export interface ExtractRangeRequest {
 }
 
 interface PageRow {
-  id: string;
+  id: number;
   page_number: number;
   blob_ref: string;
 }
@@ -479,7 +479,7 @@ export async function runExtraction(
     // Ownership (IDOR): foreign/missing id → the same 404. FOR UPDATE holds
     // the parent so a concurrent DELETE /uploads/:id serializes against the
     // claim rather than racing it.
-    const owner = await client.query<{ id: string; type: string; page_count: number | null }>(
+    const owner = await client.query<{ id: number; type: string; page_count: number | null }>(
       `SELECT id, type, page_count FROM book_uploads
         WHERE id = $1 AND user_id = $2
         FOR UPDATE`,

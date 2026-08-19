@@ -199,7 +199,7 @@ const ExtractBodySchema = z
 // ---------------------------------------------------------------------------
 
 interface UploadRow {
-  id: string;
+  id: number;
   title: string;
   type: (typeof BOOK_UPLOAD_TYPES)[number];
   status: 'processing' | 'ready' | 'failed';
@@ -210,7 +210,10 @@ interface UploadRow {
 
 function toDTO(row: UploadRow): BookUploadDTO {
   return {
-    id: row.id,
+    // Wire contract: upload ids are emitted as STRINGS (pre-int8-parser
+    // behavior, pinned). Shared by GET /uploads, /uploads/shared and
+    // GET /uploads/:id, so all three lists stay in lockstep.
+    id: String(row.id),
     title: row.title,
     type: row.type,
     status: row.status,
@@ -491,7 +494,7 @@ router.get(
       // have zero pages, which must be a 200 with an empty list — not folded
       // into the same 404 the way page/:n's single-query IDOR check is,
       // since that route only ever needs "does page n exist for me".
-      const owner = await query<{ id: string }>(
+      const owner = await query<{ id: number }>(
         `SELECT id FROM book_uploads WHERE id = $1 AND user_id = $2`,
         [id, userId],
       );
@@ -500,12 +503,14 @@ router.get(
         throw new NotFoundError('upload not found');
       }
 
-      const { rows } = await query<{ id: string; page_number: number }>(
+      const { rows } = await query<{ id: number; page_number: number }>(
         `SELECT id, page_number FROM book_pages WHERE upload_id = $1 ORDER BY page_number`,
         [id],
       );
       res.status(200).json({
-        pages: rows.map((r) => ({ id: r.id, page_number: r.page_number })),
+        // Wire contract: page ids are emitted as STRINGS (pre-int8-parser
+        // behavior, pinned by uploads.test.ts).
+        pages: rows.map((r) => ({ id: String(r.id), page_number: r.page_number })),
       });
     } catch (err) {
       next(err);
@@ -529,13 +534,13 @@ router.patch(
         .validatedParams;
       const body = (req as Request & { body: z.infer<typeof PageOrderBodySchema> }).body;
 
-      const uniqueIds = new Set(body.page_ids);
+      const uniqueIds = new Set<number>(body.page_ids);
       if (uniqueIds.size !== body.page_ids.length) {
         throw new ValidationError('page_ids must not contain duplicates');
       }
 
       const pages = await withTransaction(async (client) => {
-        const owner = await client.query<{ id: string }>(
+        const owner = await client.query<{ id: number }>(
           `SELECT id FROM book_uploads WHERE id = $1 AND user_id = $2 FOR UPDATE`,
           [id, userId],
         );
@@ -544,14 +549,14 @@ router.patch(
           throw new NotFoundError('upload not found');
         }
 
-        const current = await client.query<{ id: string }>(
+        const current = await client.query<{ id: number }>(
           `SELECT id FROM book_pages WHERE upload_id = $1 FOR UPDATE`,
           [id],
         );
         const currentIds = new Set(current.rows.map((r) => r.id));
         const submittedMatchesCurrent =
           currentIds.size === uniqueIds.size &&
-          [...uniqueIds].every((pid) => currentIds.has(String(pid)));
+          [...uniqueIds].every((pid) => currentIds.has(pid));
         if (!submittedMatchesCurrent) {
           throw new ValidationError(
             "page_ids must be exactly this upload's current set of page ids (no partial reorders, no foreign ids)",
@@ -579,7 +584,7 @@ router.patch(
               SET page_number = v.pos
              FROM (SELECT * FROM unnest($1::bigint[], $2::int[]) AS t(page_id, pos)) AS v
             WHERE bp.id = v.page_id AND bp.upload_id = $3`,
-          [currentIdsOrdered, currentIdsOrdered.map((_: string, i: number) => PLACEHOLDER_BASE + i), id],
+          [currentIdsOrdered, currentIdsOrdered.map((_: number, i: number) => PLACEHOLDER_BASE + i), id],
         );
         await client.query(
           `UPDATE book_pages AS bp
@@ -589,7 +594,7 @@ router.patch(
           [body.page_ids, body.page_ids.map((_: number, i: number) => i + 1), id],
         );
 
-        const { rows } = await client.query<{ id: string; page_number: number }>(
+        const { rows } = await client.query<{ id: number; page_number: number }>(
           `SELECT id, page_number FROM book_pages WHERE upload_id = $1 ORDER BY page_number`,
           [id],
         );
@@ -597,7 +602,7 @@ router.patch(
       });
 
       res.status(200).json({
-        pages: pages.map((r) => ({ id: r.id, page_number: r.page_number })),
+        pages: pages.map((r) => ({ id: String(r.id), page_number: r.page_number })),
       });
     } catch (err) {
       next(err);
@@ -650,7 +655,7 @@ router.get(
       const { id } = (req as Request & { validatedParams: z.infer<typeof IdParamsSchema> })
         .validatedParams;
 
-      const owner = await query<{ id: string }>(
+      const owner = await query<{ id: number }>(
         `SELECT id FROM book_uploads WHERE id = $1 AND user_id = $2`,
         [id, userId],
       );
@@ -704,7 +709,7 @@ router.delete(
       // migration 069): they are the daily Vision-page cost ledger, and
       // deleting a book must never refund its budget (fixpass b8 BLOCKER-1).
       const blobRefs = await withTransaction(async (client) => {
-        const owner = await client.query<{ id: string }>(
+        const owner = await client.query<{ id: number }>(
           `SELECT id FROM book_uploads WHERE id = $1 AND user_id = $2 FOR UPDATE`,
           [id, userId],
         );

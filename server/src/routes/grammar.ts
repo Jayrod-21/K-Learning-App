@@ -165,9 +165,9 @@ router.get(
         [id, userId],
       );
       if (rows.length === 0) throw new NotFoundError('kgiu entry not found');
-      // pg returns BIGINT (id) as a string; the API contract documents id as a
-      // JSON number. kgiu_entries.id fits comfortably in Number.MAX_SAFE_INTEGER.
-      res.status(200).json({ ...rows[0], id: Number((rows[0] as { id: unknown }).id) });
+      // id arrives as a safe-integer number via the int8 parser (db/pool.ts),
+      // matching the API contract's JSON number.
+      res.status(200).json(rows[0]);
     } catch (err) {
       next(err);
     }
@@ -268,9 +268,9 @@ router.post('/bank', cheapLimiter(), validateBody(BankBodySchema), async (req, r
         ],
       );
     });
-    // pg returns BIGINT as a string; the API contract documents id as a JSON
-    // number (grammar_entries.id fits comfortably in Number.MAX_SAFE_INTEGER).
-    res.status(201).json({ id: Number(rows[0]!.id) });
+    // id arrives as a safe-integer number via the int8 parser (db/pool.ts),
+    // matching the API contract's JSON number.
+    res.status(201).json({ id: rows[0]!.id });
   } catch (err) {
     if ((err as { code?: string }).code === '23505') {
       next(new ConflictError('grammar entry conflict'));
@@ -417,9 +417,9 @@ router.get('/saved-from-uploads', cheapLimiter(), async (req, res, next) => {
   try {
     const userId = getUserId(req);
     const { rows } = await query<{
-      upload_id: string;
+      upload_id: number;
       upload_title: string;
-      entry_id: string;
+      entry_id: number;
       pattern_display: string;
       summary_en: string;
       saved_at: Date;
@@ -472,10 +472,9 @@ router.get('/saved-from-uploads', cheapLimiter(), async (req, res, next) => {
       }
     }
 
-    // Fold the flat rows into per-upload groups, preserving SQL order. pg
-    // returns BIGINTs as strings; the API contract documents ids as JSON
-    // numbers (both fit in Number.MAX_SAFE_INTEGER — same convention as
-    // every other route in this file).
+    // Fold the flat rows into per-upload groups, preserving SQL order. The
+    // ids arrive as safe-integer numbers via the int8 parser (db/pool.ts);
+    // `total` is a ::text-cast window COUNT, so its Number() stays load-bearing.
     interface SavedGroup {
       upload: { id: number; title: string };
       entries: Array<{
@@ -488,7 +487,7 @@ router.get('/saved-from-uploads', cheapLimiter(), async (req, res, next) => {
     const groups: SavedGroup[] = [];
     const byUpload = new Map<number, SavedGroup>();
     for (const r of visible) {
-      const uploadId = Number(r.upload_id);
+      const uploadId = r.upload_id;
       let group = byUpload.get(uploadId);
       if (group === undefined) {
         group = { upload: { id: uploadId, title: r.upload_title }, entries: [] };
@@ -496,7 +495,7 @@ router.get('/saved-from-uploads', cheapLimiter(), async (req, res, next) => {
         groups.push(group);
       }
       group.entries.push({
-        id: Number(r.entry_id),
+        id: r.entry_id,
         pattern: r.pattern_display,
         summary: r.summary_en,
         savedAt: r.saved_at.toISOString(),
@@ -534,7 +533,7 @@ function setGraduation(graduate: boolean) {
       const id = (req as typeof req & {
         validatedParams: z.infer<typeof BankIdParamsSchema>;
       }).validatedParams.id;
-      const { rows } = await query<{ id: string }>(
+      const { rows } = await query<{ id: number }>(
         `UPDATE grammar_entries
             SET graduated_at = ${graduate ? 'COALESCE(graduated_at, now())' : 'NULL'},
                 version      = version + 1
@@ -544,9 +543,9 @@ function setGraduation(graduate: boolean) {
         [id, userId],
       );
       if (rows.length === 0) throw new NotFoundError('grammar entry not found');
-      // pg returns BIGINT as a string; the API contract documents id as a
-      // JSON number (fits comfortably in Number.MAX_SAFE_INTEGER).
-      res.status(200).json({ entry: { ...rows[0]!, id: Number(rows[0]!.id) } });
+      // id arrives as a safe-integer number via the int8 parser (db/pool.ts),
+      // matching the API contract's JSON number.
+      res.status(200).json({ entry: rows[0]! });
     } catch (err) {
       next(err);
     }
@@ -644,11 +643,10 @@ router.get('/suggestions/weekly', cheapLimiter(), async (req, res, next) => {
         LIMIT $2`,
       [userId, WEEKLY_SUGGESTION_LIMIT],
     );
-    // pg returns BIGINT (id) as a string; the DTO documents id as a JSON number
-    // (kgiu_entries.id fits comfortably in Number.MAX_SAFE_INTEGER). The wire key
-    // is `patterns` (matches the client's GrammarSuggestionsResponse).
-    const patterns = rows.map((r) => ({ ...r, id: Number(r.id) }));
-    res.status(200).json({ patterns });
+    // id arrives as a safe-integer number via the int8 parser (db/pool.ts),
+    // matching the DTO's JSON number. The wire key is `patterns` (matches the
+    // client's GrammarSuggestionsResponse).
+    res.status(200).json({ patterns: rows });
   } catch (err) {
     next(err);
   }
@@ -761,7 +759,7 @@ router.get(
       };
 
       const { rows: patternRows } = await query<{
-        id: string; // BIGINT arrives as string from pg
+        id: number; // BIGINT IDENTITY — the int8 parser returns a number
         pattern_display: string;
         summary_en: string;
         bucket: GrammarMasteryBucket;

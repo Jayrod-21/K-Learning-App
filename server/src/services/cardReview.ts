@@ -106,7 +106,7 @@ export async function applyCardReview(input: ApplyCardReviewInput): Promise<Appl
       reps: number;
       lapses: number;
       version: number;
-      hanja_character_id: string | null;
+      hanja_character_id: number | null;
       // F-171: the hanja character text, when this card targets one — a
       // snapshot for hanja_attempts.char (see below). NULL for a vocab/
       // grammar-target card (the LEFT JOIN simply has no match). The join

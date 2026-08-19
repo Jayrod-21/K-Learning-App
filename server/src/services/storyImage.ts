@@ -172,9 +172,9 @@ export async function runStoryImageTick(log: Logger): Promise<StoryImageTickResu
   //    double-running one job.
   const claimed = await withTransaction<ClaimedJob | null>(async (client) => {
     const { rows } = await client.query<{
-      id: string;
-      generated_story_id: string;
-      user_id: string;
+      id: number;
+      generated_story_id: number;
+      user_id: number;
       title: string;
       body_ko: string;
       turns: unknown;

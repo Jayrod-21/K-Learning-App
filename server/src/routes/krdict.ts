@@ -211,9 +211,10 @@ router.get(
       // COUNT(*) OVER () is identical on every row; an empty page (no matches,
       // or offset past the end) yields no rows → total 0.
       const total = rows.length > 0 ? Number(rows[0]!.total) : 0;
-      // pg returns BIGINT (id) as a string; the DTO documents id as a JSON
-      // number. KRDICT ids are well within Number.MAX_SAFE_INTEGER. The per-row
-      // window `total` is surfaced once at the top level, not on each entry.
+      // id arrives as a safe-integer number via the int8 parser (db/pool.ts);
+      // Number() is an identity op kept as the DTO-boundary normalization. The
+      // per-row window `total` is surfaced once at the top level, not on each
+      // entry.
       const entries = rows.map(({ total: _total, ...rest }) => ({
         ...rest,
         id: Number(rest.id),

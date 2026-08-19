@@ -184,7 +184,7 @@ export interface ImageCaptureDTO {
 }
 
 /** Build the blob URL the client renders. id is the DB id (server-trusted). */
-export function blobUrlFor(id: string): string {
+export function blobUrlFor(id: number | string): string {
   return `/images/${id}/blob`;
 }
 
@@ -326,7 +326,7 @@ export async function persistCapture(
   const blobPath = await saveBlob(userId, captureId, img.ext, img.buffer);
 
   const { rows: capInsert } = await client.query<{
-    id: string;
+    id: number;
     created_at: Date;
   }>(
     `INSERT INTO image_captures
@@ -362,7 +362,9 @@ export async function persistCapture(
   }
 
   return {
-    id: captureRow.id,
+    // Wire contract: capture ids are emitted as STRINGS (pre-int8-parser
+    // behavior, pinned) — String() keeps the wire byte-identical.
+    id: String(captureRow.id),
     name: img.originalFilename ?? `capture-${captureRow.id}`,
     caption_kr: img.captionKr,
     caption_en: img.captionEn,

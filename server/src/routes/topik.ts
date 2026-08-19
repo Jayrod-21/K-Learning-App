@@ -2111,7 +2111,7 @@ router.post('/mock/submit', cheapLimiter(), validateBody(MockSubmitBodySchema), 
       // (if anything) the in-progress row's own topik_level said. A
       // completed attempt's level can therefore never be stale, missing, or
       // guessed, regardless of what PUT /topik/attempt last saved.
-      const closed = await client.query<{ id: string }>(
+      const closed = await client.query<{ id: number }>(
         `UPDATE topik_attempts
             SET status = 'completed', topik_level = $4, version = version + 1
           WHERE user_id = $1
@@ -2123,7 +2123,7 @@ router.post('/mock/submit', cheapLimiter(), validateBody(MockSubmitBodySchema), 
       );
       let attemptId = closed.rows[0]?.id;
       if (attemptId === undefined) {
-        const created = await client.query<{ id: string }>(
+        const created = await client.query<{ id: number }>(
           `INSERT INTO topik_attempts
              (user_id, section, source_test, current_idx, picks, remaining_ms, status, topik_level)
            VALUES ($1, $2::topik_section, $3, 0, '{}'::jsonb, 0, 'completed', $4)

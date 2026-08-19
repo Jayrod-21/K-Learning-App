@@ -310,7 +310,7 @@ export async function ingestUpload(
   // 3. Per-user DAILY cap on NEW titles only. An existing (user, title) row
   //    means this request is a REPLACE, which the loop below is specifically
   //    designed to exempt (see module header "PER-USER CAP").
-  const existing = await query<{ id: string }>(
+  const existing = await query<{ id: number }>(
     `SELECT id FROM book_uploads WHERE user_id = $1 AND title = $2`,
     [userId, body.title],
   );
@@ -353,7 +353,7 @@ export interface PersistedUpload {
 }
 
 interface UpsertRow {
-  id: string;
+  id: number;
   title: string;
   type: BookUploadType;
   status: 'processing' | 'ready' | 'failed';
@@ -387,7 +387,7 @@ export async function persistUpload(
   userId: number,
   ingested: IngestedUpload,
 ): Promise<PersistedUpload> {
-  const existing = await client.query<{ id: string }>(
+  const existing = await client.query<{ id: number }>(
     `SELECT id FROM book_uploads WHERE user_id = $1 AND title = $2 FOR UPDATE`,
     [userId, ingested.title],
   );
@@ -440,7 +440,9 @@ export async function persistUpload(
 
   return {
     dto: {
-      id: row.id,
+      // Wire contract: upload ids are emitted as STRINGS (pre-int8-parser
+      // behavior, pinned) — matches routes/uploads.ts toDTO.
+      id: String(row.id),
       title: row.title,
       type: row.type,
       status: row.status,

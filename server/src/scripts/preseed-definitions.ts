@@ -592,7 +592,7 @@ async function fetchSourcePage(
               ORDER BY id LIMIT $2`;
       break;
   }
-  const res = await pool.query<{ id: string; text: string }>(sql, [afterId, PAGE_SIZE]);
+  const res = await pool.query<{ id: number; text: string }>(sql, [afterId, PAGE_SIZE]);
   const last = res.rows.length > 0 ? Number(res.rows[res.rows.length - 1]!.id) : afterId;
   return { rows: res.rows.length, sentences: res.rows.map((r) => r.text), lastId: last };
 }
@@ -612,7 +612,7 @@ async function forEachSourceSentence(
     source === 'ttmik'
       ? [
           async (afterId) => {
-            const res = await pool.query<{ id: string; text: string }>(
+            const res = await pool.query<{ id: number; text: string }>(
               `SELECT id, korean AS text FROM ttmik_sentences
                 WHERE id > $1 ORDER BY id LIMIT $2`,
               [afterId, PAGE_SIZE],
@@ -624,7 +624,7 @@ async function forEachSourceSentence(
             // Only the transcript kinds the client renders through TapKorean
             // (pages/Ttmik.tsx TranscriptLine): prose, pair, dialog. 'header'
             // renders as plain text and 'romanization' is dropped.
-            const res = await pool.query<{ id: string; text: string }>(
+            const res = await pool.query<{ id: number; text: string }>(
               `SELECT id, korean AS text FROM ttmik_transcript_lines
                 WHERE kind IN ('prose', 'pair', 'dialog')
                   AND korean IS NOT NULL AND korean <> ''
