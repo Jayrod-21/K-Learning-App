@@ -229,9 +229,9 @@ router.get(
         // log already.
         throw new NotFoundError('no dictionary entry for requested word');
       }
-      // pg returns BIGINT columns as strings to avoid silent precision loss.
-      // The /define DTO documents `id` as a JSON number, so coerce here. KRDICT
-      // entry ids are well within Number.MAX_SAFE_INTEGER (a few hundred k rows).
+      // BIGINT ids arrive as safe-integer numbers via the int8 parser
+      // (db/pool.ts); Number() is an identity op kept as the DTO-boundary
+      // normalization (the /define DTO documents `id` as a JSON number).
       //
       // Examples ride each entry (B-002): the popover's primary example +
       // "More examples" drawer come from krdict_examples, which the previous

@@ -397,8 +397,8 @@ router.get(
           LIMIT $2`,
         [userId, q.limit],
       );
-      // pg returns BIGINT columns as strings; the card DTO documents the id +
-      // FK id fields as JSON numbers (nullable FKs stay null). NUMERIC columns
+      // BIGINT id + FK ids arrive as safe-integer numbers via the int8 parser
+      // (db/pool.ts); nullable FKs stay null. NUMERIC columns
       // stability/difficulty are intentionally left as strings (precision-safe).
       // COUNT(*) OVER () is identical on every row; an empty page (nothing
       // due) yields no rows, so total is legitimately 0 there — mirrors the
@@ -1095,8 +1095,8 @@ router.get(
         [id, userId],
       );
       if (rows.length === 0) throw new NotFoundError('vocab entry not found');
-      // pg returns BIGINT (id) as a string; the API contract documents id as a
-      // JSON number. vocab_entries.id fits comfortably in Number.MAX_SAFE_INTEGER.
+      // id arrives as a safe-integer number via the int8 parser (db/pool.ts);
+      // Number() is an identity op kept as the DTO-boundary normalization.
       res.status(200).json({ ...rows[0], id: Number((rows[0] as { id: unknown }).id) });
     } catch (err) {
       next(err);
@@ -1175,8 +1175,8 @@ router.post(
         );
         return ins.rows[0]!;
       });
-      // pg returns BIGINT (card.id) as a string; the API contract documents id
-      // as a JSON number. vocab_cards.id fits in Number.MAX_SAFE_INTEGER.
+      // id arrives as a safe-integer number via the int8 parser (db/pool.ts);
+      // Number() is an identity op kept as the DTO-boundary normalization.
       res.status(201).json({ card: { ...out, id: Number(out.id) } });
     } catch (err) {
       next(err);
@@ -1411,8 +1411,8 @@ router.post(
         );
         return { entryId, card: ins.rows[0]! };
       });
-      // pg returns BIGINT (entryId, card.id) as strings; the API contract
-      // documents both as JSON numbers. Both fit in Number.MAX_SAFE_INTEGER.
+      // entryId + card.id arrive as safe-integer numbers via the int8 parser
+      // (db/pool.ts); Number() is an identity op kept at the DTO boundary.
       res.status(201).json({
         entryId: Number(out.entryId),
         card: { ...out.card, id: Number(out.card.id) },
@@ -1596,10 +1596,9 @@ router.get('/saved-from-uploads', cheapLimiter(), async (req, res, next) => {
       }
     }
 
-    // Fold the flat rows into per-upload groups, preserving SQL order. pg
-    // returns BIGINTs as strings; the DTO documents ids as JSON numbers
-    // (both fit in Number.MAX_SAFE_INTEGER — same convention as every other
-    // route in this file).
+    // Fold the flat rows into per-upload groups, preserving SQL order. The
+    // ids arrive as safe-integer numbers via the int8 parser (db/pool.ts) —
+    // same convention as every other route in this file.
     interface SavedGroup {
       upload: { id: number; title: string };
       entries: Array<{
@@ -1686,9 +1685,9 @@ router.get('/suggestions/weekly', cheapLimiter(), async (req, res, next) => {
         LIMIT $2`,
       [userId, WEEKLY_SUGGESTION_LIMIT],
     );
-    // pg returns BIGINT (id) as a string; the DTO documents id as a JSON number
-    // (vocab_entries.id fits comfortably in Number.MAX_SAFE_INTEGER). The wire
-    // key is `entries` (matches the client's VocabSuggestionsResponse — the rows
+    // id arrives as a safe-integer number via the int8 parser (db/pool.ts);
+    // Number() is an identity op kept at the DTO boundary. The wire key is
+    // `entries` (matches the client's VocabSuggestionsResponse — the rows
     // are plain VocabEntry shapes, bankable via the existing per-entry path).
     const entries = rows.map((r) => ({ ...r, id: Number(r.id) }));
     res.status(200).json({ entries });

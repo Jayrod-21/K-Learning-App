@@ -329,8 +329,8 @@ router.get(
         [q.source_upload_id],
       );
 
-      // pg returns BIGINT (id) as a string; the DTO documents id as a JSON
-      // number (reading_chapters.id fits in Number.MAX_SAFE_INTEGER).
+      // id arrives as a safe-integer number via the int8 parser (db/pool.ts);
+      // Number() is an identity op kept as the DTO-boundary normalization.
       const chapters = rows.map((r) => ({ ...r, id: Number(r.id) }));
       res.status(200).json({ chapters });
     } catch (err) {
@@ -405,7 +405,8 @@ router.get(
         [chapterId],
       );
 
-      // pg returns BIGINT ids as strings; the DTO documents them as JSON numbers.
+      // ids arrive as safe-integer numbers via the int8 parser (db/pool.ts);
+      // Number() is an identity op kept as the DTO-boundary normalization.
       res.status(200).json({
         chapter: {
           id: Number(chapter.id),

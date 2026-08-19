@@ -300,9 +300,10 @@ router.post(
               AND created_at >= date_trunc('day', now())`,
           [userId],
         );
-        // BIGINT SUM/COUNT arrive as strings; Number() is exact while the
-        // ledger stays under 2^53 (~9 PB/day of bytes) — far beyond any real
-        // cap value.
+        // SUM/COUNT arrive as strings because of the ::text casts above (the
+        // int8 parser never sees them); Number() is exact while the ledger
+        // stays under 2^53 (~9 PB/day of bytes) — far beyond any real cap
+        // value.
         const usedToday = Number(cap.rows[0]?.used_bytes ?? '0');
         const countToday = Number(cap.rows[0]?.used_count ?? '0');
         // COUNT cap first (the coarser bound): a tiny-file flood would grow

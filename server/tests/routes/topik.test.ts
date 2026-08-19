@@ -3188,7 +3188,9 @@ describe('GET /topik/attempts — completed-attempt history (F-104 / A1)', () =>
     // directly rather than through the route (every route path now stamps
     // one). attempt_id stamps the response so /topik/attempts' correct/
     // answered aggregate is non-zero, matching a real completed sitting.
-    const { rows } = await pg.pool.query<{ id: string }>(
+    // Raw RETURNING id (no ::text) → a number via the int8 parser; the value
+    // is only bound back as an insert param below, never compared as a string.
+    const { rows } = await pg.pool.query<{ id: number }>(
       `INSERT INTO topik_attempts
          (user_id, section, source_test, current_idx, picks, remaining_ms, status, topik_level)
        VALUES ($1, 'reading'::topik_section, 2051, 0, '{}'::jsonb, 0, 'completed', NULL)

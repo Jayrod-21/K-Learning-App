@@ -128,9 +128,8 @@ router.post(
          RETURNING id`,
         [userId, body.mode, body.target_register ?? null],
       );
-      // pg returns BIGINT (id) as a string; the API contract documents the
-      // conversation id as a JSON number. conversations.id fits in
-      // Number.MAX_SAFE_INTEGER.
+      // id arrives as a safe-integer number via the int8 parser (db/pool.ts);
+      // Number() is an identity op kept as the DTO-boundary normalization.
       res.status(201).json({ conversation: { id: Number(rows[0]!.id) } });
     } catch (err) {
       next(err);
@@ -720,8 +719,9 @@ router.get('/', cheapLimiter(), async (req, res, next) => {
         LIMIT 50`,
       [userId],
     );
-    // pg returns BIGINT (id) as a string; the API contract documents the
-    // conversation id as a JSON number (matches POST /conversation's shape).
+    // id arrives as a safe-integer number via the int8 parser (db/pool.ts);
+    // Number() is an identity op kept as the DTO-boundary normalization
+    // (matches POST /conversation's shape).
     const conversations = rows.map((c) => ({
       ...c,
       id: Number((c as { id: unknown }).id),

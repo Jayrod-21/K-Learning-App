@@ -27,6 +27,9 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // Drop the scratch table before the container goes away — cleanliness only
+  // (the per-file testcontainer is destroyed below regardless).
+  await pg.pool.query('DROP TABLE IF EXISTS int8_parser_probe');
   if (previousPool) setPoolForTesting(previousPool);
   await stopPostgres(pg);
 });

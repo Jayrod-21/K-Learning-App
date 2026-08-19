@@ -346,11 +346,12 @@ describe('estimateAbility — sampled persist', () => {
     expect(bobEstimates.every((e) => e.insufficient)).toBe(true);
 
     await estimateAbility(alice, { now: NOW });
-    const { rows } = await pg.pool.query<{ user_id: string }>(
+    const { rows } = await pg.pool.query<{ user_id: number }>(
       `SELECT user_id FROM user_progress`,
     );
     expect(rows).toHaveLength(1);
-    // users.id is BIGINT — node-postgres returns it as a string.
+    // user_id is BIGINT — a safe-integer number via the int8 parser
+    // (db/pool.ts); Number() on both sides keeps the comparison shape-proof.
     expect(Number(rows[0]!.user_id)).toBe(Number(alice));
   });
 

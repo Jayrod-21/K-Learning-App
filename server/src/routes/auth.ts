@@ -298,8 +298,9 @@ async function finishLogin(
   });
   await query(`UPDATE users SET last_login_at = now() WHERE id = $1`, [user.id]);
   setSessionCookie(res, raw, record.expires_at);
-  // pg returns BIGINT as a string; the user DTO contract is a JSON number.
-  return { ...row, id: Number(row.id) };
+  // id arrives as a safe-integer number via the int8 parser (db/pool.ts), so
+  // the row already matches the user DTO contract.
+  return row;
 }
 
 const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -356,8 +357,8 @@ router.post(
         );
         const r = rows[0];
         if (!r) throw new Error('register insert returned no rows');
-        // pg returns BIGINT as a string; the user DTO contract is a JSON number.
-        userId = Number(r.id);
+        // id arrives as a safe-integer number via the int8 parser (db/pool.ts).
+        userId = r.id;
       } catch (err) {
         // 23505 = unique_violation. Surface a deliberately vague conflict;
         // do NOT leak which field collided.
@@ -435,8 +436,8 @@ router.post(
         await safeDummyVerify();
         throw new UnauthorizedError('invalid credentials');
       }
-      // pg returns BIGINT as a string; the user DTO contract is a JSON number.
-      const user = { ...row, id: Number(row.id) };
+      // id arrives as a safe-integer number via the int8 parser (db/pool.ts).
+      const user = row;
       const ok = await verifyPassword(user.password_hash, body.password);
       if (!ok) {
         throw new UnauthorizedError('invalid credentials');
@@ -707,8 +708,8 @@ router.post(
         sendError(res, 401, 'challenge_invalid', 'sign-in challenge is invalid or expired');
         return;
       }
-      // pg returns BIGINT as a string; the user DTO contract is a JSON number.
-      const publicUser = await finishLogin(req, res, { ...userRow, id: Number(userRow.id) });
+      // id arrives as a safe-integer number via the int8 parser (db/pool.ts).
+      const publicUser = await finishLogin(req, res, userRow);
       req.log.info(
         { userId, via: recoverySpent ? 'recovery_code' : 'totp' },
         'login step 2 ok — authenticated',
@@ -983,8 +984,8 @@ router.post(
           sendError(res, 401, 'challenge_invalid', 'sign-in challenge is invalid or expired');
           return;
         }
-        // pg returns BIGINT as a string; the user DTO contract is a JSON number.
-        const publicUser = await finishLogin(req, res, { ...userRow, id: Number(userRow.id) });
+        // id arrives as a safe-integer number via the int8 parser (db/pool.ts).
+        const publicUser = await finishLogin(req, res, userRow);
         req.log.info({ userId: auth.userId }, 'mfa enrollment confirmed — authenticated');
         res.status(200).json({
           status: 'authenticated',
@@ -1272,8 +1273,9 @@ router.get('/me', authLimiter(), requireAuth, async (req, res, next) => {
       // (their session shouldn't be trusted), not 500.
       throw new UnauthorizedError('user no longer exists');
     }
-    // pg returns BIGINT as a string; the user DTO contract is a JSON number.
-    const user = { ...row, id: Number(row.id) };
+    // id arrives as a safe-integer number via the int8 parser (db/pool.ts), so
+    // the row already matches the user DTO contract.
+    const user = row;
     res.status(200).json({ user });
   } catch (err) {
     next(err);
@@ -1500,8 +1502,9 @@ router.patch(
         }
       }
 
-      // pg returns BIGINT as a string; the user DTO contract is a JSON number.
-      res.status(200).json({ user: { ...updated, id: Number(updated.id) } });
+      // id arrives as a safe-integer number via the int8 parser (db/pool.ts),
+      // so the updated row already matches the user DTO contract.
+      res.status(200).json({ user: updated });
     } catch (err) {
       next(err);
     }

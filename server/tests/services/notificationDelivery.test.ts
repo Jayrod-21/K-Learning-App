@@ -80,10 +80,11 @@ describe('claimDelivery', () => {
     const result = await claimDelivery(scheduleId, windowStart);
     expect(result.claimed).toBe(true);
     expect(result.deliveryId).not.toBeNull();
-    // Pin the BIGINT-as-string contract (R2 NIT): node-postgres returns
-    // `notification_deliveries.id` (BIGINT identity) as a STRING, and
-    // `ClaimDeliveryResult.deliveryId` is typed `string | null` to match —
-    // NOT `number`, which would silently mismatch the runtime shape.
+    // Pin the string wire contract (R2 NIT): post-F-203 the int8 parser hands
+    // the service a NUMBER for `notification_deliveries.id`, and the service
+    // String()-wraps it at the boundary (notificationDelivery.ts) so
+    // `ClaimDeliveryResult.deliveryId` stays `string | null` — this assertion
+    // is what forces that byte-identical external contract.
     expect(typeof result.deliveryId).toBe('string');
 
     const { rows } = await pg.pool.query<{ status: string }>(
