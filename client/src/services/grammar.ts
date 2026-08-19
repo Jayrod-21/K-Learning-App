@@ -10,6 +10,7 @@
  *     an `ApiError(code: 'timeout')` and let the user retry.
  *   - Body shapes are validated by server Zod. Client trusts TS types.
  */
+import { coerceId } from '../lib/coerceId';
 import { api } from './api';
 import type {
   BankGrammarBody,
@@ -68,7 +69,7 @@ export async function listPatterns(
   // BIGINT `id` rides the wire as a JSON string (no int8 parser server-side,
   // and the list route returns rows raw) — coerce onto the declared numeric
   // type so a strict `===` against a converted detail id can't silently miss.
-  return res.entries.map((e) => ({ ...e, id: Number(e.id) }));
+  return res.entries.map((e) => ({ ...e, id: coerceId(e.id) }));
 }
 
 /** GET /grammar/kgiu/:id — single KGIU pattern. */
@@ -104,7 +105,7 @@ export async function listBanked(
   );
   // Same BIGINT-as-string wire leak as `listPatterns` — coerce `id` so it
   // matches the numeric ids the graduate/readmit envelopes carry.
-  return { ...res, entries: res.entries.map((e) => ({ ...e, id: Number(e.id) })) };
+  return { ...res, entries: res.entries.map((e) => ({ ...e, id: coerceId(e.id) })) };
 }
 
 /**

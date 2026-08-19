@@ -32,6 +32,7 @@
  *     cancel in-flight list/comment loads on unmount, tab-switch, or a
  *     filter change — mirrors every other service in this app.
  */
+import { coerceId } from '../lib/coerceId';
 import { api } from './api';
 import type {
   CommunityTicket,
@@ -121,7 +122,7 @@ interface CommentsListEnvelope {
 function toOwnTicket(wire: OwnTicketWire): OwnTicket {
   return {
     // bigint arrives as a string — normalize to number (see OwnTicketWire.id).
-    id: Number(wire.id),
+    id: coerceId(wire.id),
     type: wire.type,
     title: wire.title,
     body: wire.body,
@@ -137,7 +138,7 @@ function toOwnTicket(wire: OwnTicketWire): OwnTicket {
 function toCommunityTicket(wire: CommunityTicketWire): CommunityTicket {
   return {
     // bigint arrives as a string — normalize to number (see OwnTicketWire.id).
-    id: Number(wire.id),
+    id: coerceId(wire.id),
     type: wire.type,
     title: wire.title,
     body: wire.body,
@@ -153,7 +154,7 @@ function toCommunityTicket(wire: CommunityTicketWire): CommunityTicket {
 function toComment(wire: TicketCommentWire): TicketComment {
   return {
     // bigint arrives as a string — normalize to number (see OwnTicketWire.id).
-    id: Number(wire.id),
+    id: coerceId(wire.id),
     body: wire.body,
     isMine: wire.is_mine,
     createdAt: wire.created_at,

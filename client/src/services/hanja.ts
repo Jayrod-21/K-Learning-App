@@ -52,6 +52,7 @@
  * on unmount) — the Hanja screen therefore calls them with no signal. The param
  * is kept for symmetry with the other services and for future direct callers.
  */
+import { coerceId } from '../lib/coerceId';
 import { api } from './api';
 import type {
   FsrsRating,
@@ -347,7 +348,7 @@ export async function fetchHanjaLists(
     params: { kind: 'hanja', limit: 100 },
     ...(signal !== undefined ? { signal } : {}),
   });
-  return res.lists.map((l) => ({ ...l, id: Number(l.id) }));
+  return res.lists.map((l) => ({ ...l, id: coerceId(l.id) }));
 }
 
 /**
@@ -390,8 +391,8 @@ export async function fetchHanjaListDetail(
     signal !== undefined ? { signal } : undefined,
   );
   return {
-    list: { ...res.list, id: Number(res.list.id) },
-    entries: res.entries.map((e) => ({ ...e, entry_id: Number(e.entry_id) })),
+    list: { ...res.list, id: coerceId(res.list.id) },
+    entries: res.entries.map((e) => ({ ...e, entry_id: coerceId(e.entry_id) })),
   };
 }
 
