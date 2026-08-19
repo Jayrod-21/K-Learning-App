@@ -1,0 +1,31 @@
+-- migrate: destructive
+-- =============================================================================
+-- Migration 086 — reading comprehension checks (DOWN)
+--   Reverses 086_reading_questions.up.sql: drops reading_questions.
+--
+-- LOSSY BY DESIGN (hence the destructive marker; migrate.py requires
+-- --allow-destructive):
+--   * reading_questions — every generated comprehension question set — is
+--     discarded. Re-derivable data: re-upping and re-generating rebuilds it
+--     (a paid Claude call per chapter).
+--   * The 'reading_comprehension' claude_route enum value is deliberately
+--     LEFT IN PLACE: Postgres cannot drop enum values, and a superfluous
+--     value is harmless (nothing writes it once the route code is gone) —
+--     083's exact posture, same reason 031/032/053/057 ship no down at all.
+--     The claude_route drift guard runs against the fully-migrated chain, so
+--     it never sees this intermediate state.
+--
+-- reading_chapters / reading_passages are untouched — 044 owns them (074's
+-- down posture: drop only what you created). The updated_at trigger drops
+-- with the table; set_updated_at() belongs to 001 and stays.
+--
+-- Post-086 route code (the /reading/chapters/:chapterId/questions pair) must
+-- not run against a pre-086 schema (035/078's contract).
+--
+-- TRANSACTION OWNERSHIP (ADR-013):
+--   No top-level BEGIN/COMMIT — the runner owns the transaction.
+-- =============================================================================
+
+DROP TABLE IF EXISTS reading_questions;
+
+-- End of 086_reading_questions.down.sql — runner owns the transaction (ADR-013).
