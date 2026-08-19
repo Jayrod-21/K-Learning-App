@@ -572,6 +572,18 @@ describe('lists CRUD', () => {
     });
   });
 
+  it('createList coerces the envelope list id (BIGINT string)', async () => {
+    vi.spyOn(api, 'post').mockResolvedValueOnce({
+      list: { id: '31', name_kr: 'New', name_en: null, kind: 'vocab', version: 1, entry_count: 0, created_at: 'x', updated_at: 'y' },
+      appended: 0,
+    });
+
+    const res = await createList({ name_kr: 'New', kind: 'vocab' });
+
+    expect(res.list.id).toBe(31);
+    expect(typeof res.list.id).toBe('number');
+  });
+
   it('getListDetail GETs /vocab/lists/:id (detail + entries envelope)', async () => {
     const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({
       list: { id: 7 },
@@ -613,6 +625,17 @@ describe('lists CRUD', () => {
 
     expect(spy).toHaveBeenCalledWith('/vocab/lists/7', { name_kr: 'renamed' });
     expect(res.list.name_kr).toBe('renamed');
+  });
+
+  it('patchList coerces the envelope list id (BIGINT string)', async () => {
+    vi.spyOn(api, 'patch').mockResolvedValueOnce({
+      list: { id: '7', name_kr: 'renamed' },
+    });
+
+    const res = await patchList(7, { name_kr: 'renamed' });
+
+    expect(res.list.id).toBe(7);
+    expect(typeof res.list.id).toBe('number');
   });
 
   it('deleteList DELETEs /vocab/lists/:id', async () => {

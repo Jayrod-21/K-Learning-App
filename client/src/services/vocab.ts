@@ -512,7 +512,12 @@ export async function listLists(params?: {
 export async function createList(
   body: CreateListBody,
 ): Promise<CreateListResponse> {
-  return api.post<CreateListResponse>('/vocab/lists', stripUndef({ ...body }));
+  const res = await api.post<CreateListResponse>(
+    '/vocab/lists',
+    stripUndef({ ...body }),
+  );
+  // BIGINT `id` arrives as a JSON string — coerce to match the declared type.
+  return { ...res, list: numericId(res.list) };
 }
 
 /**
@@ -546,7 +551,12 @@ export async function patchList(
   id: number,
   body: PatchListBody,
 ): Promise<PatchListResponse> {
-  return api.patch<PatchListResponse>(`/vocab/lists/${String(id)}`, body);
+  const res = await api.patch<PatchListResponse>(
+    `/vocab/lists/${String(id)}`,
+    body,
+  );
+  // BIGINT `id` arrives as a JSON string — coerce to match the declared type.
+  return { ...res, list: numericId(res.list) };
 }
 
 /** DELETE /vocab/lists/:id — soft delete. Returns void on 204. */
