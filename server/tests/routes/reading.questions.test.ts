@@ -394,4 +394,43 @@ describe('POST /reading/chapters/:chapterId/questions/generate', () => {
     expect(res.status).toBe(400);
     expect(genSpy).not.toHaveBeenCalled();
   });
+
+  it('closes the cross-chapter daily-cap TOCTOU: concurrent generate for the SAME user against DIFFERENT chapters cannot both pass the cap', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const { chapterId: chapterA } = await seedChapterWithProse(userId);
+    const { chapterId: chapterB } = await seedChapterWithProse(userId, {
+      title: '별주부전',
+    });
+    // Exactly one slot left under the default cap of 20.
+    await spendDailyBudget(userId, 19);
+
+    // The route's per-user advisory lock only closes the gap because a
+    // successful call writes its claude_usage ledger row BEFORE resolving
+    // (recordUsageSoft, services/claude/index.ts, awaited pre-return) — the
+    // shared stub bypasses that in every other test in this file, so THIS
+    // test must reproduce it to actually exercise the race the lock closes.
+    genSpy.mockImplementation(async (input, ctx) => {
+      const out = await defaultGenerate(input, ctx);
+      await pg.pool.query(
+        `INSERT INTO claude_usage (request_id, user_id, route, model, latency_ms)
+         VALUES ($1, $2, 'reading_comprehension'::claude_route,
+                 'claude-sonnet-4-6'::claude_model, 5)`,
+        [randomUUID(), userId],
+      );
+      return out;
+    });
+
+    const [resA, resB] = await Promise.all([
+      agent.post(`/reading/chapters/${chapterA}/questions/generate`),
+      agent.post(`/reading/chapters/${chapterB}/questions/generate`),
+    ]);
+
+    // Exactly one request lands under the one remaining slot. Before the
+    // per-user lock (a per-CHAPTER lock only serializes same-chapter
+    // writers), both requests could read usedToday=19 concurrently and both
+    // pass — this would have observed [200, 200] and genSpy called twice.
+    const statuses = [resA.status, resB.status].sort((a, b) => a - b);
+    expect(statuses).toEqual([200, 429]);
+    expect(genSpy).toHaveBeenCalledTimes(1);
+  });
 });

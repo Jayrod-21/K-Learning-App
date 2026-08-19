@@ -6,12 +6,15 @@ WHY THIS FILE EXISTS:
     4 {text, correct} options (JSONB), and a bilingual explanation, plus the
     'reading_comprehension' claude_route enum value. The tests pin exactly
     the contract the route code builds on: the table exists with the right
-    columns, rows CASCADE with their chapter (and, transitively, the source
-    upload), the options CHECK rejects non-arrays and wrong arities, the
-    kind CHECK rejects unknown kinds, UNIQUE (chapter_id, question_number)
-    holds, the enum value exists, ships-empty holds (a fresh chapter has no
-    questions), a manual re-apply of the up body is a no-op, and the
-    destructive down drops the table cleanly then re-ups clean.
+    columns (model as the closed claude_model enum, not free-form TEXT),
+    rows CASCADE with their chapter (and, transitively, the source upload),
+    the options CHECKs reject non-arrays, wrong arities, malformed elements,
+    and zero/two-correct sets, the kind CHECK rejects unknown kinds, the
+    scalar CHECKs (question_number, text/explanation length) hold their
+    bounds, UNIQUE (chapter_id, question_number) holds, the enum value
+    exists, ships-empty holds (a fresh chapter has no questions), a manual
+    re-apply of the up body is a no-op, and the destructive down drops the
+    table cleanly then re-ups clean.
 
 DETERMINISM:
     Mirrors test_migration_085.py — the real migration files are copied into
@@ -116,10 +119,15 @@ def _full_up(full_dir: pathlib.Path) -> None:
 # ---------------------------------------------------------------------------
 
 def _seed_user(conn: psycopg.Connection, email: str = "f205@test.local") -> int:
-    # Idempotent: the session-scoped container shares one database across this
-    # module's tests, so re-seeding the same email must reuse the existing row
-    # rather than violate the email UNIQUE. ON CONFLICT DO UPDATE (a no-op set)
-    # so RETURNING still yields the id on the conflict path.
+    # Idempotent, NOT because the DB is session-shared (it isn't — the `dsn`
+    # fixture DROPs/CREATEs the public schema before every test, so each test
+    # starts from a clean slate; `pg_container` is merely the underlying
+    # Postgres PROCESS, reused for speed). ON CONFLICT DO UPDATE (a no-op
+    # set, so RETURNING still fires on the conflict branch) guards a
+    # WITHIN-test double-call on the same default email, matching the
+    # pattern `_seed_chapter`'s upload upsert below actually exercises
+    # (round_trip's two same-book chapters) — cheap, harmless insurance if a
+    # future test ever seeds the same user twice.
     with conn.cursor(row_factory=tuple_row) as cur:
         cur.execute(
             """
@@ -135,6 +143,15 @@ def _seed_user(conn: psycopg.Connection, email: str = "f205@test.local") -> int:
 def _seed_chapter(conn: psycopg.Connection, user_id: int, chapter_number: int = 1) -> int:
     """Minimal chain to a reading_chapters row; returns the chapter id."""
     with conn.cursor(row_factory=tuple_row) as cur:
+        # ON CONFLICT (user_id, title) DO UPDATE (no-op set, RETURNING still
+        # fires): `test_086_round_trip_and_chapter_cascade` calls this
+        # helper TWICE with the same default title to put two SIBLING
+        # chapters under ONE book_uploads row (needed to prove CASCADE
+        # isolation between chapters of the SAME book, not just between
+        # books) — a plain INSERT would 23505 on the second call's
+        # UNIQUE(user_id, title). This is the actual reason idempotency is
+        # needed here (see `_seed_user` above for the analogous, currently
+        # dormant, guard on that side).
         cur.execute(
             """
             INSERT INTO book_uploads (user_id, title, type, status, byte_size)
@@ -163,22 +180,26 @@ def _insert_question(
     question_number: int = 1,
     options: object = None,
     kind: str = "comprehension",
+    question_text: str = "이야기에서 누가 떡을 먹었습니까?",
+    explanation: str = "정답은 호랑이입니다. The tiger ate the rice cakes.",
+    model: str | None = "claude-sonnet-4-6",
 ) -> int:
     with conn.cursor(row_factory=tuple_row) as cur:
         cur.execute(
             """
             INSERT INTO reading_questions
                 (chapter_id, question_number, question_text, options, explanation, kind, model)
-            VALUES (%s, %s, '이야기에서 누가 떡을 먹었습니까?', %s::jsonb,
-                    '정답은 호랑이입니다. The tiger ate the rice cakes.', %s,
-                    'claude-sonnet-4-6')
+            VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s::claude_model)
             RETURNING id
             """,
             (
                 chapter_id,
                 question_number,
+                question_text,
                 json.dumps(options if options is not None else GOOD_OPTIONS),
+                explanation,
                 kind,
+                model,
             ),
         )
         return cur.fetchone()[0]
@@ -188,7 +209,7 @@ def _table_columns(conn: psycopg.Connection) -> dict[str, dict]:
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             """
-            SELECT column_name, data_type, is_nullable
+            SELECT column_name, data_type, udt_name, is_nullable
               FROM information_schema.columns
              WHERE table_schema='public' AND table_name='reading_questions'
             """
@@ -214,7 +235,10 @@ def test_086_up_table_columns_enum_and_ships_empty(env, dsn: str, full_dir) -> N
             "options": "jsonb",
             "explanation": "text",
             "kind": "text",
-            "model": "text",
+            # claude_model is a USER-DEFINED enum (004) — information_schema
+            # reports the generic 'USER-DEFINED' in data_type; udt_name is
+            # the actual type name (071/054's exact pattern for enum cols).
+            "model": "USER-DEFINED",
             "created_at": "timestamp with time zone",
             "updated_at": "timestamp with time zone",
             "version": "integer",
@@ -222,6 +246,7 @@ def test_086_up_table_columns_enum_and_ships_empty(env, dsn: str, full_dir) -> N
         for name, data_type in expected.items():
             assert name in cols, f"column {name} missing"
             assert cols[name]["data_type"] == data_type, f"column {name} type drift"
+        assert cols["model"]["udt_name"] == "claude_model", "model must be the shared enum, not free-form TEXT"
         assert cols["model"]["is_nullable"] == "YES", "model is provenance — nullable"
         assert cols["chapter_id"]["is_nullable"] == "NO"
 
@@ -333,6 +358,105 @@ def test_086_kind_check_and_unique(env, dsn: str, full_dir) -> None:
         # Same slot on ANOTHER chapter is fine (the key is composite).
         other_chapter_id = _seed_chapter(conn, user_id, chapter_number=2)
         _insert_question(conn, other_chapter_id, 1)
+
+
+def test_086_options_element_shape_and_exactly_one_correct(
+    env, dsn: str, full_dir
+) -> None:
+    """Defense-in-depth CHECKs added on top of the writer's Zod refine:
+    every option must carry a genuine {text: non-empty string, correct:
+    boolean} shape, and exactly one option's correct must be true. All of
+    these are structurally valid 4-element arrays (they'd sail past
+    ck_reading_questions_options_shape alone) — only the new element-shape /
+    exactly-one-correct CHECKs catch them."""
+    _full_up(full_dir)
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        user_id = _seed_user(conn)
+        chapter_id = _seed_chapter(conn, user_id)
+
+        # Two correct:true — ambiguous ground truth.
+        two_correct = [dict(o) for o in GOOD_OPTIONS]
+        two_correct[1] = {**two_correct[1], "correct": True}
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_question(conn, chapter_id, 1, options=two_correct)
+
+        # Zero correct:true — no ground truth at all.
+        zero_correct = [{**o, "correct": False} for o in GOOD_OPTIONS]
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_question(conn, chapter_id, 1, options=zero_correct)
+
+        # Missing 'correct' key entirely on one element.
+        missing_correct_key = [dict(o) for o in GOOD_OPTIONS]
+        del missing_correct_key[2]["correct"]
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_question(conn, chapter_id, 1, options=missing_correct_key)
+
+        # Missing 'text' key entirely on one element.
+        missing_text_key = [dict(o) for o in GOOD_OPTIONS]
+        del missing_text_key[0]["text"]
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_question(conn, chapter_id, 1, options=missing_text_key)
+
+        # 'correct' present but the WRONG JSON type (a string, not a boolean)
+        # — must be rejected as a clean CHECK violation, never a runtime
+        # cast error (the whole point of the jsonb-equality/typeof design).
+        wrong_type_correct = [dict(o) for o in GOOD_OPTIONS]
+        wrong_type_correct[0] = {**wrong_type_correct[0], "correct": "true"}
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_question(conn, chapter_id, 1, options=wrong_type_correct)
+
+        # Empty 'text' on one element.
+        empty_text = [dict(o) for o in GOOD_OPTIONS]
+        empty_text[3] = {**empty_text[3], "text": ""}
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_question(conn, chapter_id, 1, options=empty_text)
+
+        # A genuinely valid set still inserts (the failures above left no
+        # residue that would poison a subsequent valid insert).
+        _insert_question(conn, chapter_id, 1)
+
+
+def test_086_scalar_checks_reject_bad_values(env, dsn: str, full_dir) -> None:
+    """The four scalar CHECKs the options/kind/UNIQUE tests above don't
+    exercise: question_number > 0, question_text/explanation length bounds,
+    and (now that model is the closed claude_model enum, not free-form TEXT)
+    that an out-of-domain model id is rejected too."""
+    _full_up(full_dir)
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        user_id = _seed_user(conn)
+        chapter_id = _seed_chapter(conn, user_id)
+
+        # question_number must be > 0.
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_question(conn, chapter_id, question_number=0)
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_question(conn, chapter_id, question_number=-1)
+
+        # question_text: 1..2000 chars.
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_question(conn, chapter_id, 1, question_text="")
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_question(conn, chapter_id, 1, question_text="가" * 2001)
+        # Boundary-exact (2000) still inserts.
+        _insert_question(conn, chapter_id, 1, question_text="가" * 2000)
+
+        # explanation: 1..4000 chars.
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_question(conn, chapter_id, 2, explanation="")
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_question(conn, chapter_id, 2, explanation="나" * 4001)
+        # Boundary-exact (4000) still inserts.
+        _insert_question(conn, chapter_id, 2, explanation="나" * 4000)
+
+        # model: NULL is fine (provenance-optional); an out-of-domain model
+        # id is rejected by the enum ITSELF (a type/input error, not a table
+        # CHECK — claude_model (004) is a closed set, so a malformed value
+        # can never reach the column at all).
+        _insert_question(conn, chapter_id, 3, model=None)
+        with pytest.raises(psycopg.errors.InvalidTextRepresentation):
+            _insert_question(conn, chapter_id, 4, model="claude-sonnett-4-6")
 
 
 # ---------------------------------------------------------------------------

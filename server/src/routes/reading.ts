@@ -592,21 +592,30 @@ const GenerateQuestionsQuerySchema = z.object({
  * must not spend it. A non-owner (or missing) chapter is the same uniform 404.
  *
  * IDEMPOTENT, GENERATE-ONCE, COST-BOUNDED:
- *   stored questions exist        → 200 { questions } at $0 (no Claude call)
+ *   stored questions exist        → 200 { questions } at $0 (no Claude call,
+ *                                   no lock — the fast, common-case path)
  *                                   unless ?regenerate=true
- *   over READING_QUESTION_DAILY_CAP → 429 BEFORE the Claude call (the
- *                                   append-only claude_usage ledger is the
- *                                   counter — regenerates replace the
- *                                   question rows, so those can't count)
- *   chapter has no passages       → 409 (nothing to generate from)
- *   else                          → Claude call BEFORE any write (a failure
- *                                   persists nothing; mapClaudeError: 400/
- *                                   429/502), then the whole set lands in
- *                                   ONE transaction under a per-chapter
- *                                   advisory xact lock (concurrent generates
- *                                   serialize; the loser returns the winner's
- *                                   rows instead of duplicating or 23505ing)
- *                                   → 200 { questions }
+ *   else                          → the cap check, the Claude call, AND the
+ *                                   persist ALL run inside ONE transaction
+ *                                   under a per-USER advisory xact lock
+ *                                   (concurrent generates for this user —
+ *                                   even across DIFFERENT chapters — fully
+ *                                   serialize; the loser re-checks for a
+ *                                   just-written set before re-spending):
+ *                                     over READING_QUESTION_DAILY_CAP → 429
+ *                                       (the append-only claude_usage ledger
+ *                                       is the counter — regenerates replace
+ *                                       the question rows, so those can't
+ *                                       count) — atomic with the check
+ *                                       because both run under the same
+ *                                       lock, closing the cross-chapter
+ *                                       TOCTOU a per-chapter-only lock left
+ *                                       open
+ *                                     chapter has no passages → 409
+ *                                     Claude call fails → mapClaudeError
+ *                                       (400/429/502), transaction rolls
+ *                                       back, nothing persists
+ *                                     else → 200 { questions }
  */
 router.post(
   '/chapters/:chapterId/questions/generate',
@@ -641,8 +650,10 @@ router.post(
       }
       const chapterTitle = owned.rows[0]!.title;
 
-      // 2. Generate-once short-circuit: stored questions serve at $0. An
-      //    explicit ?regenerate=true skips this and rolls a fresh set.
+      // 2. Generate-once short-circuit: stored questions serve at $0, no
+      //    lock needed for this fast, common-case read (a stale read here
+      //    just costs a redundant re-check under the lock below — see step
+      //    3-6 — never a cap bypass, since nothing is spent on this path).
       if (!regenerate) {
         const existing = await query<ReadingQuestionRow>(
           `SELECT ${QUESTION_COLUMNS}
@@ -657,75 +668,40 @@ router.post(
         }
       }
 
-      // 3. Per-user daily cap, BEFORE the Claude call. The counter is the
-      //    append-only claude_usage ledger (one row per proxy call, written
-      //    by the proxy itself under route 'reading_comprehension') — the
-      //    question rows can't count spend because regenerate replaces them.
-      //    Deliberately NOT advisory-locked (unlike the story job caps, which
-      //    serialize check-then-insert on ONE table): the ledger row is
-      //    written by the proxy after the fact, so a lock here could not
-      //    close the read-spend gap anyway — the expensiveLimiter and the
-      //    proxy's own per-minute limiter bound the residual burst.
       const cfg = loadConfig();
-      const cap = await query<{ n: string }>(
-        `SELECT count(*)::text AS n
-           FROM claude_usage
-          WHERE user_id = $1
-            AND route = 'reading_comprehension'
-            AND occurred_at >= date_trunc('day', now())`,
-        [userId],
-      );
-      const usedToday = Number(cap.rows[0]?.n ?? '0');
-      if (usedToday >= cfg.READING_QUESTION_DAILY_CAP) {
-        req.log.warn(
-          { userId, cap: cfg.READING_QUESTION_DAILY_CAP },
-          'readingQuestions: daily cap hit — generation refused before the Claude call',
-        );
-        throw new ReadingQuestionDailyCapError(cfg.READING_QUESTION_DAILY_CAP);
-      }
 
-      // 4. The chapter's own prose, in reading order. No passages → nothing
-      //    to generate from (409 — a state problem, not a bad request).
-      const passageRes = await query<{ body: string }>(
-        `SELECT body FROM reading_passages
-          WHERE chapter_id = $1
-          ORDER BY passage_number`,
-        [chapterId],
-      );
-      if (passageRes.rows.length === 0) {
-        throw new ConflictError('chapter has no passages to generate questions from');
-      }
-      const prose = passageRes.rows
-        .map((p) => p.body)
-        .join('\n\n')
-        .slice(0, READING_QUESTION_PROSE_BUDGET);
-
-      // 5. Generate via Claude BEFORE any write — a failure (mapped by the
-      //    shared mapClaudeError: injection → 400, proxy limiter → 429,
-      //    upstream failure → 502) persists nothing. The proxy Zod-validates
-      //    the output (exactly 4 options, exactly one correct, 3-5 questions),
-      //    so a malformed model reply is a 502, never a malformed row.
-      const proxy = getClaudeProxy();
-      const { result, metadata } = await proxy.generateReadingComprehension(
-        {
-          prose,
-          questionCount: cfg.READING_QUESTION_COUNT,
-          ...(chapterTitle !== null ? { chapterTitle } : {}),
-        },
-        { ...(req.correlationId !== undefined ? { requestId: req.correlationId } : {}), userId },
-      );
-
-      // 6. Persist the whole set in ONE transaction under a per-chapter
-      //    advisory xact lock: two concurrent generates serialize here — the
-      //    loser finds the winner's rows and returns THEM (its own paid
-      //    result is discarded; rare, and bounded by the limiters above)
-      //    rather than duplicating or surfacing a 23505. Belt: the lock;
-      //    braces: 086's UNIQUE (chapter_id, question_number).
+      // 3-6. The cap check, the Claude call, AND the persist now all run
+      //    inside ONE per-USER advisory-locked transaction (previously the
+      //    lock was per-CHAPTER and only wrapped the persist — step 6 alone
+      //    — which left the cap check (old step 3) racing unlocked: two
+      //    concurrent generates for the SAME user across DIFFERENT chapters
+      //    could both read usedToday < cap before either's claude_usage
+      //    ledger row landed, both pass, and both spend). Locking per-user
+      //    AND holding the lock across the Claude call closes that gap:
+      //    `ClaudeProxyImpl.generateReadingComprehension` awaits its
+      //    claude_usage write (recordUsageSoft, services/claude/index.ts)
+      //    BEFORE returning, so any other generate call for this user
+      //    blocks at the lock acquisition until this request's cap check,
+      //    Claude call, ledger write, AND persist have all committed — the
+      //    next lock holder can never observe a stale, pre-spend count.
+      //    TRADE-OFF: this serializes a user's concurrent generate calls
+      //    (even across different chapters) instead of letting them run in
+      //    parallel — a real latency cost under a legitimate multi-tab
+      //    burst, accepted because (a) this is a personal-scope app where
+      //    one-chapter-at-a-time is the normal usage pattern (not a
+      //    high-concurrency public SaaS), and (b) a correctness guarantee on
+      //    a hard budget cap is worth more than parallel throughput on a
+      //    paid route. Belt: the lock; braces: 086's UNIQUE (chapter_id,
+      //    question_number) for the same-chapter double-generate case.
       const stored = await withTransaction(async (client) => {
         await client.query(
           `SELECT pg_advisory_xact_lock(hashtextextended('reading_questions_gen:' || $1::text, 0))`,
-          [chapterId],
+          [userId],
         );
+
+        // Re-check under the lock: another request for this user may have
+        // just generated (or been mid-generating, now unblocked) this exact
+        // chapter's set while this request waited on the lock.
         if (!regenerate) {
           const winner = await client.query<ReadingQuestionRow>(
             `SELECT ${QUESTION_COLUMNS}
@@ -735,7 +711,64 @@ router.post(
             [chapterId],
           );
           if (winner.rows.length > 0) return winner.rows;
-        } else {
+        }
+
+        // Per-user daily cap. Now atomic with the Claude call and the
+        // persist below (all three run under the ONE lock acquired above)
+        // — see the block comment above for why this closes the TOCTOU.
+        const cap = await client.query<{ n: string }>(
+          `SELECT count(*)::text AS n
+             FROM claude_usage
+            WHERE user_id = $1
+              AND route = 'reading_comprehension'
+              AND occurred_at >= date_trunc('day', now())`,
+          [userId],
+        );
+        const usedToday = Number(cap.rows[0]?.n ?? '0');
+        if (usedToday >= cfg.READING_QUESTION_DAILY_CAP) {
+          req.log.warn(
+            { userId, cap: cfg.READING_QUESTION_DAILY_CAP },
+            'readingQuestions: daily cap hit — generation refused before the Claude call',
+          );
+          throw new ReadingQuestionDailyCapError(cfg.READING_QUESTION_DAILY_CAP);
+        }
+
+        // The chapter's own prose, in reading order. No passages → nothing
+        // to generate from (409 — a state problem, not a bad request).
+        const passageRes = await client.query<{ body: string }>(
+          `SELECT body FROM reading_passages
+            WHERE chapter_id = $1
+            ORDER BY passage_number`,
+          [chapterId],
+        );
+        if (passageRes.rows.length === 0) {
+          throw new ConflictError('chapter has no passages to generate questions from');
+        }
+        const prose = passageRes.rows
+          .map((p) => p.body)
+          .join('\n\n')
+          .slice(0, READING_QUESTION_PROSE_BUDGET);
+
+        // Generate via Claude BEFORE any write — a failure (mapped by the
+        // shared mapClaudeError: injection → 400, proxy limiter → 429,
+        // upstream failure → 502) persists nothing (the transaction rolls
+        // back, releasing the lock). The proxy Zod-validates the output
+        // (exactly 4 options, exactly one correct, 3-5 questions), so a
+        // malformed model reply is a 502, never a malformed row.
+        const proxy = getClaudeProxy();
+        const { result, metadata } = await proxy.generateReadingComprehension(
+          {
+            prose,
+            questionCount: cfg.READING_QUESTION_COUNT,
+            ...(chapterTitle !== null ? { chapterTitle } : {}),
+          },
+          {
+            ...(req.correlationId !== undefined ? { requestId: req.correlationId } : {}),
+            userId,
+          },
+        );
+
+        if (regenerate) {
           // Regenerate replaces: the old set and the new land atomically.
           await client.query(`DELETE FROM reading_questions WHERE chapter_id = $1`, [
             chapterId,
@@ -750,7 +783,7 @@ router.post(
           const inserted = await client.query<ReadingQuestionRow>(
             `INSERT INTO reading_questions
                (chapter_id, question_number, question_text, options, explanation, kind, model)
-             VALUES ($1, $2, $3, $4::jsonb, $5, 'comprehension', $6)
+             VALUES ($1, $2, $3, $4::jsonb, $5, 'comprehension', $6::claude_model)
              RETURNING ${QUESTION_COLUMNS}`,
             [
               chapterId,

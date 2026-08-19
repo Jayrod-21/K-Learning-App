@@ -1464,6 +1464,31 @@ describe('Reading — comprehension check (F-205)', () => {
       screen.getByRole('button', { name: /generate comprehension check/i }),
     ).toBeInTheDocument();
   });
+
+  it('a generic (non-429) generate failure shows fixed alert copy — no server prose leak', async () => {
+    readingSvc.getChapterQuestions.mockResolvedValue([]);
+    readingSvc.generateChapterQuestions.mockRejectedValue(
+      new ApiError('boom', { status: 502, code: 'upstream_error' }),
+    );
+
+    const user = userEvent.setup();
+    renderReading();
+    await openChapterOne(user);
+
+    await user.click(
+      await screen.findByRole('button', {
+        name: /generate comprehension check/i,
+      }),
+    );
+
+    const alert = await screen.findByText(/could not generate the comprehension check/i);
+    expect(alert).toBeInTheDocument();
+    expect(screen.queryByText(/boom/)).not.toBeInTheDocument();
+    // The generate button stays available as the retry.
+    expect(
+      screen.getByRole('button', { name: /generate comprehension check/i }),
+    ).toBeInTheDocument();
+  });
 });
 
 /**

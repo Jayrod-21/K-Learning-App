@@ -144,6 +144,7 @@ import {
   type JSX,
 } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { AskAboutThisButton } from '../components/AskAboutThisButton';
 import { BackButton } from '../components/BackButton';
 import { Bilingual } from '../components/Bilingual';
 import { Button } from '../components/Button';
@@ -156,12 +157,11 @@ import { PageHubHeader } from '../components/PageHubHeader';
 import { Pill } from '../components/Pill';
 import { Sheet } from '../components/Sheet';
 import { ShowMore } from '../components/ShowMore';
+import { StoryGenerator } from '../components/StoryGenerator';
 import { Tabs } from '../components/Tabs';
 import { Tapword } from '../components/Tapword';
 import { WordPopover } from '../components/WordPopover';
 import type { WordPopoverData } from '../components/WordPopover';
-import { AskAboutThisButton } from '../components/AskAboutThisButton';
-import { StoryGenerator } from '../components/StoryGenerator';
 import { useToast } from '../components/useToast';
 import { usePagination } from '../hooks/usePagination';
 import {
@@ -1363,6 +1363,23 @@ function ComprehensionCheckCard({
   const [picks, setPicks] = useState<Record<number, number>>({});
   const [reloadTick, setReloadTick] = useState(0);
   const ctrlRef = useRef<AbortController | null>(null);
+
+  // True-unmount-only abort. The mount/retry effect below cleans up the
+  // controller IT OWNS on every chapterId/reloadTick change, but its
+  // cleanup closes over that render's OWN `ctrl` local, not whatever
+  // `ctrlRef.current` has been reassigned to since (`generate()` below
+  // reassigns it on click) — so leaving the page entirely while a
+  // `generate()` POST is still in flight left that request unaborted,
+  // resolving after unmount and calling setState on an unmounted component
+  // (a dev-console warning, not a crash, but avoidable). This effect aborts
+  // whatever ctrlRef currently holds, exactly once, on TRUE unmount (empty
+  // deps — it does NOT re-run on chapterId/reloadTick changes, so it never
+  // fights the mount effect's own per-fetch aborts).
+  useEffect(() => {
+    return () => {
+      ctrlRef.current?.abort();
+    };
+  }, []);
 
   // The mount/retry fetch — inlined directly in the effect (not behind a
   // separately-invoked callback) and `retry` just bumps `reloadTick`,
