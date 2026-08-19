@@ -11,6 +11,11 @@
  *     `GET /reading/generated/:id`.
  *   - Reading-completion attempts (F-172; `reading_attempts`, migration 060):
  *     `POST /reading/attempts`, `GET /reading/attempts`.
+ *   - AI-generated comprehension questions (F-205; `reading_questions`,
+ *     migration 086): `GET /reading/chapters/:chapterId/questions` (stored
+ *     questions, empty until generated) and
+ *     `POST /reading/chapters/:chapterId/questions/generate` (owner-only,
+ *     explicit generation — never fired on mount).
  *   - Story TTS audio (F-210; `story_audio_jobs` + audio tables, migration
  *     081): `POST`/`GET /reading/generated/:id/audio` — request narration,
  *     then poll the status envelope until done/failed — plus
@@ -775,6 +780,75 @@ export async function translatePassage(
     signal !== undefined ? { signal } : undefined,
   );
   return res.translation;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Comprehension questions (F-205 — reading_questions, migration 086)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * One STORED AI-generated multiple-choice comprehension question for a
+ * chapter (routes/reading.ts's `ReadingQuestionDto` — already camelCase, and
+ * `id` already arrives as a JS number post-F-203 like every other id on this
+ * surface, so no `coerceId` guard is needed here (this module's established
+ * id posture — see the header above). `correct` flags + `explanation` ride
+ * inline deliberately: this is self-assessment content, not a proctored
+ * exam, so the client reveals on answer (Diagnostic study mode's model).
+ */
+export interface ReadingQuestion {
+  id: number;
+  questionNumber: number;
+  questionText: string;
+  options: Array<{ text: string; correct: boolean }>;
+  explanation: string;
+  kind: string;
+}
+
+interface QuestionsEnvelope {
+  questions: ReadingQuestion[];
+}
+
+/**
+ * GET /reading/chapters/:chapterId/questions — the chapter's STORED
+ * comprehension questions, in `questionNumber` order. Empty array is the
+ * normal "not generated yet" state, not an error (F-205 ships EMPTY-safe).
+ * Rides the chapter-detail read gate (owned OR shared parent book); 404s (as
+ * `ApiError`) for a missing/foreign chapter id.
+ */
+export async function getChapterQuestions(
+  chapterId: number,
+  signal?: AbortSignal,
+): Promise<ReadingQuestion[]> {
+  const res = await api.get<QuestionsEnvelope>(
+    `/reading/chapters/${String(chapterId)}/questions`,
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.questions;
+}
+
+/**
+ * POST /reading/chapters/:chapterId/questions/generate — owner-only; Claude
+ * authors a fresh MC comprehension check from the chapter's own prose, the
+ * server persists it, and returns the full set. EXPLICIT generation only
+ * (F-216's never-auto-generate-on-load posture) — this client never fires it
+ * on mount, and never sends `?regenerate=true` in Phase 1 (stored questions
+ * always short-circuit at $0 server-side). Expensive route: 429 is a
+ * first-class failure — the short-window flavor carries `retryAfter`
+ * (`errorMessageFor`'s structured copy), while the per-user DAILY cap
+ * flavor carries NO `retryAfter` and a server-authored WHITELISTED message
+ * sanctioned for verbatim display (the F-210/F-211 daily-cap posture); 502
+ * covers an upstream Claude failure. Neither writes a row.
+ */
+export async function generateChapterQuestions(
+  chapterId: number,
+  signal?: AbortSignal,
+): Promise<ReadingQuestion[]> {
+  const res = await api.post<QuestionsEnvelope>(
+    `/reading/chapters/${String(chapterId)}/questions/generate`,
+    undefined,
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.questions;
 }
 
 // ─────────────────────────────────────────────────────────────

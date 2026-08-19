@@ -222,6 +222,122 @@
   background: color-mix(in srgb, var(--vermilion) 14%, transparent);
 }
 
+/* ── Comprehension check (F-205) ────────────────────────────── */
+
+/* The "Check your understanding" card — a `crimson`-tone CityCard so it
+ * reads as this reader's closing quiz signboard, distinct from the
+ * `accent` passage card above it, the `blue` resume callout, and the
+ * `mint` story-generator hero. */
+.km-reading__comprehension {
+  width: 100%;
+  margin-top: 14px;
+}
+
+.km-reading__comprehension-copy {
+  margin: 0 0 12px;
+  font-size: 0.84375rem;
+  line-height: 1.6;
+  color: var(--paper-dim);
+}
+
+.km-reading__comprehension-busy {
+  margin: 0;
+  font-size: 0.84375rem;
+  color: var(--paper-dim);
+}
+
+.km-reading__comprehension-error {
+  margin: 0 0 10px;
+  font-size: 0.78125rem;
+  color: var(--danger-ink);
+}
+
+.km-reading__comprehension-score {
+  margin: 4px 0 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--paper);
+}
+
+/* One question card — the Diagnostic reveal idiom (index.css's
+ * `.km-diagnostic__choice*`), reproduced here rather than shared: this
+ * surface renders its OWN `ReadingQuestion` options array, not Diagnostic's
+ * `TopikChoice` shape. */
+.km-reading__q {
+  margin: 0 0 14px;
+}
+
+.km-reading__q-prompt {
+  margin: 0 0 12px;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--paper);
+}
+
+.km-reading__q-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.km-reading__q-choice {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--ink-1);
+  text-align: left;
+  font-family: inherit;
+  color: var(--paper);
+  cursor: pointer;
+  transition: border-color 140ms, background 140ms;
+}
+.km-reading__q-choice:disabled {
+  cursor: default;
+}
+.km-reading__q-choice--picked {
+  border-color: var(--paper);
+  background: var(--ink-2);
+}
+.km-reading__q-choice--correct {
+  border-color: var(--moss);
+  background: var(--moss-soft);
+}
+.km-reading__q-choice--wrong {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.km-reading__q-marker {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 0.8125rem;
+  color: var(--paper-mute);
+  padding-top: 2px;
+  min-width: 18px;
+}
+
+.km-reading__q-choice-text {
+  font-size: 0.9375rem;
+  color: var(--paper);
+}
+
+.km-reading__q-reveal {
+  margin-top: 10px;
+  padding: 14px 16px;
+}
+
+.km-reading__q-explain {
+  margin: 6px 0 0;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--paper-dim);
+}
+
 /* ── Story illustrations (F-211) ────────────────────────────── */
 
 /* Hero-plus-grid gallery: the first surviving figure spans the full width

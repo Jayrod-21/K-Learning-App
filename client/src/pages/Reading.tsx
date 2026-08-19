@@ -160,6 +160,7 @@ import { Tabs } from '../components/Tabs';
 import { Tapword } from '../components/Tapword';
 import { WordPopover } from '../components/WordPopover';
 import type { WordPopoverData } from '../components/WordPopover';
+import { AskAboutThisButton } from '../components/AskAboutThisButton';
 import { StoryGenerator } from '../components/StoryGenerator';
 import { useToast } from '../components/useToast';
 import { usePagination } from '../hooks/usePagination';
@@ -179,7 +180,9 @@ import { activeSegmentNumberAt } from '../lib/readAlong';
 import { navItem } from '../lib/nav';
 import { ApiError } from '../services/api';
 import {
+  generateChapterQuestions,
   getChapter,
+  getChapterQuestions,
   getGeneratedStory,
   getReadingPosition,
   getStoryImages,
@@ -196,6 +199,7 @@ import type {
   GeneratedStory,
   GeneratedStorySummary,
   ReadingPosition,
+  ReadingQuestion,
   StoryImage,
   StoryImagesEnvelope,
 } from '../services/reading';
@@ -1197,6 +1201,318 @@ function MarkCompleteButton({
   );
 }
 
+// ─────────────────────────────────────────────────────────────
+// Comprehension check (F-205 — reading_questions, migration 086)
+// ─────────────────────────────────────────────────────────────
+
+/** ①②③④ — the Diagnostic/TOPIK marker idiom, reused verbatim so a picked
+ *  option reads consistently across every MC surface in the app. */
+const QUESTION_MARKERS = ['①', '②', '③', '④'] as const;
+
+/**
+ * Fetch/generation lifecycle for one chapter's comprehension check.
+ *   - `loading`    — the mount GET is in flight.
+ *   - `error`      — the GET failed (fixed-copy message; retry re-fetches).
+ *   - `empty`      — GET succeeded with zero stored questions (the normal
+ *                    not-generated-yet state) — the explicit generate
+ *                    button lives here.
+ *   - `generating` — the POST is in flight (button shows a busy state).
+ *   - `ready`      — questions to render, whether they arrived via the GET
+ *                    or a fresh POST.
+ */
+type ComprehensionState =
+  | { phase: 'loading' }
+  | { phase: 'error'; message: string }
+  | { phase: 'empty' }
+  | { phase: 'generating' }
+  | { phase: 'ready'; questions: ReadingQuestion[] };
+
+/** Fixed fallback copy (errorCopy contract — server prose is never echoed). */
+const QUESTIONS_LOAD_FAILED_COPY = 'Could not load the comprehension check.';
+const QUESTIONS_GENERATE_FAILED_COPY =
+  'Could not generate the comprehension check.';
+
+/** correct/answered tally over the current picks, in question order. */
+function tallyScore(
+  questions: ReadingQuestion[],
+  picks: Readonly<Record<number, number>>,
+): { correct: number; answered: number } {
+  let correct = 0;
+  let answered = 0;
+  for (const q of questions) {
+    const pickedIndex = picks[q.id];
+    if (pickedIndex === undefined) continue;
+    answered += 1;
+    if (q.options[pickedIndex]?.correct === true) correct += 1;
+  }
+  return { correct, answered };
+}
+
+/**
+ * One MC question card — the Diagnostic reveal idiom verbatim (`Diagnostic.
+ * tsx` ~817-855): pick a ①②③④ option → immediate reveal (correctness is
+ * already known client-side, no server round trip to grade — the DTO holds
+ * `correct` deliberately, see services/reading.ts) → correct/not-quite
+ * eyebrow + the bilingual explanation + an `AskAboutThisButton` tutor
+ * handoff seeded with this question's own context. Self-contained (does
+ * NOT reuse Diagnostic's own `ChoiceList`/`Card` — additive per F-205's
+ * scope, that component is not built to take an externally-supplied
+ * options array).
+ */
+function ComprehensionQuestion({
+  question,
+  pickedIndex,
+  onPick,
+  passage,
+}: {
+  question: ReadingQuestion;
+  pickedIndex: number | undefined;
+  onPick: (index: number) => void;
+  passage: string;
+}): JSX.Element {
+  const revealed = pickedIndex !== undefined;
+  const isCorrect = revealed && question.options[pickedIndex]?.correct === true;
+  const correctOption = question.options.find((o) => o.correct);
+  const pickedOption = revealed ? question.options[pickedIndex] : undefined;
+
+  return (
+    <Card variant="flat" className="km-reading__q">
+      <p className="kr km-reading__q-prompt">
+        {String(question.questionNumber)}. {question.questionText}
+      </p>
+      <div
+        className="km-reading__q-choices"
+        role="radiogroup"
+        aria-label={`Question ${String(question.questionNumber)} answer choices`}
+      >
+        {question.options.map((opt, i) => {
+          const isPicked = pickedIndex === i;
+          const showCorrect = revealed && opt.correct;
+          const showWrong = revealed && isPicked && !opt.correct;
+          return (
+            <button
+              key={`${String(question.id)}-${String(i)}`}
+              type="button"
+              role="radio"
+              aria-checked={isPicked}
+              disabled={revealed}
+              className={cn(
+                'km-reading__q-choice focusring',
+                isPicked && !revealed && 'km-reading__q-choice--picked',
+                showCorrect && 'km-reading__q-choice--correct',
+                showWrong && 'km-reading__q-choice--wrong',
+              )}
+              onClick={() => {
+                if (!revealed) onPick(i);
+              }}
+            >
+              <span className="km-reading__q-marker">
+                {QUESTION_MARKERS[i] ?? String(i + 1)}
+              </span>
+              <span className="kr km-reading__q-choice-text">{opt.text}</span>
+              {showCorrect ? <Icon name="check" size={16} /> : null}
+            </button>
+          );
+        })}
+      </div>
+
+      {revealed ? (
+        <Card variant="default" className="km-reading__q-reveal">
+          <Eyebrow>
+            {isCorrect ? (
+              <Bilingual en="Correct" kr="정답" />
+            ) : (
+              <Bilingual en="Not quite" kr="아쉬워요" />
+            )}
+          </Eyebrow>
+          <p className="km-reading__q-explain">{question.explanation}</p>
+          <div style={{ marginTop: 10 }}>
+            <AskAboutThisButton
+              prompt={question.questionText}
+              correctText={correctOption?.text ?? ''}
+              explanation={question.explanation}
+              passage={passage}
+              userPick={!isCorrect ? pickedOption?.text : undefined}
+            />
+          </div>
+        </Card>
+      ) : null}
+    </Card>
+  );
+}
+
+/**
+ * "Check your understanding" — the chapter's AI-generated MC comprehension
+ * check (F-205 Phase 1). ADDITIVE: mounted at the end of `ChapterReader`,
+ * never touches the passage reader above it. Ships EMPTY-safe — a chapter
+ * with no stored questions shows an explicit "Generate comprehension check"
+ * button (never auto-generates on load, the F-216 posture) rather than a
+ * silent metered call.
+ */
+function ComprehensionCheckCard({
+  chapterId,
+  passage,
+}: {
+  chapterId: number;
+  /** The chapter's own prose, joined — handed to `AskAboutThisButton` as the
+   *  tutor's shared-passage context (truncated by `buildAskSeed` itself). */
+  passage: string;
+}): JSX.Element {
+  const [state, setState] = useState<ComprehensionState>({ phase: 'loading' });
+  const [genError, setGenError] = useState<string | null>(null);
+  const [picks, setPicks] = useState<Record<number, number>>({});
+  const [reloadTick, setReloadTick] = useState(0);
+  const ctrlRef = useRef<AbortController | null>(null);
+
+  // The mount/retry fetch — inlined directly in the effect (not behind a
+  // separately-invoked callback) and `retry` just bumps `reloadTick`,
+  // matching `ChapterReader`'s and `TranslateSheet`'s own fetch-effect shape
+  // on this page.
+  useEffect(() => {
+    const ctrl = new AbortController();
+    ctrlRef.current?.abort();
+    ctrlRef.current = ctrl;
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setState({ phase: 'loading' });
+    setGenError(null);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    getChapterQuestions(chapterId, ctrl.signal).then(
+      (qs) => {
+        if (ctrl.signal.aborted) return;
+        setPicks({});
+        setState(
+          qs.length > 0 ? { phase: 'ready', questions: qs } : { phase: 'empty' },
+        );
+      },
+      (err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setState({
+          phase: 'error',
+          message: errorMessageFor(err, QUESTIONS_LOAD_FAILED_COPY),
+        });
+      },
+    );
+    return () => {
+      ctrl.abort();
+    };
+  }, [chapterId, reloadTick]);
+
+  const retry = useCallback((): void => {
+    setReloadTick((t) => t + 1);
+  }, []);
+
+  const generate = useCallback((): void => {
+    ctrlRef.current?.abort();
+    const ctrl = new AbortController();
+    ctrlRef.current = ctrl;
+    setState({ phase: 'generating' });
+    setGenError(null);
+    generateChapterQuestions(chapterId, ctrl.signal).then(
+      (qs) => {
+        if (ctrl.signal.aborted) return;
+        setPicks({});
+        setState(
+          qs.length > 0 ? { phase: 'ready', questions: qs } : { phase: 'empty' },
+        );
+      },
+      (err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setState({ phase: 'empty' });
+        if (
+          err instanceof ApiError &&
+          err.status === 429 &&
+          err.retryAfter === undefined
+        ) {
+          // The per-user DAILY generation cap — server-authored whitelisted
+          // copy, shown verbatim (the F-210/F-211 daily-cap posture); the
+          // button stays available for tomorrow. A short-window 429 carries
+          // `retryAfter` and falls through to errorMessageFor below instead.
+          setGenError(err.message);
+          return;
+        }
+        setGenError(errorMessageFor(err, QUESTIONS_GENERATE_FAILED_COPY));
+      },
+    );
+  }, [chapterId]);
+
+  const onPick = useCallback((questionId: number, index: number): void => {
+    setPicks((prev) =>
+      prev[questionId] !== undefined ? prev : { ...prev, [questionId]: index },
+    );
+  }, []);
+
+  return (
+    <CityCard tone="crimson" rail className="km-reading__comprehension">
+      <Eyebrow>
+        <Bilingual en="Check your understanding" kr="이해도 확인" compact />
+      </Eyebrow>
+
+      {state.phase === 'loading' ? (
+        <p className="km-reading__comprehension-busy" role="status">
+          <Bilingual en="Loading…" kr="불러오는 중…" compact />
+        </p>
+      ) : state.phase === 'error' ? (
+        <ErrorCard message={state.message} onRetry={retry} />
+      ) : state.phase === 'empty' ? (
+        <>
+          <p className="km-reading__comprehension-copy">
+            <Bilingual
+              en="No comprehension check yet for this chapter."
+              kr="아직 이 장의 이해도 확인 문제가 없어요."
+              compact
+            />
+          </p>
+          {genError !== null ? (
+            <p className="km-reading__comprehension-error" role="alert">
+              {genError}
+            </p>
+          ) : null}
+          <Button
+            variant="gold"
+            size="sm"
+            leadingIcon={<Icon name="spark" size={14} />}
+            onClick={generate}
+          >
+            <Bilingual en="Generate comprehension check" kr="이해도 확인 생성" compact />
+          </Button>
+        </>
+      ) : state.phase === 'generating' ? (
+        <p className="km-reading__comprehension-busy" role="status">
+          <Bilingual en="Generating…" kr="생성 중…" compact />
+        </p>
+      ) : (
+        <>
+          {state.questions.map((q) => (
+            <ComprehensionQuestion
+              key={q.id}
+              question={q}
+              pickedIndex={picks[q.id]}
+              onPick={(index) => {
+                onPick(q.id, index);
+              }}
+              passage={passage}
+            />
+          ))}
+          {(() => {
+            const { correct, answered } = tallyScore(state.questions, picks);
+            return answered === state.questions.length ? (
+              <p className="km-reading__comprehension-score" role="status">
+                <Bilingual
+                  en={`Score: ${String(correct)} / ${String(state.questions.length)}`}
+                  kr={`점수: ${String(correct)} / ${String(state.questions.length)}`}
+                  compact
+                />
+              </p>
+            ) : null;
+          })()}
+        </>
+      )}
+    </CityCard>
+  );
+}
+
 function ChapterReader({ chapterId }: { chapterId: number }): JSX.Element {
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -1401,6 +1717,16 @@ function ChapterReader({ chapterId }: { chapterId: number }): JSX.Element {
           ))}
         </CityCard>
       )}
+
+      {/* F-205 — the AI-generated MC comprehension check. Additive, at the
+          very end of the reader: only offered once there is prose to
+          generate FROM (an empty chapter has nothing to check). */}
+      {orderedPassages.length > 0 ? (
+        <ComprehensionCheckCard
+          chapterId={chapter.id}
+          passage={orderedPassages.map((p) => p.body).join('\n\n')}
+        />
+      ) : null}
 
       <MarkCompleteButton
         state={markState}
