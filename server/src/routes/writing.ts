@@ -81,7 +81,7 @@ const PromptsQuerySchema = z.object({
 });
 
 interface PromptRow {
-  id: string; // BIGINT arrives as string from pg
+  id: number; // BIGINT IDENTITY — the int8 parser returns a number
   prompt_kr: string;
   prompt_en: string | null;
   level: string;
@@ -359,8 +359,8 @@ const AttemptsQuerySchema = z.object({
 });
 
 interface AttemptRow {
-  id: string; // BIGINT arrives as string from pg
-  prompt_id: string | null; // BIGINT, nullable (generated topics have none)
+  id: number; // BIGINT IDENTITY — the int8 parser returns a number
+  prompt_id: number | null; // BIGINT, nullable (generated topics have none)
   rubric: PersistedWritingRubric;
   prompt_kr: string;
   sample: string;

@@ -38,15 +38,17 @@ import {
 
 /**
  * A raw `ability_evidence` row as node-postgres returns it. BIGINTs
- * (`user_id`, `source_id`) arrive as STRINGS, NUMERIC (`diff_served`) as a
- * string, enums as their label strings, TIMESTAMPTZ as a Date — the same
- * runtime contract the rest of the codebase pins (e.g. notification ids).
+ * (`user_id`, `source_id`) arrive as NUMBERS via the int8 parser (db/pool) —
+ * typed `number | string` because normalizeRow is a pure function whose unit
+ * tests feed literal-string rows (the pre-parser shape) and it passes both
+ * ids through untouched. NUMERIC (`diff_served`) is a string, enums are
+ * their label strings, TIMESTAMPTZ is a Date.
  */
 export interface RawAbilityEvidenceRow {
-  user_id: string;
+  user_id: number | string;
   dimension: AbilityDimension;
   source: EvidenceSource;
-  source_id: string;
+  source_id: number | string;
   item_key: string | null;
   occurred_at: Date;
   outcome_raw_correct: boolean | null;
@@ -58,12 +60,15 @@ export interface RawAbilityEvidenceRow {
   diff_proficiency: ProficiencyLevel | null;
 }
 
-/** The normalized evidence shape — one graded response, estimator-ready. */
+/** The normalized evidence shape — one graded response, estimator-ready.
+ *  `userId`/`sourceId` pass through from the raw row untouched (number from
+ *  the int8 parser in production; string in the literal-row unit tests) —
+ *  no consumer serializes them, the estimator reads only outcome/b/time. */
 export interface AbilityEvidenceRow {
-  userId: string;
+  userId: number | string;
   dimension: AbilityDimension;
   source: EvidenceSource;
-  sourceId: string;
+  sourceId: number | string;
   itemKey: string | null;
   /** Graded outcome ∈ [0, 1]. */
   outcome: number;

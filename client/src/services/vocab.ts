@@ -18,6 +18,7 @@
  *     `ApiError(status: 404)`.
  *   - Body validation: server validates with Zod. Client trusts TS types.
  */
+import { coerceId } from '../lib/coerceId';
 import { api } from './api';
 import type {
   AddListEntriesResult,
@@ -104,7 +105,7 @@ function normalizeSearchOpts(opts: SearchEntriesOptions): SearchEntriesOptions {
  *  serialises as a JSON **string** (no int8 parser in db/pool.ts). Every
  *  sibling route's client mapping coerces; these were missed. */
 function numericId<T extends { id: number }>(row: T): T {
-  return { ...row, id: Number(row.id) };
+  return { ...row, id: coerceId(row.id) };
 }
 
 /** GET /vocab/entries?q=… — returns just the rows (existing callers). */
@@ -511,7 +512,12 @@ export async function listLists(params?: {
 export async function createList(
   body: CreateListBody,
 ): Promise<CreateListResponse> {
-  return api.post<CreateListResponse>('/vocab/lists', stripUndef({ ...body }));
+  const res = await api.post<CreateListResponse>(
+    '/vocab/lists',
+    stripUndef({ ...body }),
+  );
+  // BIGINT `id` arrives as a JSON string — coerce to match the declared type.
+  return { ...res, list: numericId(res.list) };
 }
 
 /**
@@ -536,7 +542,7 @@ export async function getListDetail(
   return {
     ...res,
     list: numericId(res.list),
-    entries: res.entries.map((e) => ({ ...e, entry_id: Number(e.entry_id) })),
+    entries: res.entries.map((e) => ({ ...e, entry_id: coerceId(e.entry_id) })),
   };
 }
 
@@ -545,7 +551,12 @@ export async function patchList(
   id: number,
   body: PatchListBody,
 ): Promise<PatchListResponse> {
-  return api.patch<PatchListResponse>(`/vocab/lists/${String(id)}`, body);
+  const res = await api.patch<PatchListResponse>(
+    `/vocab/lists/${String(id)}`,
+    body,
+  );
+  // BIGINT `id` arrives as a JSON string — coerce to match the declared type.
+  return { ...res, list: numericId(res.list) };
 }
 
 /** DELETE /vocab/lists/:id — soft delete. Returns void on 204. */

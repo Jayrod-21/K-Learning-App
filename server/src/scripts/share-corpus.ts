@@ -110,7 +110,7 @@ export interface ShareCorpusSummary {
 }
 
 interface OwnedFlagRow {
-  id: string; // BIGINT comes back as a string from pg
+  id: number; // BIGINT IDENTITY — the int8 parser returns a number
   slug?: string;
   title: string;
   is_shared: boolean;
@@ -129,7 +129,7 @@ export async function runShareCorpus(opts: ShareCorpusOptions): Promise<ShareCor
   }
 
   return withTransaction(async (client) => {
-    const owner = await client.query<{ id: string }>('SELECT id FROM users WHERE email = $1', [
+    const owner = await client.query<{ id: number }>('SELECT id FROM users WHERE email = $1', [
       ownerEmail,
     ]);
     if (owner.rows[0] === undefined) {

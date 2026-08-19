@@ -239,7 +239,10 @@ describe('POST /audio — happy paths', () => {
       source_upload_id: string | null;
       status: string;
     }>(
-      `SELECT user_id, slug, title, kind, source_upload_id, status
+      // ::text pins the probe's int8 columns to the strings these assertions
+      // were written against (the F-203 parser otherwise returns numbers).
+      `SELECT user_id::text AS user_id, slug, title, kind,
+              source_upload_id::text AS source_upload_id, status
          FROM audio_sources WHERE id = $1`,
       [res.body.sourceId],
     );
@@ -261,7 +264,8 @@ describe('POST /audio — happy paths', () => {
       byte_size: string;
       transcript_status: string;
     }>(
-      `SELECT source_id, user_id, track_number, blob_ref, byte_size, transcript_status
+      `SELECT source_id::text AS source_id, user_id::text AS user_id, track_number,
+              blob_ref, byte_size::text AS byte_size, transcript_status
          FROM audio_tracks WHERE id = $1`,
       [res.body.trackId],
     );
@@ -281,7 +285,8 @@ describe('POST /audio — happy paths', () => {
       status: string;
       charged_bytes: string;
     }>(
-      `SELECT track_id, user_id, status, charged_bytes
+      `SELECT track_id::text AS track_id, user_id::text AS user_id, status,
+              charged_bytes::text AS charged_bytes
          FROM audio_transcription_jobs WHERE id = $1`,
       [res.body.jobId],
     );
@@ -1207,7 +1212,7 @@ describe('F-207 — mutation stays owner-only; the share flag cannot be hijacked
 
     // Nothing changed under A's rows.
     const src = await pg.pool.query<{ title: string; is_shared: boolean; user_id: string }>(
-      `SELECT title, is_shared, user_id FROM audio_sources WHERE id = $1`,
+      `SELECT title, is_shared, user_id::text AS user_id FROM audio_sources WHERE id = $1`,
       [sourceId],
     );
     expect(src.rows[0]).toEqual({
@@ -1232,7 +1237,7 @@ describe('F-207 — mutation stays owner-only; the share flag cannot be hijacked
     // A clean upload lands is_shared = false (079's default — private).
     const ok = await uploadSet(agent, fakeMp3(), 'Clean');
     const { rows } = await pg.pool.query<{ is_shared: boolean; user_id: string }>(
-      `SELECT is_shared, user_id FROM audio_sources WHERE id = $1`,
+      `SELECT is_shared, user_id::text AS user_id FROM audio_sources WHERE id = $1`,
       [ok.sourceId],
     );
     expect(rows[0]).toEqual({ is_shared: false, user_id: String(userId) });

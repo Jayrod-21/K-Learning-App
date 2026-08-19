@@ -1175,7 +1175,7 @@ function QuickAddSheet({
     void (async (): Promise<void> => {
       try {
         const res = await createList({ name_kr: name, kind: 'hanja' });
-        const listId = Number(res.list.id);
+        const listId = res.list.id;
         const seeded = await seedHanjaCard(h.ch);
         await addHanjaToList(listId, [seeded.character_id]);
         toast({ message: `Created “${name}” and added ${h.ch}.`, tone: 'success' });
@@ -1841,7 +1841,7 @@ function CreateListSheet({
     void (async (): Promise<void> => {
       try {
         const res = await createList({ name_kr: trimmed, kind: 'hanja' });
-        const created: ServerVocabList = { ...res.list, id: Number(res.list.id) };
+        const created: ServerVocabList = res.list;
         onCreated(created);
         setName('');
         onClose();
@@ -3452,8 +3452,8 @@ function AddToListTile({ ch }: { ch: string }): JSX.Element {
       let listId: number;
       try {
         const res = await createList({ name_kr: name, kind: 'hanja' });
-        listId = Number(res.list.id);
-        const created: ServerVocabList = { ...res.list, id: listId };
+        listId = res.list.id;
+        const created: ServerVocabList = res.list;
         setLists((prev) => (prev ? [created, ...prev] : [created]));
         setSelected(String(listId));
         setNewName('');

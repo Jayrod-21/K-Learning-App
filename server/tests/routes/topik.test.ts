@@ -458,8 +458,11 @@ describe('GET /topik/mistakes — recent wrong answers for review (F-021)', () =
       answers: [{ itemId: mockId, picked: 'a' }], // wrong — 'b' is correct
     });
     expect(submit.status).toBe(200);
+    // ::text keeps this probe's id a STRING — the route's mistake DTO emits
+    // attempt_id::text (pinned string wire), and the F-203 int8 parser would
+    // otherwise hand this raw read a number and break the comparison.
     const { rows: attemptRows } = await pg.pool.query<{ id: string }>(
-      `SELECT id FROM topik_attempts WHERE user_id = $1 AND status = 'completed'`,
+      `SELECT id::text AS id FROM topik_attempts WHERE user_id = $1 AND status = 'completed'`,
       [userId],
     );
     expect(attemptRows).toHaveLength(1);
@@ -3185,7 +3188,9 @@ describe('GET /topik/attempts — completed-attempt history (F-104 / A1)', () =>
     // directly rather than through the route (every route path now stamps
     // one). attempt_id stamps the response so /topik/attempts' correct/
     // answered aggregate is non-zero, matching a real completed sitting.
-    const { rows } = await pg.pool.query<{ id: string }>(
+    // Raw RETURNING id (no ::text) → a number via the int8 parser; the value
+    // is only bound back as an insert param below, never compared as a string.
+    const { rows } = await pg.pool.query<{ id: number }>(
       `INSERT INTO topik_attempts
          (user_id, section, source_test, current_idx, picks, remaining_ms, status, topik_level)
        VALUES ($1, 'reading'::topik_section, 2051, 0, '{}'::jsonb, 0, 'completed', NULL)

@@ -168,7 +168,7 @@ interface AttemptRow {
  *  columns (stability/difficulty) arrive as strings from `pg`; we Number() them
  *  at the call site before handing to the (numeric) scheduler. */
 interface CardRow {
-  id: string;
+  id: number;
   fsrs_state: FsrsStateName;
   stability: string;
   difficulty: string;

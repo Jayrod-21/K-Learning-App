@@ -42,13 +42,10 @@ export interface ClaimDeliveryResult {
    *  claim for this (scheduleId, windowStart) pair.
    *
    *  `notification_deliveries.id` is `BIGINT GENERATED ALWAYS AS IDENTITY`
-   *  (052) — node-postgres returns BIGINT as a STRING by default (no global
-   *  type-parser override in this repo, see `server/src/db/pool.ts`), and
-   *  every other BIGINT id in this codebase is typed/documented as `string`
-   *  for exactly that reason (e.g. `server/src/routes/grammar.ts`,
-   *  `routes/reading.ts`, `routes/writing.ts`, `auth/sessions.ts`). Typed as
-   *  `string` here to match — NOT `number`, which would silently mismatch
-   *  the runtime value and risk precision loss if a caller ever coerced it. */
+   *  (052). The BIGINT-as-string CONTRACT here predates the int8 parser
+   *  (db/pool) and is pinned by tests — the id is deliberately String()'d
+   *  at this boundary so the contract stays byte-identical: `string`, never
+   *  `number`, and never a silent flip under a parser change. */
   deliveryId: string | null;
 }
 
@@ -65,17 +62,16 @@ export interface ClaimDeliveryResult {
  * what the UNIQUE constraint keys on (see migration 063's header for why
  * this can't just be `created_at`).
  *
- * `scheduleId` is `string`, not `number`: `notification_schedules.id` is
- * BIGINT (052), which node-postgres returns as a STRING (same rationale as
- * `ClaimDeliveryResult.deliveryId` above) — a sender reading schedule ids
- * from the DB holds strings, and a `number` here would force a lossy
- * coercion at every call site.
+ * `scheduleId` accepts `number | string`: `notification_schedules.id` is
+ * BIGINT (052) — the int8 parser (db/pool) hands a sender numbers, while the
+ * pre-parser string shape remains valid input (pg binds either). The
+ * RETURNED `deliveryId` stays the pinned string contract regardless.
  */
 export async function claimDelivery(
-  scheduleId: string,
+  scheduleId: number | string,
   windowStart: Date,
 ): Promise<ClaimDeliveryResult> {
-  const { rows } = await query<{ id: string }>(
+  const { rows } = await query<{ id: number }>(
     // `status` defaults to 'pending' (052) — the explicit value here is
     // redundant but kept deliberately, so the claimed row's initial state is
     // self-documenting at the call site (matches the reviewer's NIT: no
@@ -90,7 +86,9 @@ export async function claimDelivery(
   if (row === undefined) {
     return { claimed: false, deliveryId: null };
   }
-  return { claimed: true, deliveryId: row.id };
+  // BIGINT-as-string wire contract (pinned by notificationDelivery.test.ts):
+  // String() keeps it byte-identical now that the row id arrives as a number.
+  return { claimed: true, deliveryId: String(row.id) };
 }
 
 export type DeliveryOutcome =

@@ -114,8 +114,8 @@ interface HanjaDTO {
  * is a json_agg array (never null — COALESCE'd to '[]' in SQL).
  */
 interface HanjaRow {
-  /** BIGINT PK — node-postgres serialises int8 as a string. */
-  id: string;
+  /** BIGINT IDENTITY PK — the int8 parser (db/pool) returns a number. */
+  id: number;
   char: string;
   sound: string;
   gloss_kr: string | null;
@@ -534,14 +534,14 @@ interface HanjaCardDTO {
 }
 
 interface HanjaCardRow {
-  id: string;
+  id: number;
   face: string;
   due_at: Date;
   fsrs_state: string;
   stability: string;
   difficulty: string;
   version: number;
-  hanja_character_id: string;
+  hanja_character_id: number;
   char: string;
   sound: string;
   gloss_kr: string | null;
@@ -593,7 +593,7 @@ router.post(
         validatedParams: z.infer<typeof CharParamsSchema>;
       }).validatedParams;
 
-      const character = await query<{ id: string }>(
+      const character = await query<{ id: number }>(
         `SELECT id FROM hanja_characters WHERE char = $1`,
         [params.char],
       );
@@ -608,7 +608,7 @@ router.post(
       // defaults to now() — a fresh card is immediately due (same behavior
       // as /vocab/cards/init); proficiency keeps its column DEFAULT ('L3' —
       // the hanja L2..L5 banding is a different axis, see migration 016).
-      const ins = await query<{ id: string; version: number; due_at: Date }>(
+      const ins = await query<{ id: number; version: number; due_at: Date }>(
         `INSERT INTO vocab_cards (user_id, face, hanja_character_id)
          VALUES ($1, 'recognition'::card_face, $2)
          ON CONFLICT (user_id, hanja_character_id, face)
@@ -624,7 +624,7 @@ router.post(
         // Conflict path: the live card already exists — return it. (It cannot
         // vanish between the two statements: only this user writes their own
         // cards, and hard deletes don't exist on this path.)
-        const existing = await query<{ id: string; version: number; due_at: Date }>(
+        const existing = await query<{ id: number; version: number; due_at: Date }>(
           `SELECT id, version, due_at
              FROM vocab_cards
             WHERE user_id = $1
