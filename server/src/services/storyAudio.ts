@@ -403,9 +403,9 @@ export async function runStoryAudioTick(log: Logger): Promise<StoryAudioTickResu
   //    deploys) from double-running one job.
   const claimed = await withTransaction<ClaimedJob | null>(async (client) => {
     const { rows } = await client.query<{
-      id: string;
-      generated_story_id: string;
-      user_id: string;
+      id: number;
+      generated_story_id: number;
+      user_id: number;
       title: string;
       body_ko: string;
       turns: unknown;
@@ -482,7 +482,7 @@ export async function runStoryAudioTick(log: Logger): Promise<StoryAudioTickResu
     //    the job mid-run — abort so the reaper's verdict stands and no
     //    orphaned "done" content appears out from under a failed job.
     await withTransaction(async (client) => {
-      const src = await client.query<{ id: string }>(
+      const src = await client.query<{ id: number }>(
         `INSERT INTO audio_sources
            (user_id, slug, title, kind, source_upload_id, generated_story_id, status)
          VALUES ($1, $2, $3, 'generated_story', NULL, $4, 'ready')
@@ -495,7 +495,7 @@ export async function runStoryAudioTick(log: Logger): Promise<StoryAudioTickResu
       );
       const sourceId = src.rows[0]!.id;
 
-      const trk = await client.query<{ id: string }>(
+      const trk = await client.query<{ id: number }>(
         `INSERT INTO audio_tracks
            (source_id, user_id, track_number, title, blob_ref, byte_size, duration_ms,
             transcript_status)

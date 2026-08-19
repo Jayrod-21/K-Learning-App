@@ -444,7 +444,7 @@ ttmikRouter.post(
       const userId = getUserId(req);
       const body = req.body as z.infer<typeof LogTtmikAttemptBodySchema>;
 
-      const lessonRes = await query<{ id: string; title: string }>(
+      const lessonRes = await query<{ id: number; title: string }>(
         `SELECT id, title FROM ttmik_lessons WHERE lesson_level = $1 AND lesson_number = $2 LIMIT 1`,
         [body.level, body.number],
       );
@@ -493,7 +493,7 @@ iyagiRouter.post(
       const userId = getUserId(req);
       const body = req.body as z.infer<typeof LogIyagiAttemptBodySchema>;
 
-      const episodeRes = await query<{ id: string; title: string }>(
+      const episodeRes = await query<{ id: number; title: string }>(
         `SELECT id, title FROM iyagi_episodes WHERE episode_number = $1 LIMIT 1`,
         [body.number],
       );

@@ -179,7 +179,10 @@ async function uploadRows() {
     status: string;
     page_count: number | null;
   }>(
-    `SELECT id, user_id, title, type, status, page_count
+    // ::text pins the probe's int8 ids to strings — ingestOne's uploadId is
+    // the DTO's pinned STRING id, and the F-203 parser would otherwise hand
+    // this raw read numbers and break the comparisons.
+    `SELECT id::text AS id, user_id::text AS user_id, title, type, status, page_count
        FROM book_uploads ORDER BY id`,
   );
   return rows;
@@ -187,7 +190,7 @@ async function uploadRows() {
 
 async function pageRows(uploadId: string) {
   const { rows } = await pg.pool.query<{ id: string; page_number: number; blob_ref: string }>(
-    `SELECT id, page_number, blob_ref FROM book_pages
+    `SELECT id::text AS id, page_number, blob_ref FROM book_pages
       WHERE upload_id = $1 ORDER BY page_number`,
     [uploadId],
   );

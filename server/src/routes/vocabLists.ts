@@ -574,7 +574,7 @@ router.post(
           // source_upload_id column — nothing extracted ever lands there.
           // Shared fragment: db/corpusFences.ts.
           const fenced = t !== 'hanja';
-          const valid = await client.query<{ id: string }>(
+          const valid = await client.query<{ id: number }>(
             fenced
               ? `SELECT id FROM ${TARGET_TABLE[t]}
                   WHERE id = ANY($1::bigint[])
@@ -597,7 +597,7 @@ router.post(
         // wants ("show the user we couldn't add it because it's already
         // there"). The per-target partial UNIQUE indexes (049) back this up
         // at the DB level against races.
-        const existing = await client.query<{ t: ItemType; target_id: string }>(
+        const existing = await client.query<{ t: ItemType; target_id: number }>(
           `SELECT CASE WHEN entry_id      IS NOT NULL THEN 'vocab'
                        WHEN kgiu_entry_id IS NOT NULL THEN 'grammar'
                        ELSE 'hanja' END AS t,
@@ -631,7 +631,7 @@ router.post(
         // fanned out by unnest, and the type routes each id into its XOR
         // column. Positions follow the client-supplied order.
         const inserted = await client.query<{
-          entry_id: string;
+          entry_id: number;
           item_type: ItemType;
           position: number;
           added_at: Date;

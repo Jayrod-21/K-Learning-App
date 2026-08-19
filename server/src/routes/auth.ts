@@ -272,7 +272,7 @@ async function finishLogin(
   user: { id: number; email: string },
 ): Promise<PublicUser> {
   const { rows } = await query<{
-    id: string;
+    id: number;
     email: string;
     display_name: string | null;
     phone: string | null;
@@ -1153,7 +1153,7 @@ router.post(
     try {
       const body = req.body as z.infer<typeof ResendSchema>;
       const email = body.email.toLowerCase();
-      const { rows } = await query<{ id: string; email_verified_at: Date | null }>(
+      const { rows } = await query<{ id: number; email_verified_at: Date | null }>(
         `SELECT id, email_verified_at
            FROM users
           WHERE email = $1 AND deleted_at IS NULL
@@ -1168,8 +1168,7 @@ router.post(
       // (atomic with the insert), never in a pre-response probe — which also
       // keeps the response timing identical whether or not a send happens.
       if (row && row.email_verified_at === null) {
-        // pg returns BIGINT as a string.
-        const userId = Number(row.id);
+        const userId = row.id;
         const log = req.log;
         void (async () => {
           const minted = await issueVerificationTokenIfCooldownClear(userId, email);

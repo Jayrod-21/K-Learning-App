@@ -743,7 +743,7 @@ router.post(
       // recognition cards, with no prompt yet. COUNT(*) OVER () rides along
       // for the unbounded eligible total (the /vocab/cards/due idiom).
       const { rows: candidates } = await query<{
-        id: string;
+        id: number;
         korean: string;
         example_korean: string | null;
         example_english: string | null;
@@ -1365,7 +1365,7 @@ router.post(
         const existing = await client.query<{
           id: number;
           version: number;
-          source_upload_id: string | null;
+          source_upload_id: number | null;
         }>(
           `SELECT id, version, source_upload_id
              FROM vocab_cards
@@ -1495,9 +1495,9 @@ router.get('/saved-from-uploads', cheapLimiter(), async (req, res, next) => {
   try {
     const userId = getUserId(req);
     const { rows } = await query<{
-      upload_id: string;
+      upload_id: number;
       upload_title: string;
-      entry_id: string;
+      entry_id: number;
       korean: string | null;
       english: string | null;
       saved_at: Date;

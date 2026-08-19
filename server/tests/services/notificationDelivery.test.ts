@@ -51,12 +51,13 @@ async function seedUser(email: string): Promise<number> {
 }
 
 /**
- * `notification_schedules.id` is BIGINT (052) → node-postgres returns it as a
- * STRING; `claimDelivery(scheduleId)` is typed `string` to match (same
- * contract as `deliveryId` — see the pinned-type assertions below).
+ * `notification_schedules.id` is BIGINT (052) → the F-203 int8 parser hands
+ * safe-integer bigints back as NUMBERS; `claimDelivery(scheduleId)` accepts
+ * `number | string`, so this raw id feeds it directly (the OUTPUT-side
+ * `deliveryId` stays a pinned STRING — see the assertions below).
  */
-async function seedSchedule(userId: number): Promise<string> {
-  const { rows } = await pg.pool.query<{ id: string }>(
+async function seedSchedule(userId: number): Promise<number> {
+  const { rows } = await pg.pool.query<{ id: number }>(
     `INSERT INTO notification_schedules
             (user_id, kind, channel, time_of_day, tz, enabled)
      VALUES ($1, 'daily_reminder', 'email', '08:00', 'Asia/Seoul', true)
@@ -70,10 +71,10 @@ describe('claimDelivery', () => {
   it('claims a fresh (scheduleId, windowStart) pair', async () => {
     const userId = await seedUser('claim-fresh@example.com');
     const scheduleId = await seedSchedule(userId);
-    // Pin the BIGINT-as-string contract on the INPUT side too: the runtime
-    // value node-postgres hands back for a schedule id IS a string, which is
-    // why `claimDelivery(scheduleId)` is typed `string` (not `number`).
-    expect(typeof scheduleId).toBe('string');
+    // Pin the F-203 int8-parser contract on the INPUT side: a raw schedule id
+    // read from the DB is now a NUMBER (safe-integer BIGINT), and
+    // `claimDelivery(scheduleId)` accepts `number | string` to take it as-is.
+    expect(typeof scheduleId).toBe('number');
     const windowStart = new Date('2026-07-15T08:00:00.000Z');
 
     const result = await claimDelivery(scheduleId, windowStart);

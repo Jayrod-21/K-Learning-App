@@ -251,7 +251,7 @@ const MAX_INT4 = 2147483647;
  * follow-up that needs a migration).
  */
 async function assertOwnedUpload(uploadId: number, userId: number): Promise<void> {
-  const owned = await query<{ id: string }>(
+  const owned = await query<{ id: number }>(
     `SELECT id FROM book_uploads WHERE id = $1 AND user_id = $2 LIMIT 1`,
     [uploadId, userId],
   );
@@ -270,7 +270,7 @@ async function assertOwnedUpload(uploadId: number, userId: number): Promise<void
  * mutation and per-user-state route keeps the strict owner gate above.
  */
 async function assertReadableUpload(uploadId: number, userId: number): Promise<void> {
-  const readable = await query<{ id: string }>(
+  const readable = await query<{ id: number }>(
     `SELECT id FROM book_uploads
       WHERE id = $1 AND (user_id = $2 OR is_shared = true)
       LIMIT 1`,
@@ -316,7 +316,7 @@ router.get(
       // cross-user reachability: a chapter of any OTHER book is excluded by
       // this predicate, and this book's readability was already asserted.
       const { rows } = await query<{
-        id: string;
+        id: number;
         chapter_number: number;
         title: string | null;
         start_page: number | null;
@@ -367,8 +367,8 @@ router.get(
       // chapter) is a uniform 404 — the widening never confirms a private
       // row's existence.
       const chapterRes = await query<{
-        id: string;
-        source_upload_id: string;
+        id: number;
+        source_upload_id: number;
         chapter_number: number;
         title: string | null;
         start_page: number | null;
@@ -393,7 +393,7 @@ router.get(
       // scoping the passage read on chapter_id alone is safe (no cross-user
       // reachability — same reasoning as audio.ts's transcript segments).
       const passageRes = await query<{
-        id: string;
+        id: number;
         passage_number: number;
         body: string;
         page_number: number | null;
@@ -439,8 +439,8 @@ interface PositionDto {
 }
 
 function toPositionDto(row: {
-  source_upload_id: string;
-  chapter_id: string | null;
+  source_upload_id: number;
+  chapter_id: number | null;
   passage_number: number | null;
   page_number: number | null;
   updated_at: Date;
@@ -487,8 +487,8 @@ router.get(
       // reads as "no saved position" instead of pushing that judgment onto
       // every client.
       const { rows } = await query<{
-        source_upload_id: string;
-        chapter_id: string | null;
+        source_upload_id: number;
+        chapter_id: number | null;
         passage_number: number | null;
         page_number: number | null;
         updated_at: Date;
@@ -560,7 +560,7 @@ router.put(
       // invariant at the DB level, so a TOCTOU race can at worst turn this
       // 404 into a rejected insert — never a cross-book row.
       if (chapterId !== null) {
-        const chapter = await query<{ id: string }>(
+        const chapter = await query<{ id: number }>(
           `SELECT id FROM reading_chapters
             WHERE id = $1
               AND source_upload_id = $2
@@ -582,8 +582,8 @@ router.put(
       // the app, not a trigger, owns the optimistic-concurrency counter
       // (mirrors notifications.ts's schedule upsert).
       const { rows } = await query<{
-        source_upload_id: string;
-        chapter_id: string | null;
+        source_upload_id: number;
+        chapter_id: number | null;
         passage_number: number | null;
         page_number: number | null;
         updated_at: Date;
@@ -999,7 +999,7 @@ async function buildStoryAudioDto(storyId: number, userId: number): Promise<Stor
   // keyless UnconfiguredTtsProvider), so the client learns "this deploy
   // cannot synthesize" from the same GET it already polls.
   const ttsConfigured = isTtsConfigured();
-  const trackRes = await query<{ track_id: string; duration_ms: number | null }>(
+  const trackRes = await query<{ track_id: number; duration_ms: number | null }>(
     `SELECT t.id AS track_id, t.duration_ms
        FROM audio_sources s
        JOIN audio_tracks t ON t.source_id = s.id AND t.track_number = 1
@@ -1022,7 +1022,7 @@ async function buildStoryAudioDto(storyId: number, userId: number): Promise<Stor
         ORDER BY segment_number`,
       [trackId],
     );
-    const jobRes = await query<{ id: string }>(
+    const jobRes = await query<{ id: number }>(
       `SELECT id FROM story_audio_jobs
         WHERE generated_story_id = $1 AND status = 'done'
         ORDER BY created_at DESC, id DESC
@@ -1048,7 +1048,7 @@ async function buildStoryAudioDto(storyId: number, userId: number): Promise<Stor
     };
   }
 
-  const jobRes = await query<{ id: string; status: string; error: string | null }>(
+  const jobRes = await query<{ id: number; status: string; error: string | null }>(
     `SELECT id, status, error
        FROM story_audio_jobs
       WHERE generated_story_id = $1
@@ -1224,7 +1224,7 @@ router.post(
 
       // IDOR gate first: a missing id and another user's story are the same
       // uniform 404 (mirrors GET /generated/:id).
-      const owned = await query<{ id: string }>(
+      const owned = await query<{ id: number }>(
         `SELECT id FROM generated_stories WHERE id = $1 AND user_id = $2 LIMIT 1`,
         [id, userId],
       );
@@ -1273,7 +1273,7 @@ router.get(
       const { id } = (
         req as typeof req & { validatedParams: z.infer<typeof StoryParamsSchema> }
       ).validatedParams;
-      const owned = await query<{ id: string }>(
+      const owned = await query<{ id: number }>(
         `SELECT id FROM generated_stories WHERE id = $1 AND user_id = $2 LIMIT 1`,
         [id, userId],
       );
@@ -1344,7 +1344,7 @@ async function buildStoryImagesDto(storyId: number, userId: number): Promise<Sto
     [storyId, userId],
   );
   if (imgRes.rows.length > 0) {
-    const jobRes = await query<{ id: string }>(
+    const jobRes = await query<{ id: number }>(
       `SELECT id FROM story_image_jobs
         WHERE generated_story_id = $1 AND user_id = $2 AND status = 'done'
         ORDER BY created_at DESC, id DESC
@@ -1366,7 +1366,7 @@ async function buildStoryImagesDto(storyId: number, userId: number): Promise<Sto
     };
   }
 
-  const jobRes = await query<{ id: string; status: string; error: string | null }>(
+  const jobRes = await query<{ id: number; status: string; error: string | null }>(
     `SELECT id, status, error
        FROM story_image_jobs
       WHERE generated_story_id = $1
@@ -1519,7 +1519,7 @@ router.post(
 
       // IDOR gate first: a missing id and another user's story are the same
       // uniform 404 (mirrors GET /generated/:id).
-      const owned = await query<{ id: string }>(
+      const owned = await query<{ id: number }>(
         `SELECT id FROM generated_stories WHERE id = $1 AND user_id = $2 LIMIT 1`,
         [id, userId],
       );
@@ -1568,7 +1568,7 @@ router.get(
       const { id } = (
         req as typeof req & { validatedParams: z.infer<typeof StoryParamsSchema> }
       ).validatedParams;
-      const owned = await query<{ id: string }>(
+      const owned = await query<{ id: number }>(
         `SELECT id FROM generated_stories WHERE id = $1 AND user_id = $2 LIMIT 1`,
         [id, userId],
       );
@@ -1704,7 +1704,7 @@ router.post(
 
       // IDOR gate first: a missing id and another user's story are the same
       // uniform 404 (mirrors GET /generated/:id).
-      const owned = await query<{ id: string }>(
+      const owned = await query<{ id: number }>(
         `SELECT id FROM generated_stories WHERE id = $1 AND user_id = $2 LIMIT 1`,
         [id, userId],
       );

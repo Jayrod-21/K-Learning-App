@@ -70,7 +70,7 @@ router.use(requireAuth);
 type ImageCaptureSummaryDTO = Omit<ImageCaptureDTO, 'words'>;
 
 interface CaptureRow {
-  id: string;
+  id: number;
   original_filename: string | null;
   caption_kr: string;
   caption_en: string;
@@ -86,7 +86,10 @@ interface WordRow {
 
 function toSummaryDTO(row: CaptureRow): ImageCaptureSummaryDTO {
   return {
-    id: row.id,
+    // Wire contract: capture ids are emitted as STRINGS (pre-int8-parser
+    // behavior, pinned). String() keeps the wire byte-identical now that the
+    // row id arrives as a number.
+    id: String(row.id),
     name: row.original_filename ?? `capture-${row.id}`,
     caption_kr: row.caption_kr,
     caption_en: row.caption_en,

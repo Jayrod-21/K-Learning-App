@@ -182,19 +182,20 @@ const TrackParamsSchema = z.object({
 // ---------------------------------------------------------------------------
 
 /** GET /audio's joined projection — one row per (source, track) pair; tracks
- *  NULL for a (corpus edge case) trackless source. pg returns BIGINTs as
- *  strings; Number() at the DTO boundary (ids are IDENTITY values well inside
- *  Number.MAX_SAFE_INTEGER). */
+ *  NULL for a (corpus edge case) trackless source. The int8 parser (db/pool)
+ *  returns IDENTITY ids as numbers; byte_size is a genuinely-large int8 count
+ *  so it keeps the defensive number|string (safe-integer guard may return a
+ *  string), normalized by Number() at the DTO boundary. */
 interface SourceTrackRow {
-  source_id: string;
+  source_id: number;
   slug: string;
   title: string;
   kind: 'paired_reader' | 'standalone_listening' | 'topik';
   source_created_at: Date;
-  track_id: string | null;
+  track_id: number | null;
   track_number: number | null;
   track_title: string | null;
-  byte_size: string | null;
+  byte_size: number | string | null;
   duration_ms: number | null;
   transcript_status: 'pending' | 'running' | 'done' | 'failed' | null;
 }
@@ -333,7 +334,7 @@ router.post(
         //     'standalone_listening'). status='processing' until the worker's
         //     transcription settles (the A-4 surface flips its display off
         //     the tracks' transcript_status either way).
-        const src = await client.query<{ id: string }>(
+        const src = await client.query<{ id: number }>(
           `INSERT INTO audio_sources (user_id, slug, title, kind, source_upload_id, status)
            VALUES ($1, $2, $3, 'standalone_listening', NULL, 'processing')
            RETURNING id`,
@@ -352,7 +353,7 @@ router.post(
         //     value that owns the source row two statements up — 074's
         //     composite (source_id, user_id) FK structurally rejects any
         //     drift). byte_size > 0 is guaranteed by the non-empty check.
-        const trk = await client.query<{ id: string }>(
+        const trk = await client.query<{ id: number }>(
           `INSERT INTO audio_tracks
              (source_id, user_id, track_number, title, blob_ref, byte_size, transcript_status)
            VALUES ($1, $2, 1, $3, $4, $5, 'pending')
@@ -368,7 +369,7 @@ router.post(
         //     (uq_audio_transcription_jobs_track_live) cannot fire here: the
         //     track was created in THIS transaction, so no other live job for
         //     it can exist.
-        const job = await client.query<{ id: string }>(
+        const job = await client.query<{ id: number }>(
           `INSERT INTO audio_transcription_jobs (track_id, user_id, status, charged_bytes)
            VALUES ($1, $2, 'pending', $3)
            RETURNING id`,

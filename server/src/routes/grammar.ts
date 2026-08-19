@@ -417,9 +417,9 @@ router.get('/saved-from-uploads', cheapLimiter(), async (req, res, next) => {
   try {
     const userId = getUserId(req);
     const { rows } = await query<{
-      upload_id: string;
+      upload_id: number;
       upload_title: string;
-      entry_id: string;
+      entry_id: number;
       pattern_display: string;
       summary_en: string;
       saved_at: Date;
@@ -534,7 +534,7 @@ function setGraduation(graduate: boolean) {
       const id = (req as typeof req & {
         validatedParams: z.infer<typeof BankIdParamsSchema>;
       }).validatedParams.id;
-      const { rows } = await query<{ id: string }>(
+      const { rows } = await query<{ id: number }>(
         `UPDATE grammar_entries
             SET graduated_at = ${graduate ? 'COALESCE(graduated_at, now())' : 'NULL'},
                 version      = version + 1
@@ -761,7 +761,7 @@ router.get(
       };
 
       const { rows: patternRows } = await query<{
-        id: string; // BIGINT arrives as string from pg
+        id: number; // BIGINT IDENTITY — the int8 parser returns a number
         pattern_display: string;
         summary_en: string;
         bucket: GrammarMasteryBucket;

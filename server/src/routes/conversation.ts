@@ -755,7 +755,7 @@ router.get(
       }).validatedParams.conversationId;
 
       const { rows } = await query<{
-        id: string;
+        id: number;
         title: string | null;
         mode: string;
         target_register: string | null;
@@ -776,8 +776,8 @@ router.get(
 
       res.status(200).json({
         conversation: {
-          // pg returns BIGINT as a string; the API contract documents the
-          // conversation id as a JSON number (matches POST + GET list).
+          // The API contract documents the conversation id as a JSON number
+          // (matches POST + GET list).
           id: Number(conv.id),
           title: conv.title,
           mode: conv.mode,

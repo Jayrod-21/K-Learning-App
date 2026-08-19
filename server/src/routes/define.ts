@@ -41,10 +41,10 @@ interface DefineExample {
   english: string | null;
 }
 
-/** Example row as the batched lookup projects it (entry_id is a BIGINT →
- *  pg returns TEXT). */
+/** Example row as the batched lookup projects it (entry_id is a BIGINT
+ *  IDENTITY → the int8 parser returns a number). */
 interface KrdictExampleRow {
-  entry_id: string;
+  entry_id: number;
   korean: string;
   english: string | null;
 }

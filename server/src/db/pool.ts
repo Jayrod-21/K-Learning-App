@@ -10,9 +10,30 @@
  *   - Force parameterized-only API: callers cannot accidentally call
  *     `pool.query(stringConcat)` because they receive a typed wrapper.
  */
-import { Pool, type PoolClient, type QueryResultRow } from 'pg';
+import {
+  Pool,
+  types as pgTypes,
+  type PoolClient,
+  type QueryResultRow,
+} from 'pg';
 import { loadConfig } from '../config/index.js';
 import { getLogger } from '../logging.js';
+
+// OID 20 = int8 (bigint). pg returns int8 as a string by default to avoid
+// precision loss past Number.MAX_SAFE_INTEGER. Every PK/FK here is BIGINT
+// IDENTITY (values start at 1 → always safe integers), so returning a number
+// is correct and removes the scattered lossy Number(r.id) coercion. Guard:
+// keep the string when the value is NOT a safe integer so precision is never
+// silently lost — coerceId (client) / the DTO boundary can fail loud on the
+// genuinely-oversized case (which IDENTITY ids never reach in practice).
+// Registered once at module load — before any pool construction (getPool /
+// setPoolForTesting), so every connection in prod and tests parses int8 the
+// same way. pg's type registry is a module singleton; re-registering the same
+// OID is idempotent.
+pgTypes.setTypeParser(pgTypes.builtins.INT8, (val: string): number | string => {
+  const n = Number(val);
+  return Number.isSafeInteger(n) ? n : val;
+});
 
 /**
  * A parameterized-query executor returning the rows + a non-null rowCount.

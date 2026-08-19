@@ -458,8 +458,11 @@ describe('GET /topik/mistakes — recent wrong answers for review (F-021)', () =
       answers: [{ itemId: mockId, picked: 'a' }], // wrong — 'b' is correct
     });
     expect(submit.status).toBe(200);
+    // ::text keeps this probe's id a STRING — the route's mistake DTO emits
+    // attempt_id::text (pinned string wire), and the F-203 int8 parser would
+    // otherwise hand this raw read a number and break the comparison.
     const { rows: attemptRows } = await pg.pool.query<{ id: string }>(
-      `SELECT id FROM topik_attempts WHERE user_id = $1 AND status = 'completed'`,
+      `SELECT id::text AS id FROM topik_attempts WHERE user_id = $1 AND status = 'completed'`,
       [userId],
     );
     expect(attemptRows).toHaveLength(1);
