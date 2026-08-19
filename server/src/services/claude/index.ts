@@ -66,6 +66,8 @@ import {
   NameConversationInputSchema,
   ConversationTitleSchema,
   PatternResultSchema,
+  ReadingComprehensionInputSchema,
+  ReadingComprehensionResultSchema,
   StoryGenInputSchema,
   StoryImagePromptsInputSchema,
   StoryImagePromptsResultSchema,
@@ -95,6 +97,8 @@ import {
   type NameConversationInput,
   type PatternResult,
   type ProxyResult,
+  type ReadingComprehensionInput,
+  type ReadingComprehensionResult,
   type StoryGenInput,
   type StoryImagePromptsInput,
   type StoryImagePromptsResult,
@@ -116,6 +120,7 @@ import {
 import { buildStoryRequest, buildWritingPromptRequest } from './prompts/generation';
 import { buildStoryImagePromptsRequest } from './prompts/story_image_prompts';
 import { buildImageOcrRequest } from './prompts/image_ocr';
+import { buildReadingComprehensionRequest } from './prompts/reading_comprehension';
 import { buildRecognizeGrammarRequest } from './prompts/recognize_grammar';
 import { buildTranslatePassageRequest } from './prompts/translate_passage';
 import { sanitizeUserInput } from './prompts/sanitize';
@@ -155,6 +160,10 @@ export type {
   PatternResult,
   ProficiencyLevel,
   ProxyResult,
+  ReadingComprehensionInput,
+  ReadingComprehensionQuestion,
+  ReadingComprehensionResult,
+  ReadingQuestionOption,
   StoryGenInput,
   StoryImageCharacter,
   StoryImagePromptsInput,
@@ -304,6 +313,18 @@ export interface ClaudeProxy {
     input: StoryImagePromptsInput,
     ctx?: CallContext,
   ): Promise<ProxyResult<StoryImagePromptsResult>>;
+  /**
+   * F-205: author 3-5 multiple-choice comprehension questions from a reading
+   * chapter's Korean prose — Korean stem, exactly 4 options with exactly one
+   * correct (Zod refine — a violating reply is a 502, never a row), bilingual
+   * explanation. Tool-use forced; the ROUTE persists the set to
+   * reading_questions (migration 086) — that table is the generate-once
+   * cache, so this route's proxy cacheTtl is 0 (a regenerate rolls fresh).
+   */
+  generateReadingComprehension(
+    input: ReadingComprehensionInput,
+    ctx?: CallContext,
+  ): Promise<ProxyResult<ReadingComprehensionResult>>;
   generateConversation(
     input: ConversationInput,
     ctx?: CallContext,
@@ -725,6 +746,43 @@ class ClaudeProxyImpl implements ClaudeProxy {
       cacheTtl: cfg.cacheTtlSeconds.story_image_prompts,
       outputSchema: StoryImagePromptsResultSchema,
       parser: parseToolResult('submit_image_prompts'),
+    });
+  }
+
+  async generateReadingComprehension(
+    rawInput: ReadingComprehensionInput,
+    ctx: CallContext = {},
+  ): Promise<ProxyResult<ReadingComprehensionResult>> {
+    const cfg = this.cfg;
+    const route: RouteName = 'reading_comprehension';
+    const input = parseInput(ReadingComprehensionInputSchema, rawInput, route);
+    const cap = cfg.inputCaps.reading_comprehension;
+    // The prose (and optional title) are OCR'd + curated book content — not
+    // raw user free text, but attacker-influenceable in principle (a
+    // poisoned upload), so both get translate_passage's exact treatment:
+    // shared injection guard + length cap here, <user_input> wrap in the
+    // builder. questionCount is a bounded integer (not sanitized).
+    const prose = sanitizeUserInput(input.prose, { maxLength: cap });
+    const chapterTitle =
+      input.chapterTitle !== undefined
+        ? sanitizeUserInput(input.chapterTitle, { maxLength: cap })
+        : undefined;
+    const cleaned: ReadingComprehensionInput = {
+      ...input,
+      prose,
+      ...(chapterTitle !== undefined ? { chapterTitle } : {}),
+    };
+    const model = resolveModel(cfg, route, input.model);
+    const request = buildReadingComprehensionRequest(cleaned, model);
+
+    return this.runJsonRoute({
+      route,
+      model,
+      ctx,
+      request,
+      cacheTtl: cfg.cacheTtlSeconds.reading_comprehension,
+      outputSchema: ReadingComprehensionResultSchema,
+      parser: parseToolResult('submit_comprehension_questions'),
     });
   }
 

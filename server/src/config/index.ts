@@ -248,6 +248,26 @@ const EnvSchema = z.object({
   // deploy-time problem, SECURITY.md §1), it is never silently clamped.
   STORY_IMAGE_SCENE_COUNT: z.coerce.number().int().min(2).max(4).default(3),
 
+  // ---------------------------------------------------------------------------
+  // Reading comprehension checks (F-205 — AI-generated MC questions per
+  // reading chapter, Claude proxy route 'reading_comprehension', stored in
+  // reading_questions/086).
+  // ---------------------------------------------------------------------------
+  // Per-user DAILY cap on comprehension-question GENERATIONS (→ 429 BEFORE
+  // the Claude call). Unlike the story TTS/image caps (which count their job
+  // ledgers), generation here is synchronous with no jobs table — the
+  // append-only claude_usage table (004) is the ledger: one row per
+  // generation call, surviving regenerates (the reading_questions rows
+  // themselves are replaced, so they can't count spend). A generous default:
+  // a real study session generates a handful of chapters at most.
+  READING_QUESTION_DAILY_CAP: z.coerce.number().int().positive().default(20),
+
+  // How many questions one generation authors (F-205 locks 3-5; an
+  // out-of-range value fails config parse at startup — bad config is a
+  // deploy-time problem, never silently clamped; STORY_IMAGE_SCENE_COUNT's
+  // stance).
+  READING_QUESTION_COUNT: z.coerce.number().int().min(3).max(5).default(4),
+
   // Corpus audio root (F-012 — TTMIK/Iyagi mp3 streaming). Read-only tree the
   // audio routes stream from; DB rows store paths RELATIVE to this root (e.g.
   // 'TTMIK/이야기들/이야기/143 TTMIK Iyagi 143.mp3'). In the deploy compose this

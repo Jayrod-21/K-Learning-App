@@ -51,6 +51,7 @@ function setupProxy(responses: Array<StubResponseSpec | { error: unknown }>) {
     name_conversation: 10,
     translate_passage: 30,
     story_image_prompts: 10,
+    reading_comprehension: 6,
   });
   const sdk = makeStubSdk(responses);
   const proxy = createClaudeProxy({

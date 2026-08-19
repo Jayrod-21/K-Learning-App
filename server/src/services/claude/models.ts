@@ -636,6 +636,75 @@ export const StoryImagePromptsResultSchema = z.object({
 });
 export type StoryImagePromptsResult = z.infer<typeof StoryImagePromptsResultSchema>;
 
+// ---- 3h. generateReadingComprehension ----------------------------------------
+// F-205 Phase 1: given a reading chapter's Korean prose (its ordered passage
+// bodies, concatenated + truncated by the route), author 3-5 multiple-choice
+// COMPREHENSION questions — a Korean question stem, exactly 4 plausible
+// Korean options with exactly one correct, and a concise bilingual (KO/EN)
+// explanation. The ROUTE persists the set to reading_questions (migration
+// 086) — this method only generates; the table is the generate-once cache
+// (proxy cacheTtl is 0 so an explicit regenerate rolls a fresh set).
+
+export const ReadingComprehensionInputSchema = z.object({
+  /** The chapter's title, for context framing only ("이 장" otherwise).
+   *  Free text (curated/OCR'd book content) — sanitized + wrapped as
+   *  untrusted data by the proxy. Bounded under reading_chapters.title's
+   *  500-char DB CHECK. */
+  chapterTitle: NonEmptyText.max(500).optional(),
+  /** The chapter's prose — the ordered passage bodies joined by blank lines,
+   *  TRUNCATED by the route to its working budget (~3000 chars) before this
+   *  schema sees it; 6000 is the hard ceiling (under the proxy input cap of
+   *  8000). Free text — sanitized + wrapped as untrusted data by the proxy. */
+  prose: NonEmptyText.max(6000),
+  /** How many questions to author (F-205 locks 3-5; default 4). */
+  questionCount: z.number().int().min(3).max(5).default(4),
+  /** Optional model override. */
+  model: z.enum(['haiku', 'sonnet', 'opus']).optional(),
+});
+export type ReadingComprehensionInput = z.infer<typeof ReadingComprehensionInputSchema>;
+
+/** One answer option — the TopikChoice {text, correct} shape the client MC
+ *  renderer already consumes, and exactly what reading_questions.options
+ *  stores (the 086 CHECK pins arity; this schema pins the field shapes). */
+export const ReadingQuestionOptionSchema = z.object({
+  /** The option text, in Korean. */
+  text: NonEmptyText.max(300),
+  /** Whether this option is the correct answer. */
+  correct: z.boolean(),
+});
+export type ReadingQuestionOption = z.infer<typeof ReadingQuestionOptionSchema>;
+
+/** One generated question. The refine enforces the invariant the DB cannot
+ *  (086's CHECK pins array-ness + arity only): EXACTLY ONE correct option —
+ *  a zero- or multi-key question is a malformed model reply and must fail
+ *  the output parse (→ ClaudeOutputSchemaError → 502), never reach a row. */
+export const ReadingComprehensionQuestionSchema = z
+  .object({
+    /** The Korean question stem (누가/무엇을/어떻게/왜 over the prose).
+     *  Bounded under reading_questions.question_text's 2000-char DB CHECK. */
+    questionText: NonEmptyText.max(1000),
+    /** Exactly 4 options (matches the 086 arity CHECK). */
+    options: z.array(ReadingQuestionOptionSchema).length(4),
+    /** Concise bilingual (KO/EN) explanation of the correct answer. Bounded
+     *  under reading_questions.explanation's 4000-char DB CHECK. */
+    explanation: NonEmptyText.max(2000),
+  })
+  .refine((q) => q.options.filter((o) => o.correct).length === 1, {
+    message: 'exactly one option must be correct',
+    path: ['options'],
+  });
+export type ReadingComprehensionQuestion = z.infer<
+  typeof ReadingComprehensionQuestionSchema
+>;
+
+export const ReadingComprehensionResultSchema = z.object({
+  /** The generated set, in presentation order (3-5 questions). */
+  questions: z.array(ReadingComprehensionQuestionSchema).min(3).max(5),
+});
+export type ReadingComprehensionResult = z.infer<
+  typeof ReadingComprehensionResultSchema
+>;
+
 // ---- 4. generateConversation -----------------------------------------------
 // Streamed conversation turns. Register-aware. Optional vocab focus.
 

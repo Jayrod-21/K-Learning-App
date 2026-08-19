@@ -20,6 +20,7 @@ const limits = {
   name_conversation: 2,
   translate_passage: 2,
   story_image_prompts: 2,
+  reading_comprehension: 2,
 } as const;
 
 describe('TokenBucketLimiter', () => {

@@ -46,6 +46,7 @@ import type {
   GeneratedStory,
   GeneratedStorySummary,
   ReadingPosition,
+  ReadingQuestion,
   StoryAudio,
   StoryImagesEnvelope,
 } from '../services/reading';
@@ -66,6 +67,8 @@ const readingSvc = vi.hoisted(() => ({
   requestStoryImages: vi.fn(),
   getStoryImages: vi.fn(),
   requestStoryExperience: vi.fn(),
+  getChapterQuestions: vi.fn(),
+  generateChapterQuestions: vi.fn(),
   // Module CONSTANT (not a spy): Reading.tsx maps over it to build the
   // level radiogroup, so the mock must export the real display order.
   GENERATED_STORY_LEVELS: ['L1', 'L2', 'L3', 'L4', 'L5+'] as const,
@@ -153,6 +156,46 @@ const CHAPTER_ONE = {
   startPage: 1,
   endPage: 2,
 };
+
+/** Two stored comprehension questions for CHAPTER_ONE (F-205). One correct
+ *  option per question, at different marker positions on purpose — a test
+ *  that only ever picks index 0 could pass by accident. */
+const CHAPTER_QUESTIONS: ReadingQuestion[] = [
+  {
+    id: 501,
+    questionNumber: 1,
+    questionText: '소년은 어디로 갔나요?',
+    options: [
+      { text: '학교', correct: false },
+      { text: '시장', correct: true },
+      { text: '집', correct: false },
+      { text: '공원', correct: false },
+    ],
+    explanation: '본문에 따르면 소년은 시장으로 갔습니다.',
+    kind: 'comprehension',
+  },
+  {
+    id: 502,
+    questionNumber: 2,
+    questionText: '소녀는 무엇을 주었나요?',
+    options: [
+      { text: '사과', correct: true },
+      { text: '배', correct: false },
+      { text: '감', correct: false },
+      { text: '포도', correct: false },
+    ],
+    explanation: '소녀는 사과를 주었습니다.',
+    kind: 'comprehension',
+  },
+];
+
+/** `ComprehensionQuestion` renders `{number}. {questionText}` as sibling
+ *  JSX text children inside one `<p>` — RTL's `getByText` normalizes to the
+ *  element's WHOLE text content, so a query must include the numbered
+ *  prefix to land a unique, exact match. */
+function questionPrompt(q: ReadingQuestion): string {
+  return `${String(q.questionNumber)}. ${q.questionText}`;
+}
 
 const SAVED_POSITION: ReadingPosition = {
   sourceUploadId: 41,
@@ -370,6 +413,8 @@ beforeEach(() => {
   readingSvc.requestStoryImages.mockReset();
   readingSvc.getStoryImages.mockReset();
   readingSvc.requestStoryExperience.mockReset();
+  readingSvc.getChapterQuestions.mockReset();
+  readingSvc.generateChapterQuestions.mockReset();
   uploadsSvc.listUploads.mockReset();
   uploadsSvc.listSharedUploads.mockReset();
   uploadsSvc.getUpload.mockReset();
@@ -398,6 +443,11 @@ beforeEach(() => {
   // F-211: same posture for the illustration hydrate — never-illustrated,
   // configured (an inert "Generate illustrations" button; no polling).
   readingSvc.getStoryImages.mockResolvedValue(IMAGES_NONE);
+  // F-205: the chapter reader's comprehension-check card hydrates on mount
+  // too — default to "not generated yet" so every pre-F-205 chapter-reader
+  // test sees the same reader body it always did (plus an inert "Generate
+  // comprehension check" button).
+  readingSvc.getChapterQuestions.mockResolvedValue([]);
 });
 
 function renderReading(): ReturnType<typeof render> {
@@ -1241,6 +1291,203 @@ describe('Reading — mark chapter as read (F-172)', () => {
         expect.any(AbortSignal),
       );
     });
+  });
+});
+
+describe('Reading — comprehension check (F-205)', () => {
+  beforeEach(() => {
+    readingSvc.listChapters.mockResolvedValue([CHAPTER_ONE]);
+    readingSvc.getChapter.mockResolvedValue({
+      chapter: { ...CHAPTER_ONE, sourceUploadId: 41 },
+      passages: [
+        { id: 1, passageNumber: 1, body: '첫 문단.', pageNumber: 1 },
+        { id: 2, passageNumber: 2, body: '둘째 문단.', pageNumber: 2 },
+      ],
+    });
+  });
+
+  it('renders the stored questions when present, with no generate button', async () => {
+    readingSvc.getChapterQuestions.mockResolvedValue(CHAPTER_QUESTIONS);
+
+    const user = userEvent.setup();
+    renderReading();
+    await openChapterOne(user);
+
+    expect(
+      await screen.findByText(/check your understanding/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(questionPrompt(CHAPTER_QUESTIONS[0]!)),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(questionPrompt(CHAPTER_QUESTIONS[1]!)),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /generate comprehension check/i }),
+    ).not.toBeInTheDocument();
+    expect(readingSvc.getChapterQuestions).toHaveBeenCalledWith(
+      CHAPTER_ONE.id,
+      expect.any(AbortSignal),
+    );
+  });
+
+  it('shows an explicit generate button when none exist, and calls the service on click', async () => {
+    readingSvc.getChapterQuestions.mockResolvedValue([]);
+    readingSvc.generateChapterQuestions.mockResolvedValue(CHAPTER_QUESTIONS);
+
+    const user = userEvent.setup();
+    renderReading();
+    await openChapterOne(user);
+
+    const genButton = await screen.findByRole('button', {
+      name: /generate comprehension check/i,
+    });
+    // Never auto-generated on load — the F-216 posture.
+    expect(readingSvc.generateChapterQuestions).not.toHaveBeenCalled();
+
+    await user.click(genButton);
+
+    await waitFor(() => {
+      expect(readingSvc.generateChapterQuestions).toHaveBeenCalledWith(
+        CHAPTER_ONE.id,
+        expect.any(AbortSignal),
+      );
+    });
+    expect(
+      await screen.findByText(questionPrompt(CHAPTER_QUESTIONS[0]!)),
+    ).toBeInTheDocument();
+  });
+
+  it('a wrong pick reveals "Not quite" + the explanation (F-009 idiom)', async () => {
+    readingSvc.getChapterQuestions.mockResolvedValue(CHAPTER_QUESTIONS);
+
+    const user = userEvent.setup();
+    renderReading();
+    await openChapterOne(user);
+
+    await screen.findByText(questionPrompt(CHAPTER_QUESTIONS[0]!));
+    // Q1's wrong option — index 0, '학교'.
+    await user.click(screen.getByRole('radio', { name: /① 학교/ }));
+
+    expect(await screen.findByText(/not quite/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(CHAPTER_QUESTIONS[0]!.explanation),
+    ).toBeInTheDocument();
+    // A picked/revealed choice can't be re-clicked.
+    expect(screen.getByRole('radio', { name: /① 학교/ })).toBeDisabled();
+  });
+
+  it('a correct pick reveals "Correct" + the explanation', async () => {
+    readingSvc.getChapterQuestions.mockResolvedValue(CHAPTER_QUESTIONS);
+
+    const user = userEvent.setup();
+    renderReading();
+    await openChapterOne(user);
+
+    await screen.findByText(questionPrompt(CHAPTER_QUESTIONS[0]!));
+    // Q1's correct option — index 1, '시장'.
+    await user.click(screen.getByRole('radio', { name: /② 시장/ }));
+
+    expect(await screen.findByText(/^correct$/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(CHAPTER_QUESTIONS[0]!.explanation),
+    ).toBeInTheDocument();
+  });
+
+  it('tallies the score once every question is answered', async () => {
+    readingSvc.getChapterQuestions.mockResolvedValue(CHAPTER_QUESTIONS);
+
+    const user = userEvent.setup();
+    renderReading();
+    await openChapterOne(user);
+
+    await screen.findByText(questionPrompt(CHAPTER_QUESTIONS[0]!));
+    expect(screen.queryByText(/score:/i)).not.toBeInTheDocument();
+
+    // Q1 correct ('시장'), Q2 wrong ('배' instead of '사과') — expect 1 / 2.
+    await user.click(screen.getByRole('radio', { name: /② 시장/ }));
+    await screen.findByText(/^correct$/i);
+    await user.click(screen.getByRole('radio', { name: /② 배/ }));
+
+    expect(await screen.findByText(/score: 1 \/ 2/i)).toBeInTheDocument();
+  });
+
+  it('a fetch failure renders a retryable error, not a crash', async () => {
+    readingSvc.getChapterQuestions.mockRejectedValue(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+
+    const user = userEvent.setup();
+    renderReading();
+    await openChapterOne(user);
+
+    const alert = await screen.findByText(/could not load the comprehension check/i);
+    expect(alert).toBeInTheDocument();
+    expect(screen.queryByText(/boom/)).not.toBeInTheDocument();
+    // The reader body around it is untouched — no crash. Passage text
+    // tokenises into per-word Tapword buttons (no single element carries the
+    // full sentence — see `questionPrompt`'s note), so assert on a stable
+    // structural landmark instead: the passages still render as tappable
+    // words, and the "mark as read" affordance is still there below the
+    // failed card.
+    expect(
+      await screen.findByRole('button', { name: '첫' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /mark chapter as read/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows the whitelisted daily-cap message verbatim when generation is capped, and the button stays available', async () => {
+    readingSvc.getChapterQuestions.mockResolvedValue([]);
+    readingSvc.generateChapterQuestions.mockRejectedValue(
+      new ApiError(
+        'daily comprehension-check generation limit reached (5/day). Try again tomorrow.',
+        { status: 429, code: 'rate_limited' },
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderReading();
+    await openChapterOne(user);
+
+    await user.click(
+      await screen.findByRole('button', {
+        name: /generate comprehension check/i,
+      }),
+    );
+
+    expect(
+      await screen.findByText(/daily comprehension-check generation limit reached/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /generate comprehension check/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('a generic (non-429) generate failure shows fixed alert copy — no server prose leak', async () => {
+    readingSvc.getChapterQuestions.mockResolvedValue([]);
+    readingSvc.generateChapterQuestions.mockRejectedValue(
+      new ApiError('boom', { status: 502, code: 'upstream_error' }),
+    );
+
+    const user = userEvent.setup();
+    renderReading();
+    await openChapterOne(user);
+
+    await user.click(
+      await screen.findByRole('button', {
+        name: /generate comprehension check/i,
+      }),
+    );
+
+    const alert = await screen.findByText(/could not generate the comprehension check/i);
+    expect(alert).toBeInTheDocument();
+    expect(screen.queryByText(/boom/)).not.toBeInTheDocument();
+    // The generate button stays available as the retry.
+    expect(
+      screen.getByRole('button', { name: /generate comprehension check/i }),
+    ).toBeInTheDocument();
   });
 });
 

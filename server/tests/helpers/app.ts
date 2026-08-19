@@ -278,6 +278,29 @@ export function makeStubProxy(overrides: Partial<ClaudeProxy> = {}): ClaudeProxy
       },
       metadata: { ...baseMeta, requestId: randomUUID() },
     }),
+    generateReadingComprehension: async (input) => ({
+      // Deterministic question set sized to the requested questionCount —
+      // exactly 4 options, first one correct (the proxy Zod refine's
+      // exactly-one-correct contract). The first stem embeds a prose
+      // fragment so route tests can assert the chapter's own text reached
+      // the generator.
+      result: {
+        questions: Array.from({ length: input.questionCount ?? 4 }, (_, i) => ({
+          questionText:
+            i === 0
+              ? `이야기 질문 1: ${input.prose.slice(0, 30)}`
+              : `이야기 질문 ${i + 1}: 무슨 일이 있었습니까?`,
+          options: [
+            { text: `정답 ${i + 1}`, correct: true },
+            { text: `오답 ${i + 1}a`, correct: false },
+            { text: `오답 ${i + 1}b`, correct: false },
+            { text: `오답 ${i + 1}c`, correct: false },
+          ],
+          explanation: `정답은 "정답 ${i + 1}"입니다. Mock explanation ${i + 1}.`,
+        })),
+      },
+      metadata: { ...baseMeta, requestId: randomUUID() },
+    }),
     translatePassage: async (input) => ({
       // Deterministic mock translation echoing the source passage — lets the
       // /reading/translate route test assert the wire shape without touching
