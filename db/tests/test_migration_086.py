@@ -50,7 +50,9 @@ REAL_MIGRATIONS_DIR: pathlib.Path = (
 # ONLY 086 (its DROP TABLE down is destructive-marked).
 PRE_086 = "085"
 
-FAKE_HASH = "$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$fakehashfortests"
+# A syntactically valid argon2id-shaped hash satisfying
+# ck_users_password_hash_argon2id (LIKE '$argon2id$%', length 80..255).
+FAKE_HASH = "$argon2id$" + "x" * 70
 
 # A schema-valid option set: exactly 4, exactly one correct (the writer-side
 # Zod contract; the DB CHECK pins array-ness + arity only).
@@ -114,9 +116,17 @@ def _full_up(full_dir: pathlib.Path) -> None:
 # ---------------------------------------------------------------------------
 
 def _seed_user(conn: psycopg.Connection, email: str = "f205@test.local") -> int:
+    # Idempotent: the session-scoped container shares one database across this
+    # module's tests, so re-seeding the same email must reuse the existing row
+    # rather than violate the email UNIQUE. ON CONFLICT DO UPDATE (a no-op set)
+    # so RETURNING still yields the id on the conflict path.
     with conn.cursor(row_factory=tuple_row) as cur:
         cur.execute(
-            "INSERT INTO users (email, password_hash) VALUES (%s, %s) RETURNING id",
+            """
+            INSERT INTO users (email, password_hash) VALUES (%s, %s)
+            ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email
+            RETURNING id
+            """,
             (email, FAKE_HASH),
         )
         return cur.fetchone()[0]
@@ -130,6 +140,7 @@ def _seed_chapter(conn: psycopg.Connection, user_id: int, chapter_number: int = 
             INSERT INTO book_uploads (user_id, title, type, status, byte_size)
             VALUES (%s, '전래동화', 'literature'::book_upload_type,
                     'ready'::book_upload_status, 1024)
+            ON CONFLICT (user_id, title) DO UPDATE SET title = EXCLUDED.title
             RETURNING id
             """,
             (user_id,),
