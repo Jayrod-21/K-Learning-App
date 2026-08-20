@@ -1134,3 +1134,146 @@ describe('Diagnostic', () => {
     ).toBeInTheDocument();
   });
 });
+
+describe('B1 fix — prompt renders the server instruction, never duplicated as the passage', () => {
+  beforeEach(() => {
+    hookState.snapshot = {
+      data: null,
+      loading: true,
+      error: null,
+      isMock: false,
+      refetch: refetchSpy,
+    };
+    refetchSpy.mockReset();
+    startDiagnostic.mockReset();
+    answerDiagnostic.mockReset();
+    nextDiagnostic.mockReset();
+    finishDiagnostic.mockReset();
+  });
+
+  it('renders the server prompt once, and it is a DIFFERENT string from the passage', async () => {
+    // Before the fix, the server sent `stem` as BOTH the prompt and the
+    // passage — the same Korean string printed twice. The server now sends
+    // `instruction` as `prompt`, a genuinely different string from `passage`.
+    hookState.snapshot = { data: EMPTY_SNAPSHOT, loading: false, error: null, isMock: true };
+    const item: DiagnosticLiveItem = {
+      responseId: 301,
+      ordinal: 1,
+      section: 'reading',
+      level: 'L4',
+      kind: 'passage-mc',
+      prompt: '이 글의 내용과 같은 것을 고르십시오.',
+      passage: '어제는 친구를 만나서 영화를 봤습니다. 영화가 정말 재미있었습니다.',
+      choices: [
+        { id: 'a', kr: '보기 1', en: '' },
+        { id: 'b', kr: '보기 2', en: '' },
+      ],
+    };
+    startDiagnostic.mockResolvedValue({ runId: 41, item, progress: { ordinal: 1, total: 1 } });
+
+    const user = userEvent.setup();
+    renderWithRouter();
+    await user.click(screen.getByRole('button', { name: /begin test/i }));
+    await screen.findByText(item.prompt);
+
+    expect(item.prompt).not.toBe(item.passage);
+    expect(screen.getAllByText(item.prompt)).toHaveLength(1);
+    expect(screen.getByText(item.passage!)).toBeInTheDocument();
+  });
+});
+
+describe('F-119/F-206 fix — Diagnostic listening audio is real, or honestly absent', () => {
+  beforeEach(() => {
+    hookState.snapshot = {
+      data: null,
+      loading: true,
+      error: null,
+      isMock: false,
+      refetch: refetchSpy,
+    };
+    refetchSpy.mockReset();
+    startDiagnostic.mockReset();
+    answerDiagnostic.mockReset();
+    nextDiagnostic.mockReset();
+    finishDiagnostic.mockReset();
+  });
+
+  it('renders a REAL <audio> player (TopikStudyAudio), never the fake AudioBlock Play button, when audioUrl/spans are present', async () => {
+    hookState.snapshot = { data: EMPTY_SNAPSHOT, loading: false, error: null, isMock: true };
+    const item: DiagnosticLiveItem = {
+      responseId: 302,
+      ordinal: 1,
+      section: 'listening',
+      level: 'L4',
+      kind: 'audio-mc',
+      prompt: '다음을 듣고 물음에 답하십시오.',
+      audio: { duration: 30, transcript: '내일은 전국에 비가 오겠습니다.' },
+      audioUrl: '/topik/audio/555101/2',
+      audioStartMs: 12_000,
+      audioEndMs: 34_000,
+      choices: [
+        { id: 'a', kr: '보기 1', en: '' },
+        { id: 'b', kr: '보기 2', en: '' },
+      ],
+    };
+    startDiagnostic.mockResolvedValue({ runId: 42, item, progress: { ordinal: 1, total: 1 } });
+
+    const user = userEvent.setup();
+    renderWithRouter();
+    await user.click(screen.getByRole('button', { name: /begin test/i }));
+    await screen.findByText(item.prompt);
+
+    // The real player: a single <audio src> element seeking the item's span.
+    const audioEl = document.querySelector('audio');
+    expect(audioEl).not.toBeNull();
+    expect(audioEl).toHaveAttribute('src', item.audioUrl);
+    expect(
+      screen.getByRole('button', { name: /Play question audio/i }),
+    ).toBeInTheDocument();
+    // The fake player's Play button never renders — there is a real one.
+    expect(screen.queryByRole('button', { name: 'Play' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('progressbar', { name: 'Playback progress' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('falls back to the honest transcript card (no fake Play button) when the item carries no audioUrl', async () => {
+    hookState.snapshot = { data: EMPTY_SNAPSHOT, loading: false, error: null, isMock: true };
+    const item: DiagnosticLiveItem = {
+      responseId: 303,
+      ordinal: 1,
+      section: 'listening',
+      level: 'L4',
+      kind: 'audio-mc',
+      prompt: '다음을 듣고 물음에 답하십시오.',
+      audio: { duration: 30, transcript: '오늘은 날씨가 맑습니다.' },
+      // No audioUrl/audioStartMs/audioEndMs — the span-less case.
+      choices: [
+        { id: 'a', kr: '보기 1', en: '' },
+        { id: 'b', kr: '보기 2', en: '' },
+      ],
+    };
+    startDiagnostic.mockResolvedValue({ runId: 43, item, progress: { ordinal: 1, total: 1 } });
+
+    const user = userEvent.setup();
+    renderWithRouter();
+    await user.click(screen.getByRole('button', { name: /begin test/i }));
+    await screen.findByText(item.prompt);
+
+    // No real player, no fake Play button, no fake progressbar.
+    expect(document.querySelector('audio')).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: /play question audio/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Play' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('progressbar', { name: 'Playback progress' }),
+    ).not.toBeInTheDocument();
+
+    // The transcript is reachable, honestly labeled — revealing it surfaces
+    // the actual content instead of implying playback.
+    const transcriptButton = screen.getByRole('button', { name: 'Transcript' });
+    await user.click(transcriptButton);
+    expect(screen.getByText(item.audio!.transcript)).toBeInTheDocument();
+  });
+});

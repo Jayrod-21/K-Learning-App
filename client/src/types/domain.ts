@@ -506,6 +506,17 @@ export interface DiagnosticLiveItem {
   passage?: string;
   underline?: string;
   audio?: DiagnosticAudio;
+  /**
+   * A real, playable audio window (F-119/F-206 shape) — present only for
+   * listening items whose corpus row carries a mapped span AND the parent
+   * test has a mapped mp3. `audioStartMs`/`audioEndMs` travel together with
+   * `audioUrl` or not at all (mirrors the server's DB invariant). When
+   * absent, `audio.transcript` (if present) is the item's only content — the
+   * client renders it honestly as a transcript, never a fake player.
+   */
+  audioUrl?: string;
+  audioStartMs?: number;
+  audioEndMs?: number;
   choices: DiagnosticChoice[];
 }
 

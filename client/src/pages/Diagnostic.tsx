@@ -87,6 +87,7 @@ import { DoubleRule } from '../components/DoubleRule';
 import { PageHubHeader } from '../components/PageHubHeader';
 import { SealStamp } from '../components/SealStamp';
 import { AudioBlock } from '../components/AudioBlock';
+import { TopikStudyAudio } from './topik/TopikStudyAudio';
 import { SkillsCompare } from '../components/SkillsCompare';
 import type { SkillRow, SkillReference } from '../components/SkillsCompare';
 import { SubwayProgress } from '../components/SubwayProgress';
@@ -790,12 +791,23 @@ function TakingBlock({
 
         <p className="kr km-diagnostic__prompt">{item.prompt}</p>
 
-        {item.audio ? (
-          <AudioBlock
-            transcriptKr={item.audio.transcript}
-            durationS={item.audio.duration}
+        {/* Listening items with a mapped audio span render the SAME real
+            player the TOPIK study screen uses (F-119/F-206); the transcript
+            stays visible alongside it (`audio.transcript` below), matching
+            TopikStudyAudio's "learn mode" contract. Items with no mapped span
+            fall back to `AudioBlock`'s honest transcript-only card — never a
+            fake Play button. */}
+        {item.audioUrl !== undefined &&
+        item.audioStartMs !== undefined &&
+        item.audioEndMs !== undefined ? (
+          <TopikStudyAudio
+            audioUrl={item.audioUrl}
+            startMs={item.audioStartMs}
+            endMs={item.audioEndMs}
           />
         ) : null}
+
+        {item.audio ? <AudioBlock transcriptKr={item.audio.transcript} /> : null}
 
         {item.passage ? <PassageCard item={item} /> : null}
 

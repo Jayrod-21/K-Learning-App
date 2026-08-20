@@ -2640,7 +2640,7 @@ h1, h2 { font-family: var(--font-display); }
 .km-popover__note--contrast { margin-top: 6px; }
 .km-popover__contrast-tag { color: var(--vermilion-ink); }
 
-/* AudioBlock ────────────────────────────────────────────────────────── */
+/* AudioBlock — honest transcript card (no playable audio mapped) ───────── */
 .km-audioblock {
   background: var(--ink-2);
   border: 1px solid var(--line);
@@ -2650,58 +2650,13 @@ h1, h2 { font-family: var(--font-display); }
 .km-audioblock__row {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
 }
-.km-audioblock__play {
-  width: 38px;
-  height: 38px;
-  border-radius: 999px;
-  border: 1px solid var(--vermilion);
-  background: var(--vermilion);
-  color: var(--on-vermilion);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-.km-audioblock__play:disabled { opacity: 0.5; cursor: not-allowed; }
-.km-audioblock__meta { flex: 1; min-width: 0; }
-.km-audioblock__label { margin-bottom: 6px; }
-.km-audioblock__bar {
-  position: relative;
-  height: 2px;
-  background: var(--ink-3);
-  border-radius: 2px;
-}
-.km-audioblock__fill {
-  height: 100%;
-  background: var(--vermilion);
-  transition: width 100ms linear;
-  border-radius: 2px;
-}
-.km-audioblock__playhead {
-  position: absolute;
-  top: 50%;
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: var(--vermilion);
-  transform: translate(-50%, -50%);
-  transition: left 100ms linear;
-}
+.km-audioblock__label { margin: 0; }
 .km-audioblock__transcript {
   padding: 6px 10px;
   font-size: 0.6875rem;
-}
-.km-audioblock__speeds {
-  display: flex;
-  gap: 6px;
-  margin-top: 10px;
-}
-.km-audioblock__speed {
-  cursor: pointer;
-  background: transparent;
 }
 .km-audioblock__text {
   margin-top: 12px;
@@ -2718,6 +2673,12 @@ h1, h2 { font-family: var(--font-display); }
   font-size: 0.75rem;
   color: var(--paper-mute);
   line-height: 1.55;
+}
+.km-audioblock__note {
+  margin: 10px 0 0;
+  font-size: 0.75rem;
+  color: var(--paper-mute);
+  line-height: 1.5;
 }
 
 /* Flashcard ─────────────────────────────────────────────────────────── */
