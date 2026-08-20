@@ -87,6 +87,7 @@ import { DoubleRule } from '../components/DoubleRule';
 import { PageHubHeader } from '../components/PageHubHeader';
 import { SealStamp } from '../components/SealStamp';
 import { AudioBlock } from '../components/AudioBlock';
+import { TopikStudyAudio } from './topik/TopikStudyAudio';
 import { SkillsCompare } from '../components/SkillsCompare';
 import type { SkillRow, SkillReference } from '../components/SkillsCompare';
 import { SubwayProgress } from '../components/SubwayProgress';
@@ -790,11 +791,30 @@ function TakingBlock({
 
         <p className="kr km-diagnostic__prompt">{item.prompt}</p>
 
-        {item.audio ? (
-          <AudioBlock
-            transcriptKr={item.audio.transcript}
-            durationS={item.audio.duration}
-          />
+        {/* Listening items with a mapped audio span render the SAME real
+            player the TOPIK study screen uses (F-119/F-206), with the
+            transcript reachable alongside it via `AudioBlock`'s
+            `playerPresent` mode (a caption toggle, no false "no audio"
+            claim — there IS audio, it's the player right above). Items with
+            no mapped span fall back to `AudioBlock`'s honest transcript-only
+            card instead. These two are a SINGLE branch, never both — a real
+            player and a "no audio yet" note must never render together
+            (B1 fix-pass). */}
+        {item.audioUrl !== undefined &&
+        item.audioStartMs !== undefined &&
+        item.audioEndMs !== undefined ? (
+          <>
+            <TopikStudyAudio
+              audioUrl={item.audioUrl}
+              startMs={item.audioStartMs}
+              endMs={item.audioEndMs}
+            />
+            {item.audio ? (
+              <AudioBlock transcriptKr={item.audio.transcript} playerPresent />
+            ) : null}
+          </>
+        ) : item.audio ? (
+          <AudioBlock transcriptKr={item.audio.transcript} />
         ) : null}
 
         {item.passage ? <PassageCard item={item} /> : null}
@@ -946,7 +966,9 @@ function sectionLabel(
  * The passage-equivalent context an "Ask about this" seed carries (F-020).
  * Mirrors what the item actually rendered:
  *   - listening items keep their content in `audio.transcript` (shown by
- *     `AudioBlock`) — without it the tutor gets a stem like "무엇에 대한
+ *     `AudioBlock` — a caption toggle beside the real `TopikStudyAudio`
+ *     player when a span is mapped, or the honest fallback card when it
+ *     isn't) — without it the tutor gets a stem like "무엇에 대한
  *     이야기입니까?" with no idea what was said;
  *   - underline items emphasise a span of the passage (`PassageCard` below)
  *     — the seed marks it with ⟨ ⟩ so "밑줄 친 부분…" questions keep WHICH

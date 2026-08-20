@@ -1,12 +1,13 @@
 /**
- * AudioBlock — play/pause aria-pressed toggle, speed-pill switch,
- * transcript reveal, and interval cleanup on unmount.
+ * AudioBlock — the honest "no playable audio, here's the transcript" card
+ * Diagnostic falls back to for listening items with no mapped audio span.
  *
- * The play interval is fake-time driven; we use `vi.useFakeTimers()`
- * so we can assert the timer is cleared on unmount without waiting
- * for real wall-clock ticks.
+ * Pass-2 shipped this as a fake player (Play button + a progress bar driven
+ * by a plain interval, no `<audio>` element). That is gone: there is no Play
+ * button, no progressbar, no speed control — only a transcript reveal toggle
+ * and, until revealed, an honest "no audio for this question" note.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { AudioBlock } from './AudioBlock';
 
@@ -14,87 +15,76 @@ const KR = '안녕하세요, 오늘 날씨가 좋네요.';
 const EN = 'Hello, the weather is nice today.';
 
 describe('AudioBlock', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it('renders Play, the speed group, and the progressbar', () => {
+  it('never renders a Play button or a progressbar — there is nothing to play', () => {
     render(<AudioBlock transcriptKr={KR} transcriptEn={EN} />);
-    expect(screen.getByRole('button', { name: 'Play' })).toBeInTheDocument();
-    expect(
-      screen.getByRole('progressbar', { name: 'Playback progress' }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('group', { name: 'Playback speed' }),
-    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /play/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: /speed/i })).not.toBeInTheDocument();
   });
 
-  // NB: `userEvent` deadlocks against `vi.useFakeTimers()` in happy-dom —
-  // we use the synchronous `fireEvent.click` for click-only contracts and
-  // reserve `userEvent` for key-sequence tests (none here).
-
-  it('toggles play/pause aria-pressed and label on click', () => {
+  it('shows the honest "no audio" note before the transcript is revealed', () => {
     render(<AudioBlock transcriptKr={KR} />);
-    const play = screen.getByRole('button', { name: 'Play' });
-    expect(play).toHaveAttribute('aria-pressed', 'false');
-    fireEvent.click(play);
-    const pause = screen.getByRole('button', { name: 'Pause' });
-    expect(pause).toHaveAttribute('aria-pressed', 'true');
-    fireEvent.click(pause);
-    expect(
-      screen.getByRole('button', { name: 'Play' }),
-    ).toHaveAttribute('aria-pressed', 'false');
-  });
-
-  it('switching the speed pill flips aria-pressed across the group', () => {
-    render(<AudioBlock transcriptKr={KR} />);
-    // The default speed is 1×; the pill carries `1×` as its label.
-    const default1x = screen.getByRole('button', { name: '1×' });
-    expect(default1x).toHaveAttribute('aria-pressed', 'true');
-    const fast = screen.getByRole('button', { name: '1.25×' });
-    expect(fast).toHaveAttribute('aria-pressed', 'false');
-    fireEvent.click(fast);
-    expect(fast).toHaveAttribute('aria-pressed', 'true');
-    expect(default1x).toHaveAttribute('aria-pressed', 'false');
-  });
-
-  it('Transcript button reveals the KR + EN transcript bodies', () => {
-    render(<AudioBlock transcriptKr={KR} transcriptEn={EN} />);
+    expect(screen.getByRole('note')).toHaveTextContent(/no audio for this question/i);
     expect(screen.queryByText(KR)).not.toBeInTheDocument();
+  });
+
+  it('Transcript button reveals the KR + EN transcript and clears the note', () => {
+    render(<AudioBlock transcriptKr={KR} transcriptEn={EN} />);
     const transcript = screen.getByRole('button', { name: 'Transcript' });
     fireEvent.click(transcript);
     expect(screen.getByText(KR)).toBeInTheDocument();
     expect(screen.getByText(EN)).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'Hide' }),
-    ).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByRole('note')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Hide' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
   });
 
-  it('clears the play interval on unmount so the timer does not leak', () => {
-    // Use globalThis — `global` isn't typed in browser-lib tsconfigs.
-    const clearSpy = vi.spyOn(globalThis, 'clearInterval');
-    const { unmount } = render(<AudioBlock transcriptKr={KR} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Play' }));
-    // Sanity: setInterval was called at least once during play.
-    // (The effect's cleanup will call clearInterval on unmount.)
-    const before = clearSpy.mock.calls.length;
-    unmount();
-    // After unmount, clearInterval was called for the play tick. The
-    // sentinel value is "at least one more clear" — happy-dom's GC may
-    // also fire on its own, but we only need to confirm our cleanup
-    // ran. (Counting absolute values is fragile across React versions.)
-    expect(clearSpy.mock.calls.length).toBeGreaterThan(before);
-    clearSpy.mockRestore();
-  });
-
-  it('aria-valuenow on the progressbar starts at 0', () => {
+  it('Hide toggles back to the note, dropping the transcript', () => {
     render(<AudioBlock transcriptKr={KR} />);
-    expect(
-      screen.getByRole('progressbar'),
-    ).toHaveAttribute('aria-valuenow', '0');
+    fireEvent.click(screen.getByRole('button', { name: 'Transcript' }));
+    expect(screen.getByText(KR)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
+    expect(screen.queryByText(KR)).not.toBeInTheDocument();
+    expect(screen.getByRole('note')).toBeInTheDocument();
+  });
+
+  it('renders no EN transcript line when transcriptEn is omitted', () => {
+    render(<AudioBlock transcriptKr={KR} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Transcript' }));
+    expect(screen.getByText(KR)).toBeInTheDocument();
+    expect(screen.queryByText(EN)).not.toBeInTheDocument();
+  });
+
+  // B1 fix-pass: `playerPresent` is Diagnostic's caption-alongside-the-real-
+  // player mode (F-206). It must NEVER show the "no audio" note — there IS
+  // audio, it's the real `TopikStudyAudio` player rendered right above.
+  describe('playerPresent (caption mode beside a real player)', () => {
+    it('renders no "no audio" note in the collapsed state', () => {
+      render(<AudioBlock transcriptKr={KR} playerPresent />);
+      expect(screen.queryByRole('note')).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(/no audio for this question/i),
+      ).not.toBeInTheDocument();
+    });
+
+    it('the Transcript toggle still reveals the transcript', () => {
+      render(<AudioBlock transcriptKr={KR} transcriptEn={EN} playerPresent />);
+      fireEvent.click(screen.getByRole('button', { name: 'Transcript' }));
+      expect(screen.getByText(KR)).toBeInTheDocument();
+      expect(screen.getByText(EN)).toBeInTheDocument();
+      expect(
+        screen.queryByText(/no audio for this question/i),
+      ).not.toBeInTheDocument();
+    });
+
+    it('Hide returns to the empty collapsed state, never the "no audio" note', () => {
+      render(<AudioBlock transcriptKr={KR} playerPresent />);
+      fireEvent.click(screen.getByRole('button', { name: 'Transcript' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
+      expect(screen.queryByText(KR)).not.toBeInTheDocument();
+      expect(screen.queryByRole('note')).not.toBeInTheDocument();
+    });
   });
 });

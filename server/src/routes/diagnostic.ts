@@ -114,6 +114,16 @@ interface ServerItem {
   readonly passage?: string;
   readonly underline?: string;
   readonly audio?: { readonly duration: number; readonly transcript: string };
+  /**
+   * A real, playable audio window (F-119/F-206 shape): the client streams
+   * `audioUrl` and seeks `audioStartMs`→`audioEndMs`. Present only for
+   * listening items whose topik row carries a mapped span AND a test-level
+   * mp3 — see `buildTopikItem`. `audio.transcript` still ships alongside this
+   * (a caption/reveal), so an item can carry both.
+   */
+  readonly audioUrl?: string;
+  readonly audioStartMs?: number;
+  readonly audioEndMs?: number;
   readonly choices: readonly ChoiceDTO[];
   /** Correct choice id — NEVER serialized to the client before reveal. */
   readonly correctAnswer: ChoiceId;
@@ -133,6 +143,9 @@ interface ClientItem {
   readonly passage?: string;
   readonly underline?: string;
   readonly audio?: { duration: number; transcript: string };
+  readonly audioUrl?: string;
+  readonly audioStartMs?: number;
+  readonly audioEndMs?: number;
   readonly choices: ChoiceDTO[];
 }
 
@@ -149,6 +162,9 @@ function toClientItem(responseId: number, ordinal: number, item: ServerItem): Cl
     ...(item.passage !== undefined ? { passage: item.passage } : {}),
     ...(item.underline !== undefined ? { underline: item.underline } : {}),
     ...(item.audio !== undefined ? { audio: { ...item.audio } } : {}),
+    ...(item.audioUrl !== undefined ? { audioUrl: item.audioUrl } : {}),
+    ...(item.audioStartMs !== undefined ? { audioStartMs: item.audioStartMs } : {}),
+    ...(item.audioEndMs !== undefined ? { audioEndMs: item.audioEndMs } : {}),
     choices: item.choices.map((c) => ({ id: c.id, kr: c.kr, en: c.en })),
   };
 }
@@ -166,6 +182,14 @@ interface TopikRow {
   proficiency: string | null;
   stem: string | null;
   prompt: string | null;
+  /**
+   * The curator's actual question directive (e.g. "무엇에 대한 내용입니까?
+   * <보기>와 같이 알맞은 것을 고르십시오."), distinct from `stem`/passage body.
+   * B1 fix: this — not `stem` — is what belongs in the on-screen prompt; `stem`
+   * is the passage/transcript the question is ABOUT, and printing it as both
+   * the prompt and the passage duplicated the same Korean string on screen.
+   */
+  instruction: string | null;
   underline: string | null;
   options: unknown;
   answer: unknown;
@@ -179,6 +203,17 @@ interface TopikRow {
    * diagnostic resolves the covering range so the question text isn't blank.
    */
   test_passages: Record<string, unknown> | null;
+  /** This item's mapped listening-audio window (migration 078), or null. */
+  audio_start_ms: number | null;
+  audio_end_ms: number | null;
+  /** The parent test's mapped whole-section MP3 path, or null (migration 005
+   *  `audio_path`). Column names mirror topik.ts's `test_audio_path` join
+   *  alias exactly (F-206) — one shape, no drift between the two callers. */
+  test_audio_path: string | null;
+  /** The parent test's `test_number` — with `test_topik_level`, resolves the
+   *  `/topik/audio/:testNumber/:level` stream URL (same shape as topik.ts). */
+  test_number: number;
+  test_topik_level: string;
 }
 
 /** The two TOPIK papers, as stored in `topik_tests.topik_level` (TEXT with a
@@ -220,13 +255,21 @@ function paperForBand(band: DiagnosticBand): TopikPaper {
  * not move θ.
  *
  * B-038: also excludes listening items whose stem is the no-transcript
- * curator placeholder (NO_TRANSCRIPT_STEM_PREFIX, shared with topik.ts).
- * Unlike topik.ts's gate — which RE-ADMITS a placeholder-stem item once it
- * carries a mapped audio span (F-119: the learner listens instead of
- * reading) — the exclusion here is UNCONDITIONAL: the diagnostic serves no
- * audio playback (its `audio` block is transcript-only), so a placeholder
- * stem always surfaces as unanswerable placeholder text regardless of
- * whether the underlying recording exists.
+ * curator placeholder (NO_TRANSCRIPT_STEM_PREFIX, shared with topik.ts) —
+ * UNLESS the row carries a real playable audio span, mirroring topik.ts's
+ * `ANSWERABLE_ITEM_SQL` RE-ADMIT (F-119: the learner listens instead of
+ * reading the stem). This diagnostic now serves real audio playback for any
+ * listening item that clears `buildTopikItem`'s `hasRealAudio` gate
+ * (`audio_start_ms`/`audio_end_ms`/`test.audio_path` all non-null) — a
+ * placeholder-stem row that ALSO clears that gate is a real, playable,
+ * answerable listening question, exactly the case topik.ts re-admits. Only a
+ * placeholder-stem row with NO mapped audio stays excluded: nothing to read,
+ * nothing to play, genuinely unanswerable. The re-admit condition mirrors
+ * `hasRealAudio` exactly (not topik.ts's looser `audio_end_ms IS NOT NULL`
+ * alone) so a re-admitted row here is always guaranteed to reach the
+ * diagnostic's stricter three-column playability gate too — never a
+ * placeholder stem re-admitted into the pool only to then fail
+ * `hasRealAudio` and render with no audio AND no real stem text.
  */
 async function pickTopikRow(
   section: 'reading' | 'listening',
@@ -250,12 +293,17 @@ async function pickTopikRow(
     const params: unknown[] = [section];
     // JOIN topik_tests to carry the test's `passages` JSONB (shared reading
     // passages keyed by item-number range, migration 005) so buildTopikItem can
-    // resolve the passage covering this item's `item_number`. Columns are
-    // qualified with the `i` alias because the join introduces a second `id`.
+    // resolve the passage covering this item's `item_number`, PLUS the test's
+    // mapped audio path/number/paper (F-119/F-206 shape) so a listening item
+    // can name its real playable stream. Columns are qualified with the `i`
+    // alias because the join introduces a second `id`.
     let sql = `SELECT i.id::text AS id, i.section::text AS section,
                       i.proficiency::text AS proficiency,
-                      i.stem, i.prompt, i.underline, i.options, i.answer, i.extra,
-                      i.item_number, t.passages AS test_passages
+                      i.stem, i.prompt, i.instruction, i.underline, i.options,
+                      i.answer, i.extra, i.item_number, t.passages AS test_passages,
+                      i.audio_start_ms, i.audio_end_ms,
+                      t.audio_path AS test_audio_path,
+                      t.test_number, t.topik_level AS test_topik_level
                  FROM topik_items i
                  JOIN topik_tests t ON t.id = i.topik_test_id
                 WHERE i.section = $1::topik_section
@@ -263,7 +311,9 @@ async function pickTopikRow(
                   AND jsonb_array_length(i.options) >= 2
                   AND i.answer IS NOT NULL
                   AND i.options->>0 NOT IN ('①','②','③','④')
-                  AND coalesce(i.stem, '') NOT LIKE '${NO_TRANSCRIPT_STEM_PREFIX}%'`;
+                  AND (coalesce(i.stem, '') NOT LIKE '${NO_TRANSCRIPT_STEM_PREFIX}%'
+                       OR (i.audio_start_ms IS NOT NULL AND i.audio_end_ms IS NOT NULL
+                           AND t.audio_path IS NOT NULL))`;
     if (attempt.proficiency !== null) {
       params.push(attempt.proficiency);
       sql += ` AND i.proficiency = $${params.length}::proficiency_level`;
@@ -276,7 +326,21 @@ async function pickTopikRow(
       params.push(excludeIds);
       sql += ` AND i.id::text <> ALL($${params.length}::text[])`;
     }
-    sql += ` ORDER BY random() LIMIT 1`;
+    // Audio-carrying preference (F-206-shaped playback): among LISTENING
+    // candidates, rows with a mapped audio window AND a test-level mp3 sort
+    // first (CASE 0), everything else sorts after (CASE 1) — `random()` only
+    // breaks ties WITHIN each group. This never shrinks the pool: when the
+    // pool has zero audio-carrying rows every candidate lands in the same
+    // group and the pick degenerates to the old uniform-random draw, so a
+    // band/paper with no mapped audio still serves (transcript-only). The
+    // CASE is a no-op for reading (WHERE already pins `i.section = $1`, so
+    // every candidate row already has the same section and the `= 'listening'`
+    // arm is always false) — one query shape, not two branches.
+    sql += ` ORDER BY (CASE WHEN i.section::text = 'listening'
+                              AND i.audio_start_ms IS NOT NULL
+                              AND i.audio_end_ms IS NOT NULL
+                              AND t.audio_path IS NOT NULL
+                             THEN 0 ELSE 1 END), random() LIMIT 1`;
     const { rows } = await query<TopikRow>(sql, params);
     if (rows[0]) return rows[0];
   }
@@ -326,7 +390,15 @@ function buildTopikItem(
       ? proficiencyToNumber(row.proficiency as ProficiencyLevel)
       : proficiencyToNumber(band);
   const level: DiagnosticTargetLevel = band;
-  const prompt = (row.prompt ?? row.stem ?? '').trim() || '다음 질문에 답하세요.';
+  // B1 fix: the on-screen QUESTION is `instruction` (the curator's actual
+  // directive, e.g. "무엇에 대한 내용입니까? …고르십시오."), never `stem` — `stem`
+  // is the passage/transcript body the question is ABOUT and is rendered
+  // separately below (`passage` / `audio.transcript`). Serving `stem` as both
+  // the prompt AND the passage printed the same Korean string twice on
+  // screen; `topik_items.prompt` (the old fallback) is NULL on 100% of the
+  // live eligible pool, so it never actually broke the tie in production —
+  // `instruction` is populated for the full eligible pool instead.
+  const prompt = (row.instruction ?? '').trim() || '다음 질문에 답하세요.';
 
   // The passage text the item depends on: its OWN `stem` first, else the shared
   // passage from the parent test keyed by this item's number range (migration
@@ -369,7 +441,29 @@ function buildTopikItem(
       (typeof extra['transcript'] === 'string' ? extra['transcript'] : '') ||
       passageText ||
       '';
-    return { ...base, audio: { duration, transcript } };
+    // Real playable audio (F-119/F-206 shape): only when BOTH the item's
+    // window AND the parent test's mp3 are mapped — mirrors topik.ts's own
+    // `row.audio_start_ms !== null && row.audio_end_ms !== null &&
+    // row.test_audio_path !== null` guard (F-206) and its URL build EXACTLY
+    // (`/topik/audio/<testNumber>/<1|2>`, level ternary on 'TOPIK II') so the
+    // client's `buildAudioSrc` allow-list — already anchored to that same
+    // route shape for the TOPIK study player — accepts it with no change.
+    // `audio.transcript` above still ships alongside this as a caption/reveal.
+    const hasRealAudio =
+      row.audio_start_ms !== null && row.audio_end_ms !== null && row.test_audio_path !== null;
+    return {
+      ...base,
+      audio: { duration, transcript },
+      ...(hasRealAudio
+        ? {
+            audioUrl: `/topik/audio/${String(row.test_number)}/${
+              row.test_topik_level === 'TOPIK II' ? '2' : '1'
+            }`,
+            audioStartMs: row.audio_start_ms!,
+            audioEndMs: row.audio_end_ms!,
+          }
+        : {}),
+    };
   }
   return base;
 }
@@ -705,6 +799,9 @@ async function insertResponse(
     ...(item.passage !== undefined ? { passage: item.passage } : {}),
     ...(item.underline !== undefined ? { underline: item.underline } : {}),
     ...(item.audio !== undefined ? { audio: item.audio } : {}),
+    ...(item.audioUrl !== undefined ? { audioUrl: item.audioUrl } : {}),
+    ...(item.audioStartMs !== undefined ? { audioStartMs: item.audioStartMs } : {}),
+    ...(item.audioEndMs !== undefined ? { audioEndMs: item.audioEndMs } : {}),
     choices: item.choices,
     explain: item.explain,
   };
@@ -1146,6 +1243,9 @@ interface StoredItemPayload {
   readonly passage?: string;
   readonly underline?: string;
   readonly audio?: { readonly duration: number; readonly transcript: string };
+  readonly audioUrl?: string;
+  readonly audioStartMs?: number;
+  readonly audioEndMs?: number;
   readonly choices: readonly ChoiceDTO[];
 }
 
@@ -1181,6 +1281,9 @@ async function pendingClientItem(runId: number): Promise<ClientItem | null> {
     ...(p.passage !== undefined ? { passage: p.passage } : {}),
     ...(p.underline !== undefined ? { underline: p.underline } : {}),
     ...(p.audio !== undefined ? { audio: { ...p.audio } } : {}),
+    ...(p.audioUrl !== undefined ? { audioUrl: p.audioUrl } : {}),
+    ...(p.audioStartMs !== undefined ? { audioStartMs: p.audioStartMs } : {}),
+    ...(p.audioEndMs !== undefined ? { audioEndMs: p.audioEndMs } : {}),
     choices: p.choices.map((c) => ({ id: c.id, kr: c.kr, en: c.en })),
   };
 }

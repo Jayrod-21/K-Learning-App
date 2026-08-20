@@ -400,6 +400,14 @@ export async function seedTopikItem(
     rawAnswer?: unknown;
     stem?: string | null;
     prompt?: string | null;
+    /**
+     * The curator's question directive (topik_items.instruction) — what the
+     * diagnostic's `buildTopikItem` now renders as the on-screen prompt
+     * (B1 fix). Defaults to a realistic non-empty directive so callers don't
+     * have to opt in just to avoid the '다음 질문에 답하세요.' generic fallback;
+     * pass `null` explicitly to exercise that fallback.
+     */
+    instruction?: string | null;
     underline?: string | null;
     itemType?: string;
     extra?: Record<string, unknown>;
@@ -427,6 +435,21 @@ export async function seedTopikItem(
      * F-002: the diagnostic's L1/L2 bands prefer items from 'TOPIK I' tests.
      */
     topikLevel?: 'TOPIK I' | 'TOPIK II';
+    /**
+     * This item's mapped listening-audio window in ms (migration 078,
+     * F-119). Pass both together (or neither) — the DB CHECK forbids a half
+     * window. Default null (no span, the live corpus's common case).
+     */
+    audioStartMs?: number | null;
+    audioEndMs?: number | null;
+    /**
+     * The parent test's mapped whole-section mp3 path (topik_tests.audio_path).
+     * Only takes effect when THIS call creates the test row (a fresh
+     * `testNumber`, or the default random one) — a call that reuses an
+     * existing pinned `testNumber` does not retroactively update it. Default
+     * null (no mp3 mapped).
+     */
+    audioPath?: string | null;
   } = {},
 ): Promise<number> {
   const section = opts.section ?? 'reading';
@@ -448,10 +471,10 @@ export async function seedTopikItem(
     testId = Number(existingTest.rows[0].id);
   } else {
     const testRes = await pool.query<{ id: string }>(
-      `INSERT INTO topik_tests (corpus_source_id, corpus, test_number, topik_level, section)
-       VALUES ($1, 'topik'::corpus, $2, $4, $3::topik_section)
+      `INSERT INTO topik_tests (corpus_source_id, corpus, test_number, topik_level, section, audio_path)
+       VALUES ($1, 'topik'::corpus, $2, $4, $3::topik_section, $5)
        RETURNING id`,
-      [corpusSourceId, testNumber, section, topikLevel],
+      [corpusSourceId, testNumber, section, topikLevel, opts.audioPath ?? null],
     );
     testId = Number(testRes.rows[0]!.id);
   }
@@ -467,12 +490,14 @@ export async function seedTopikItem(
   const { rows } = await pool.query<{ id: string }>(
     `INSERT INTO topik_items (
         topik_test_id, corpus_source_id, corpus, source_id, item_number,
-        section, item_type, proficiency, stem, prompt, underline,
-        options, answer, extra, has_image, image_text, image_ref)
+        section, item_type, proficiency, stem, prompt, instruction, underline,
+        options, answer, extra, has_image, image_text, image_ref,
+        audio_start_ms, audio_end_ms)
      VALUES ($1, $2, 'topik'::corpus, $3, $13,
              $4::topik_section, $5::topik_item_type,
-             $6::proficiency_level, $7, $8, $9,
-             $10::jsonb, $11::jsonb, $12::jsonb, $14, $15, $16)
+             $6::proficiency_level, $7, $8, $9, $10,
+             $11::jsonb, $12::jsonb, $17::jsonb, $14, $15, $16,
+             $18, $19)
      RETURNING id`,
     [
       testId,
@@ -483,14 +508,17 @@ export async function seedTopikItem(
       opts.proficiency === undefined ? 'L4' : opts.proficiency,
       opts.stem === undefined ? '다음 글을 읽고 물음에 답하십시오.' : opts.stem,
       opts.prompt === undefined ? '알맞은 것을 고르십시오.' : opts.prompt,
+      opts.instruction === undefined ? '알맞은 것을 고르십시오.' : opts.instruction,
       opts.underline ?? null,
       JSON.stringify(options),
       JSON.stringify(answerJson),
-      JSON.stringify(opts.extra ?? {}),
       itemNumber,
       opts.hasImage ?? false,
       opts.imageText ?? null,
       opts.imageRef ?? null,
+      JSON.stringify(opts.extra ?? {}),
+      opts.audioStartMs ?? null,
+      opts.audioEndMs ?? null,
     ],
   );
   return Number(rows[0]!.id);
