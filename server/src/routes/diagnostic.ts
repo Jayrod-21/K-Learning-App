@@ -255,13 +255,21 @@ function paperForBand(band: DiagnosticBand): TopikPaper {
  * not move θ.
  *
  * B-038: also excludes listening items whose stem is the no-transcript
- * curator placeholder (NO_TRANSCRIPT_STEM_PREFIX, shared with topik.ts).
- * Unlike topik.ts's gate — which RE-ADMITS a placeholder-stem item once it
- * carries a mapped audio span (F-119: the learner listens instead of
- * reading) — the exclusion here is UNCONDITIONAL: the diagnostic serves no
- * audio playback (its `audio` block is transcript-only), so a placeholder
- * stem always surfaces as unanswerable placeholder text regardless of
- * whether the underlying recording exists.
+ * curator placeholder (NO_TRANSCRIPT_STEM_PREFIX, shared with topik.ts) —
+ * UNLESS the row carries a real playable audio span, mirroring topik.ts's
+ * `ANSWERABLE_ITEM_SQL` RE-ADMIT (F-119: the learner listens instead of
+ * reading the stem). This diagnostic now serves real audio playback for any
+ * listening item that clears `buildTopikItem`'s `hasRealAudio` gate
+ * (`audio_start_ms`/`audio_end_ms`/`test.audio_path` all non-null) — a
+ * placeholder-stem row that ALSO clears that gate is a real, playable,
+ * answerable listening question, exactly the case topik.ts re-admits. Only a
+ * placeholder-stem row with NO mapped audio stays excluded: nothing to read,
+ * nothing to play, genuinely unanswerable. The re-admit condition mirrors
+ * `hasRealAudio` exactly (not topik.ts's looser `audio_end_ms IS NOT NULL`
+ * alone) so a re-admitted row here is always guaranteed to reach the
+ * diagnostic's stricter three-column playability gate too — never a
+ * placeholder stem re-admitted into the pool only to then fail
+ * `hasRealAudio` and render with no audio AND no real stem text.
  */
 async function pickTopikRow(
   section: 'reading' | 'listening',
@@ -303,7 +311,9 @@ async function pickTopikRow(
                   AND jsonb_array_length(i.options) >= 2
                   AND i.answer IS NOT NULL
                   AND i.options->>0 NOT IN ('①','②','③','④')
-                  AND coalesce(i.stem, '') NOT LIKE '${NO_TRANSCRIPT_STEM_PREFIX}%'`;
+                  AND (coalesce(i.stem, '') NOT LIKE '${NO_TRANSCRIPT_STEM_PREFIX}%'
+                       OR (i.audio_start_ms IS NOT NULL AND i.audio_end_ms IS NOT NULL
+                           AND t.audio_path IS NOT NULL))`;
     if (attempt.proficiency !== null) {
       params.push(attempt.proficiency);
       sql += ` AND i.proficiency = $${params.length}::proficiency_level`;

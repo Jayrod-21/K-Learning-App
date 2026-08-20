@@ -1235,6 +1235,12 @@ describe('F-119/F-206 fix — Diagnostic listening audio is real, or honestly ab
     expect(
       screen.queryByRole('progressbar', { name: 'Playback progress' }),
     ).not.toBeInTheDocument();
+    // B1 fix-pass: the honest "no audio yet" note must NEVER render beside a
+    // working real player — before this fix it did, on this exact item shape
+    // (audio.transcript ships alongside audioUrl/spans on the wire).
+    expect(
+      screen.queryByText(/no audio for this question/i),
+    ).not.toBeInTheDocument();
   });
 
   it('falls back to the honest transcript card (no fake Play button) when the item carries no audioUrl', async () => {
@@ -1270,10 +1276,19 @@ describe('F-119/F-206 fix — Diagnostic listening audio is real, or honestly ab
       screen.queryByRole('progressbar', { name: 'Playback progress' }),
     ).not.toBeInTheDocument();
 
+    // No real audio exists for this item — the honest note IS shown, up
+    // front, before the transcript is revealed.
+    expect(
+      screen.getByText(/no audio for this question/i),
+    ).toBeInTheDocument();
+
     // The transcript is reachable, honestly labeled — revealing it surfaces
-    // the actual content instead of implying playback.
+    // the actual content instead of implying playback, and clears the note.
     const transcriptButton = screen.getByRole('button', { name: 'Transcript' });
     await user.click(transcriptButton);
     expect(screen.getByText(item.audio!.transcript)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/no audio for this question/i),
+    ).not.toBeInTheDocument();
   });
 });

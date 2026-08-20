@@ -56,4 +56,35 @@ describe('AudioBlock', () => {
     expect(screen.getByText(KR)).toBeInTheDocument();
     expect(screen.queryByText(EN)).not.toBeInTheDocument();
   });
+
+  // B1 fix-pass: `playerPresent` is Diagnostic's caption-alongside-the-real-
+  // player mode (F-206). It must NEVER show the "no audio" note — there IS
+  // audio, it's the real `TopikStudyAudio` player rendered right above.
+  describe('playerPresent (caption mode beside a real player)', () => {
+    it('renders no "no audio" note in the collapsed state', () => {
+      render(<AudioBlock transcriptKr={KR} playerPresent />);
+      expect(screen.queryByRole('note')).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(/no audio for this question/i),
+      ).not.toBeInTheDocument();
+    });
+
+    it('the Transcript toggle still reveals the transcript', () => {
+      render(<AudioBlock transcriptKr={KR} transcriptEn={EN} playerPresent />);
+      fireEvent.click(screen.getByRole('button', { name: 'Transcript' }));
+      expect(screen.getByText(KR)).toBeInTheDocument();
+      expect(screen.getByText(EN)).toBeInTheDocument();
+      expect(
+        screen.queryByText(/no audio for this question/i),
+      ).not.toBeInTheDocument();
+    });
+
+    it('Hide returns to the empty collapsed state, never the "no audio" note', () => {
+      render(<AudioBlock transcriptKr={KR} playerPresent />);
+      fireEvent.click(screen.getByRole('button', { name: 'Transcript' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
+      expect(screen.queryByText(KR)).not.toBeInTheDocument();
+      expect(screen.queryByRole('note')).not.toBeInTheDocument();
+    });
+  });
 });

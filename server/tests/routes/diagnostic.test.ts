@@ -195,14 +195,16 @@ describe('POST /diagnostic — glyph-option items excluded (data sweep D-4)', ()
 });
 
 describe('POST /diagnostic — placeholder-stem listening items excluded (B-038)', () => {
-  it('a no-transcript placeholder item is never served', async () => {
+  it('a no-transcript placeholder item with NO mapped audio is never served', async () => {
     // The live corpus has listening items whose stem is the curator
     // placeholder "[듣기 지문 없음 — …]" (no transcript was available at
-    // ingest). topik.ts excludes them (NO_TRANSCRIPT_STEM_PREFIX) but the
-    // diagnostic's pickTopikRow historically did not, so the diagnostic could
-    // serve an item whose "transcript" is the placeholder notice — nothing to
-    // answer against. The diagnostic renders NO audio playback (its audio
-    // block is transcript-only), so the exclusion is unconditional here.
+    // ingest). topik.ts excludes them (NO_TRANSCRIPT_STEM_PREFIX) unless a
+    // real audio span is mapped (F-119 RE-ADMIT); the diagnostic's
+    // pickTopikRow now mirrors that exact re-admit condition (SF-1 fix-pass)
+    // instead of excluding every placeholder-stem row unconditionally. This
+    // row carries NO mapped span, so it stays excluded either way — nothing
+    // to read, nothing to play. The re-admit case (span + test mp3 present)
+    // is covered separately below ('SF-1 fix: … RE-ADMITTED …').
     // Setup mirrors the glyph-exclusion test above: the ONLY topik row is a
     // placeholder listening item, so the listening dimension must be skipped
     // entirely rather than serve it.
@@ -1842,6 +1844,57 @@ describe('F-119/F-206 — real listening audio on the diagnostic', () => {
     expect(nxt.body.next.section).toBe('listening');
     expect(nxt.body.next.audioUrl).toBeUndefined();
   });
+
+  it('SF-1 fix: a placeholder-stem item WITH a mapped audio span is RE-ADMITTED and carries audioUrl', async () => {
+    // B-038 originally excluded EVERY placeholder-stem listening row
+    // unconditionally, on the premise that the diagnostic served no audio
+    // playback. This fix makes that premise false: a placeholder-stem row
+    // that ALSO has a real mapped span + test mp3 is now a genuine, playable,
+    // answerable listening question (the learner listens instead of reading
+    // the stub stem) — exactly the case topik.ts's ANSWERABLE_ITEM_SQL
+    // re-admits. Only the sole listening candidate is this row, so a served
+    // listening item here proves re-admission, not just a lucky uniform draw.
+    await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4', answer: 1 });
+    const itemId = await seedTopikItem(pg.pool, {
+      section: 'listening',
+      proficiency: 'L4',
+      answer: 1,
+      stem: '[듣기 지문 없음 — 대화/담화가 오디오로만 제공됨(전사 파일 없음)]',
+      testNumber: 555_104,
+      topikLevel: 'TOPIK II',
+      audioStartMs: 3_000,
+      audioEndMs: 11_000,
+      audioPath: 'topik/555104/listening.mp3',
+    });
+    await seedVocabEntry(pg.pool, { proficiency: 'L4', korean: '단어' });
+    await seedKgiuEntry(pg.pool, { proficiency: 'L4', pattern: '-는 바람에' });
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const start = await agent.post('/diagnostic').send({});
+    const runId = start.body.runId;
+    await agent
+      .post(`/diagnostic/${runId}/answer`)
+      .send({ responseId: start.body.item.responseId, picked: null });
+    const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
+    expect(nxt.status).toBe(200);
+    const item = nxt.body.next;
+    expect(item.section).toBe('listening');
+    expect(item.audioUrl).toBe('/topik/audio/555104/2');
+    expect(item.audioStartMs).toBe(3_000);
+    expect(item.audioEndMs).toBe(11_000);
+
+    const served = await pg.pool.query<{ source_ref: string }>(
+      `SELECT source_ref FROM diagnostic_responses WHERE run_id = $1 AND section = 'listening'`,
+      [runId],
+    );
+    expect(served.rows[0]?.source_ref).toBe(String(itemId));
+  });
+
+  // The counterpart negative case — a placeholder stem alone does not
+  // re-admit a row; it must ALSO clear the audio-playability gate — is
+  // covered by the B-038 describe block above
+  // ('a no-transcript placeholder item with NO mapped audio is never
+  // served'), which seeds the identical placeholder stem with no audio span.
 });
 
 describe('GET /diagnostic/trajectory', () => {
