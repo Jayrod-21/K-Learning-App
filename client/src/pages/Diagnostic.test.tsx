@@ -355,14 +355,13 @@ describe('Diagnostic', () => {
     expect(container.querySelector('.km-diagnostic__display')).toBeNull();
   });
 
-  it('F-011: the intro advertises the real 20-item / 5-section test shape', () => {
-    // The server serves ITEMS_PER_DIMENSION = 4 across 5 dimensions
-    // (reading/listening/vocab/grammar/hanja — diagnostic-upgrade Phase A) →
-    // a 20-item schedule (server/src/routes/diagnostic.ts), and the
-    // taking-screen progress bar counts to the server's total. The intro's
-    // promise must match — the old "8 items / 2 items / 12 min" copy shipped
-    // one screen before the progress bar (fixpass R3 B1). This pins
-    // intro ↔ server-shape sync.
+  it('F-011: the intro advertises the real 22-item / 6-section test shape (diagnostic-upgrade Phase B)', () => {
+    // The server serves 4 each of reading/listening/vocab/grammar/hanja plus
+    // 2 writing (WEIGHTS in server/src/routes/diagnostic.ts, diagnostic-
+    // upgrade Phase B) → a 22-item schedule, and the taking-screen progress
+    // bar counts to the server's total. The intro's promise must match — the
+    // old "8 items / 2 items / 12 min" copy shipped one screen before the
+    // progress bar (fixpass R3 B1). This pins intro ↔ server-shape sync.
     hookState.snapshot = {
       data: EMPTY_SNAPSHOT,
       loading: false,
@@ -370,13 +369,14 @@ describe('Diagnostic', () => {
       isMock: true,
     };
     renderWithRouter();
-    // Eyebrow: "진단평가 · 20 min · 20 items".
-    expect(screen.getByText(/20 min · 20 items/)).toBeInTheDocument();
-    // Every one of the five section rows promises 4 items.
+    // Eyebrow: "진단평가 · 20 min · 22 items".
+    expect(screen.getByText(/20 min · 22 items/)).toBeInTheDocument();
+    // Five section rows promise 4 items each; writing promises 2.
     expect(screen.getAllByText('4 items')).toHaveLength(5);
-    // The stale pre-F-011 shape must never come back.
+    expect(screen.getByText('2 items')).toBeInTheDocument();
+    // The stale pre-F-011 / pre-Phase-B shapes must never come back.
     expect(screen.queryByText(/8 items/)).not.toBeInTheDocument();
-    expect(screen.queryByText('2 items')).not.toBeInTheDocument();
+    expect(screen.queryByText(/20 items/)).not.toBeInTheDocument();
     expect(screen.queryByText(/12 min/)).not.toBeInTheDocument();
   });
 
@@ -390,17 +390,28 @@ describe('Diagnostic', () => {
     renderWithRouter();
 
     // INTRO_SECTIONS render both language segments via <Bilingual/> (the
-    // baked "kr · en" span pair is gone).
-    for (const kr of ['읽기', '듣기', '어휘', '문법', '한자']) {
+    // baked "kr · en" span pair is gone). Six sections since diagnostic-
+    // upgrade Phase B (writing joins hanja/reading/listening/vocab/grammar).
+    for (const kr of ['읽기', '듣기', '어휘', '문법', '한자', '쓰기']) {
       expect(screen.getByText(kr)).toBeInTheDocument();
     }
-    for (const en of ['Reading', 'Listening', 'Vocabulary', 'Grammar', 'Hanja']) {
+    for (const en of [
+      'Reading',
+      'Listening',
+      'Vocabulary',
+      'Grammar',
+      'Hanja',
+      'Writing',
+    ]) {
       expect(screen.getByText(en)).toBeInTheDocument();
     }
     // The per-section count carries Korean too. The counts render compact
     // (one language visually), so each row holds the Korean twice: the
-    // visible primary + the sr-only bilingual reading → 5 rows × 2.
+    // visible primary + the sr-only bilingual reading. Five rows at 4문항
+    // (reading/listening/vocab/grammar/hanja) × 2 = 10; writing's own 2문항
+    // row is asserted separately since its count differs.
     expect(screen.getAllByText('4문항')).toHaveLength(10);
+    expect(screen.getAllByText('2문항')).toHaveLength(2);
     // Verbage trim: the eyebrow no longer repeats the title's 진단평가 —
     // it appears exactly once, in the h1.
     expect(screen.getAllByText('진단평가')).toHaveLength(1);
@@ -1291,6 +1302,270 @@ describe('F-119/F-206 fix — Diagnostic listening audio is real, or honestly ab
     expect(screen.getByText(item.audio!.transcript)).toBeInTheDocument();
     expect(
       screen.queryByText(/no audio for this question/i),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe('writing item (diagnostic-upgrade Phase B) — textarea, not ChoiceList', () => {
+  beforeEach(() => {
+    hookState.snapshot = {
+      data: null,
+      loading: true,
+      error: null,
+      isMock: false,
+      refetch: refetchSpy,
+    };
+    refetchSpy.mockReset();
+    startDiagnostic.mockReset();
+    answerDiagnostic.mockReset();
+    nextDiagnostic.mockReset();
+    finishDiagnostic.mockReset();
+  });
+
+  const WRITING_ITEM: DiagnosticLiveItem = {
+    responseId: 401,
+    ordinal: 21,
+    section: 'writing',
+    level: 'L3',
+    kind: 'writing-production',
+    prompt: 'Rewrite using -는 것 같다.',
+    passage: '그는 학생이다.',
+    hint: 'He is a student.',
+    choices: [],
+  };
+
+  it('renders a textarea for a writing item, not ChoiceList radios', async () => {
+    hookState.snapshot = { data: EMPTY_SNAPSHOT, loading: false, error: null, isMock: true };
+    startDiagnostic.mockResolvedValue({
+      runId: 51,
+      item: WRITING_ITEM,
+      progress: { ordinal: 21, total: 22 },
+    });
+
+    const user = userEvent.setup();
+    renderWithRouter();
+    await user.click(screen.getByRole('button', { name: /begin test/i }));
+    await screen.findByText(WRITING_ITEM.prompt);
+
+    // The KR base sentence + EN gloss render (reused passage/hint fields).
+    expect(screen.getByText('그는 학생이다.')).toBeInTheDocument();
+    expect(screen.getByText('He is a student.')).toBeInTheDocument();
+
+    // A free-text answer box, not the MC radiogroup.
+    expect(
+      screen.getByRole('textbox', { name: /write one sentence in korean/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
+    expect(screen.queryAllByRole('radio')).toHaveLength(0);
+
+    // Submit starts disabled — nothing typed yet.
+    expect(screen.getByRole('button', { name: /submit/i })).toBeDisabled();
+  });
+
+  it('typing + submit sends the typed text as `picked`', async () => {
+    hookState.snapshot = { data: EMPTY_SNAPSHOT, loading: false, error: null, isMock: true };
+    startDiagnostic.mockResolvedValue({
+      runId: 52,
+      item: WRITING_ITEM,
+      progress: { ordinal: 21, total: 22 },
+    });
+    answerDiagnostic.mockResolvedValueOnce({
+      result: {
+        correct: true,
+        correctAnswer: 'writing',
+        explain: 'Great use of the pattern.',
+        verdict: 'good',
+        summary: 'Great use of the pattern.',
+        corrections: [],
+        referenceModelKr: '그는 학생인 것 같다.',
+        referenceModelEn: 'It seems he is a student.',
+      },
+      done: false,
+      progress: { ordinal: 21, total: 22 },
+    });
+
+    const user = userEvent.setup();
+    renderWithRouter();
+    await user.click(screen.getByRole('button', { name: /begin test/i }));
+    await screen.findByText(WRITING_ITEM.prompt);
+
+    const textbox = screen.getByRole('textbox', {
+      name: /write one sentence in korean/i,
+    });
+    await user.type(textbox, '그는 학생인 것 같다.');
+    expect(screen.getByRole('button', { name: /submit/i })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: /submit/i }));
+
+    expect(answerDiagnostic).toHaveBeenCalledWith(
+      52,
+      expect.objectContaining({
+        responseId: WRITING_ITEM.responseId,
+        picked: '그는 학생인 것 같다.',
+      }),
+    );
+  });
+
+  it('Skip sends `picked: null` on a writing item, same as any other item', async () => {
+    hookState.snapshot = { data: EMPTY_SNAPSHOT, loading: false, error: null, isMock: true };
+    startDiagnostic.mockResolvedValue({
+      runId: 53,
+      item: WRITING_ITEM,
+      progress: { ordinal: 21, total: 22 },
+    });
+    answerDiagnostic.mockResolvedValueOnce({
+      result: {
+        correct: false,
+        correctAnswer: 'writing',
+        explain: 'No answer was submitted.',
+        verdict: 'incorrect',
+        summary: 'No answer was submitted.',
+        corrections: [],
+        referenceModelKr: '그는 학생인 것 같다.',
+        referenceModelEn: 'It seems he is a student.',
+      },
+      done: false,
+      progress: { ordinal: 21, total: 22 },
+    });
+
+    const user = userEvent.setup();
+    renderWithRouter();
+    await user.click(screen.getByRole('button', { name: /begin test/i }));
+    await screen.findByText(WRITING_ITEM.prompt);
+    await user.click(screen.getByRole('button', { name: /skip/i }));
+
+    expect(answerDiagnostic).toHaveBeenCalledWith(
+      53,
+      expect.objectContaining({ responseId: WRITING_ITEM.responseId, picked: null }),
+    );
+  });
+
+  it('a writing-grade claim collision (409 writing_grade_in_progress) retries in place instead of the already-recorded resync (fix-pass 2 FIX B)', async () => {
+    // Real timers deliberately (not vi.useFakeTimers()): this file's
+    // interactions are all userEvent-based, and userEvent is documented to
+    // deadlock against fake timers in happy-dom (see MyAudio.test.tsx's
+    // GOTCHA note). WRITING_CLAIM_RETRY_DELAY_MS is only 1.5s, so a real
+    // wait here is cheap and keeps userEvent usable throughout.
+    hookState.snapshot = { data: EMPTY_SNAPSHOT, loading: false, error: null, isMock: true };
+    startDiagnostic.mockResolvedValue({
+      runId: 55,
+      item: WRITING_ITEM,
+      progress: { ordinal: 21, total: 22 },
+    });
+    // First submit loses the server's atomic claim race — distinct `code`
+    // from the generic "already recorded" 409 the E-DG-409 test above uses.
+    // Second submit (the automatic retry) succeeds normally.
+    answerDiagnostic
+      .mockRejectedValueOnce(
+        new ApiError('writing item is already being graded — retry shortly', {
+          status: 409,
+          code: 'writing_grade_in_progress',
+        }),
+      )
+      .mockResolvedValueOnce({
+        result: {
+          correct: true,
+          correctAnswer: 'writing',
+          explain: 'Great use of the pattern.',
+          verdict: 'good',
+          summary: 'Great use of the pattern.',
+          corrections: [],
+          referenceModelKr: '그는 학생인 것 같다.',
+          referenceModelEn: 'It seems he is a student.',
+        },
+        done: false,
+        progress: { ordinal: 21, total: 22 },
+      });
+
+    const user = userEvent.setup();
+    renderWithRouter();
+    await user.click(screen.getByRole('button', { name: /begin test/i }));
+    await screen.findByText(WRITING_ITEM.prompt);
+
+    const textbox = screen.getByRole('textbox', {
+      name: /write one sentence in korean/i,
+    });
+    await user.type(textbox, '그는 학생인 것 같다.');
+    await user.click(screen.getByRole('button', { name: /submit/i }));
+
+    // The transient in-progress state, NOT the terminal "already recorded"
+    // toast/flow-exit — the run stays on the Taking flow.
+    expect(
+      await screen.findByText(/still grading your answer/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/answer already recorded — continuing/i),
+    ).not.toBeInTheDocument();
+    expect(refetchSpy).not.toHaveBeenCalled();
+
+    // The automatic retry lands: same responseId re-submitted, and the real
+    // reveal (from the second, successful call) renders — proving the run
+    // continued rather than resyncing out.
+    await waitFor(
+      () => {
+        expect(answerDiagnostic).toHaveBeenCalledTimes(2);
+      },
+      { timeout: 3000 },
+    );
+    expect(answerDiagnostic).toHaveBeenNthCalledWith(
+      2,
+      55,
+      expect.objectContaining({
+        responseId: WRITING_ITEM.responseId,
+        picked: '그는 학생인 것 같다.',
+      }),
+    );
+    expect(
+      await screen.findByText('Great use of the pattern.'),
+    ).toBeInTheDocument();
+  });
+
+  it('the reveal shows the Claude verdict/summary/corrections/reference model, not the MC correct/explain reveal', async () => {
+    hookState.snapshot = { data: EMPTY_SNAPSHOT, loading: false, error: null, isMock: true };
+    startDiagnostic.mockResolvedValue({
+      runId: 54,
+      item: WRITING_ITEM,
+      progress: { ordinal: 21, total: 22 },
+    });
+    answerDiagnostic.mockResolvedValueOnce({
+      result: {
+        correct: false,
+        correctAnswer: 'writing',
+        explain: 'The pattern was not used.',
+        verdict: 'needs_work',
+        summary: 'The pattern was not used.',
+        corrections: [
+          { span: '학생이다', issue: 'missing the target pattern', fix: '학생인 것 같다' },
+        ],
+        referenceModelKr: '그는 학생인 것 같다.',
+        referenceModelEn: 'It seems he is a student.',
+      },
+      done: false,
+      progress: { ordinal: 21, total: 22 },
+    });
+
+    const user = userEvent.setup();
+    renderWithRouter();
+    await user.click(screen.getByRole('button', { name: /begin test/i }));
+    await screen.findByText(WRITING_ITEM.prompt);
+    await user.type(
+      screen.getByRole('textbox', { name: /write one sentence in korean/i }),
+      '그는 학생이다.',
+    );
+    await user.click(screen.getByRole('button', { name: /submit/i }));
+
+    // The Claude reveal fields render...
+    expect(await screen.findByText('The pattern was not used.')).toBeInTheDocument();
+    expect(screen.getByText('Needs work')).toBeInTheDocument();
+    expect(screen.getByText('missing the target pattern')).toBeInTheDocument();
+    expect(screen.getByText('학생인 것 같다')).toBeInTheDocument();
+    expect(screen.getByText('그는 학생인 것 같다.')).toBeInTheDocument();
+    expect(screen.getByText('It seems he is a student.')).toBeInTheDocument();
+    // ...the MC "Correct"/"Not quite" reveal Eyebrow does NOT render for a
+    // writing item (WritingReveal replaces it entirely).
+    expect(screen.queryByText('Not quite')).not.toBeInTheDocument();
+    // No AskAboutThisButton — a writing item has no choices for it to resolve.
+    expect(
+      screen.queryByRole('button', { name: 'Ask about this' }),
     ).not.toBeInTheDocument();
   });
 });

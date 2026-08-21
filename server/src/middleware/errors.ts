@@ -76,6 +76,27 @@ export class ConflictError extends AppError {
   }
 }
 
+/**
+ * A 409 whose cause is a writing-grade claim collision: a concurrent
+ * duplicate `/diagnostic/:runId/answer` request for the same still-pending
+ * writing item lost the atomic claim race (`claimWritingGrade`, see
+ * diagnostic.ts fix-pass SF1 / fix-pass 2 FIX B). Distinct wire `code` from
+ * `ConflictError`'s generic `'conflict'` — same status, same disambiguation
+ * pattern as `ContentRejectedError` above — so the client can tell this
+ * apart from the pre-existing "answer already recorded" 409. That
+ * distinction matters: for THIS case the item is very likely NOT yet
+ * recorded (the winning request may still be mid-call, or may go on to
+ * fail entirely), so the correct client behavior is a short retry in place,
+ * not the "already recorded — continuing" toast + exit-the-run resync that
+ * the generic 409 handler uses everywhere else.
+ */
+export class WritingGradeInProgressError extends AppError {
+  public constructor(message = 'writing item is already being graded — retry shortly') {
+    super(409, 'writing_grade_in_progress', message);
+    this.name = 'WritingGradeInProgressError';
+  }
+}
+
 export class PayloadTooLargeError extends AppError {
   public constructor(message: string) {
     super(413, 'payload_too_large', message);

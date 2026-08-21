@@ -195,6 +195,28 @@ export {
   PromptInjectionRejectedError,
 } from './errors';
 
+/**
+ * Worst-case wall-clock time a single Claude call can stay legitimately in
+ * flight before `withRetry` gives up and throws — i.e. the provider is
+ * merely slow, not down or erroring. `withRetry` (`./retry.ts`) makes
+ * `retry.maxAttempts + 1` attempts total (attempt 0 is the first try, not a
+ * retry), each attempt bounded by the SDK's own `timeoutMs`, with a
+ * full-jitter backoff sleep of up to `retry.maxDelayMs` between attempts
+ * (`retry.maxAttempts` such gaps — the last attempt never sleeps again).
+ *
+ * Exported so any caller that needs to size a claim/lock TTL against "the
+ * call is still genuinely alive" (as opposed to "the caller crashed") can
+ * derive the bound from the live configured knobs instead of a hand-picked
+ * constant that silently desyncs the next time `CLAUDE_TIMEOUT_MS` or the
+ * retry budget changes (see diagnostic.ts's writing-grade claim TTL).
+ */
+export function maxClaudeCallDurationMs(): number {
+  const cfg = loadConfig();
+  const totalAttempts = cfg.retry.maxAttempts + 1;
+  const worstCaseBackoffMs = cfg.retry.maxAttempts * cfg.retry.maxDelayMs;
+  return totalAttempts * cfg.timeoutMs + worstCaseBackoffMs;
+}
+
 // ---- Construction ---------------------------------------------------------
 
 export interface ClaudeProxyDeps {

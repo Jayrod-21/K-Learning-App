@@ -211,20 +211,38 @@ export function makeStubProxy(overrides: Partial<ClaudeProxy> = {}): ClaudeProxy
       },
       metadata: { ...baseMeta, requestId: randomUUID() },
     }),
-    scoreGrammarDrill: async () => ({
-      // Deterministic score: a passing grade with one correction. Lets the submit
-      // route test assert the row update + reference reveal without Anthropic.
-      result: {
-        score: 82,
-        verdict: 'good' as const,
-        usesPattern: true,
-        summary: 'mock score summary',
-        corrections: [
-          { span: '___', issue: 'mock issue', fix: 'mock fix' },
-        ],
-      },
-      metadata: { ...baseMeta, requestId: randomUUID() },
-    }),
+    scoreGrammarDrill: async (input) => {
+      // Deterministic score, CONTROLLABLE per-test via a sentinel substring in
+      // the learner's answer (diagnostic-upgrade Phase B needs both the
+      // correct AND wrong grading paths testable without touching Anthropic —
+      // the diagnostic writing branch and grammarDrill.ts's submit route both
+      // exercise this same stub). Default (no sentinel) is the pre-existing
+      // passing grade with one correction, unchanged for every existing
+      // grammarDrill.ts test that doesn't use the sentinel.
+      const isBad = input.userAnswer.includes('BAD_ANSWER_SENTINEL');
+      return {
+        result: isBad
+          ? {
+              score: 20,
+              verdict: 'incorrect' as const,
+              usesPattern: false,
+              summary: 'mock score summary (needs work)',
+              corrections: [
+                { span: '___', issue: 'mock issue (bad)', fix: 'mock fix (bad)' },
+              ],
+            }
+          : {
+              score: 82,
+              verdict: 'good' as const,
+              usesPattern: true,
+              summary: 'mock score summary',
+              corrections: [
+                { span: '___', issue: 'mock issue', fix: 'mock fix' },
+              ],
+            },
+        metadata: { ...baseMeta, requestId: randomUUID() },
+      };
+    },
     generateWritingPrompt: async (input) => ({
       // Deterministic prompt per mode/rubric. Lets the /writing/generate route
       // test assert the wire shape without touching Anthropic. lengthHint is
@@ -379,6 +397,17 @@ export function buildTestApp(opts: BuildOptions): TestApp {
   process.env.RATE_LIMIT_DIAGNOSTIC_MAX = '30';
   process.env.RATE_LIMIT_AUTH_MAX = '5';
   process.env.LOG_LEVEL = 'silent';
+  // The route suite stubs the Claude proxy (`setClaudeProxy`/`makeStubProxy`)
+  // so no test needs a REAL key — but a few call sites (diagnostic.ts's
+  // `writingClaimTtlSeconds`, fix-pass 2 FIX A) read plain config knobs
+  // (CLAUDE_TIMEOUT_MS / retry budget) straight off `services/claude/config`
+  // via `loadConfig()`, which Zod-validates the WHOLE Claude env schema
+  // together — including ANTHROPIC_API_KEY — even though nothing here ever
+  // dials out. `??=` so a suite that wants to test the missing-key path
+  // (none currently do via this helper) can still set its own value first.
+  // Mirrors the same fake-but-schema-valid key `tests/services/claude/setup.ts`
+  // already uses for the same reason.
+  process.env.ANTHROPIC_API_KEY ??= 'sk-test-' + 'x'.repeat(30);
   // Pass Login: provision the fixed test AES key (so TOTP secrets encrypt/decrypt
   // deterministically) and default to the LEGACY single-step login so the
   // pre-existing auth tests keep their direct-session expectations. The MFA suite

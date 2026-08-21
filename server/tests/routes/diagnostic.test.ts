@@ -24,7 +24,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import request from 'supertest';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, makeStubProxy, teardownTestApp, type TestApp } from '../helpers/app.js';
-import { setClaudeProxy } from '../../src/services/claudeProxy.js';
+import { setClaudeProxy, maxClaudeCallDurationMs } from '../../src/services/claudeProxy.js';
+import { writingClaimTtlSeconds } from '../../src/routes/diagnostic.js';
 import {
   registerUser,
   seedTopikItem,
@@ -74,12 +75,14 @@ beforeEach(async () => {
   resetLimiters();
 });
 
-/** Seed a corpus rich enough to serve a full 20-item diagnostic
- *  (ITEMS_PER_DIMENSION = 4 × 5 dimensions — reading/listening/vocab/
- *  grammar/hanja, diagnostic-upgrade Phase A added hanja as the 5th; 4
- *  reading + 4 listening topik rows needed, one spare each for slack against
- *  the already-served exclusion; hanja needs >=4 distinct chars per level so
- *  a 4-item hanja slate never repeats a character within one run). */
+/** Seed a corpus rich enough to serve a full 22-item diagnostic (WEIGHTS: 4
+ *  each reading/listening/vocab/grammar/hanja + 2 writing — diagnostic-
+ *  upgrade Phase A added hanja as the 5th, Phase B added writing as the 6th;
+ *  4 reading + 4 listening topik rows needed, one spare each for slack
+ *  against the already-served exclusion; hanja needs >=4 distinct chars per
+ *  level so a 4-item hanja slate never repeats a character within one run;
+ *  writing draws from the SAME kgiu_entries seeds grammar does, so no
+ *  separate writing seed is needed here). */
 async function seedFullPool(): Promise<void> {
   // 5 reading + 5 listening at L4 (answer index 1 → choice 'a').
   for (let i = 0; i < 5; i += 1) {
@@ -177,7 +180,7 @@ describe('POST /diagnostic — start', () => {
     const res = await agent.post('/diagnostic').send({});
     expect(res.status).toBe(201);
     expect(typeof res.body.runId).toBe('number');
-    expect(res.body.progress).toEqual({ ordinal: 1, total: 20 });
+    expect(res.body.progress).toEqual({ ordinal: 1, total: 22 });
 
     const item = res.body.item;
     expect(item.ordinal).toBe(1);
@@ -357,13 +360,13 @@ describe('POST /diagnostic/:runId/answer — grading (reveal only, B-006)', () =
     // item is served by the separate /next call.
     expect(res.body).not.toHaveProperty('next');
     expect(res.body.done).toBe(false);
-    expect(res.body.progress).toEqual({ ordinal: 1, total: 20 });
+    expect(res.body.progress).toEqual({ ordinal: 1, total: 22 });
 
     const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
     expect(nxt.status).toBe(200);
     expect(nxt.body.next).not.toBeNull();
     expect(nxt.body.next.section).toBe('listening'); // schedule[1]
-    expect(nxt.body.progress).toEqual({ ordinal: 2, total: 20 });
+    expect(nxt.body.progress).toEqual({ ordinal: 2, total: 22 });
     // The next item is still answer-stripped.
     expect(nxt.body.next).not.toHaveProperty('correctAnswer');
     expect(nxt.body.next).not.toHaveProperty('correct_answer');
@@ -422,6 +425,12 @@ describe('POST /diagnostic/:runId/answer — grading (reveal only, B-006)', () =
       .post(`/diagnostic/${runId}/answer`)
       .send({ responseId: item.responseId, picked: 'a' });
     expect(dup.status).toBe(409);
+    // Fix-pass 2 FIX B: the generic "already recorded" 409 carries the
+    // ordinary ConflictError code — DISTINCT from the writing-claim-
+    // collision 409's `writing_grade_in_progress` code below, so the client
+    // can tell the two apart and not misroute a claim collision into the
+    // "already recorded — continuing" resync flow.
+    expect(dup.body.error.code).toBe('conflict');
   });
 
   it("another user cannot answer someone else's run (IDOR → 404)", async () => {
@@ -487,13 +496,13 @@ describe('POST /diagnostic/:runId/answer — concurrent double-answer (B1)', () 
     expect(served.status).toBe(200);
     expect(served.body.next).not.toBeNull();
 
-    // θ after one correct answer at SEED_THETA (2.0), step n=1 (1.5) → 3.5.
+    // θ after one correct answer at SEED_THETA (1.2), step n=1 (0.7) → 1.9.
     const thetaAfterFirst = await pg.pool.query<{ ability_estimate: string }>(
       `SELECT ability_estimate::text AS ability_estimate
          FROM diagnostic_runs WHERE id = $1`,
       [runId],
     );
-    expect(Number(thetaAfterFirst.rows[0]?.ability_estimate)).toBeCloseTo(3.5);
+    expect(Number(thetaAfterFirst.rows[0]?.ability_estimate)).toBeCloseTo(1.9);
 
     // Count in-flight (unanswered) responses: exactly one — item #2.
     const inflightBefore = await pg.pool.query<{ n: string }>(
@@ -518,7 +527,7 @@ describe('POST /diagnostic/:runId/answer — concurrent double-answer (B1)', () 
          FROM diagnostic_runs WHERE id = $1`,
       [runId],
     );
-    expect(Number(thetaAfterReplay.rows[0]?.ability_estimate)).toBeCloseTo(3.5);
+    expect(Number(thetaAfterReplay.rows[0]?.ability_estimate)).toBeCloseTo(1.9);
 
     // Still exactly one item in flight — the replay served no second item.
     const inflightAfter = await pg.pool.query<{ n: string }>(
@@ -716,10 +725,10 @@ describe('answer/next decoupling (B-006)', () => {
       const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
       current = nxt.body.next;
     }
-    // The full 20-slot schedule was servable, so the final grade says done and
-    // points progress at the last ordinal.
+    // The full 22-slot schedule was servable (diagnostic-upgrade Phase B), so
+    // the final grade says done and points progress at the last ordinal.
     expect(lastAnswer?.done).toBe(true);
-    expect(lastAnswer?.progress).toEqual({ ordinal: 20, total: 20 });
+    expect(lastAnswer?.progress).toEqual({ ordinal: 22, total: 22 });
   });
 });
 
@@ -825,7 +834,7 @@ describe('full run → finish → latest', () => {
     return { runId, snapshot: fin.body.snapshot };
   }
 
-  it('produces a 5-dimension snapshot (writing omitted, hanja coverage-only) and is idempotent', async () => {
+  it('produces a 6-dimension snapshot (writing joins as a full leveled dimension, hanja stays coverage-only) and is idempotent', async () => {
     await seedFullPool();
     const { agent, userId } = await registerUser(t.app, pg.pool);
     const { runId, snapshot } = await runToFinish(agent, 'a');
@@ -837,10 +846,14 @@ describe('full run → finish → latest', () => {
       scoreHigh: number;
     }>;
     const keys = dims.map((d) => d.key).sort();
-    // diagnostic-upgrade Phase A: hanja joins the 4 original dims.
-    expect(keys).toEqual(['grammar', 'hanja', 'listening', 'reading', 'vocab']);
-    // No writing dimension (deferred to Pass 8).
-    expect(keys).not.toContain('writing');
+    // diagnostic-upgrade Phase A: hanja joined the 4 original dims.
+    // diagnostic-upgrade Phase B: writing joins as a 6th — a FULL leveled
+    // dimension (it bumps θ, unlike hanja), scored via the SAME
+    // generateGrammarDrill/scoreGrammarDrill pipeline the stub proxy already
+    // fakes deterministically (picked='a' is a valid free-text answer; the
+    // stub's scoreGrammarDrill grades 'good' unless the answer contains its
+    // BAD_ANSWER_SENTINEL — see tests/helpers/app.ts).
+    expect(keys).toEqual(['grammar', 'hanja', 'listening', 'reading', 'vocab', 'writing']);
     for (const d of dims) {
       expect(d.score).toBeGreaterThanOrEqual(0);
       expect(d.score).toBeLessThanOrEqual(100);
@@ -892,10 +905,17 @@ describe('full run → finish → latest', () => {
       `SELECT rubric_version, evidence FROM diagnostic_snapshots WHERE user_id = $1`,
       [userId],
     );
-    expect(snapRow.rows[0]?.rubric_version).toBe('v1.3.0');
+    expect(snapRow.rows[0]?.rubric_version).toBe('v1.4.0');
     const stats = snapRow.rows[0]?.evidence.dimensionStats;
     expect(stats).toBeDefined();
-    expect(Object.keys(stats!).sort()).toEqual(['grammar', 'hanja', 'listening', 'reading', 'vocab']);
+    expect(Object.keys(stats!).sort()).toEqual([
+      'grammar',
+      'hanja',
+      'listening',
+      'reading',
+      'vocab',
+      'writing',
+    ]);
     expect(stats!['reading']).toEqual({
       n: 4,
       correct: 4,
@@ -943,17 +963,31 @@ describe('full run → finish → latest', () => {
     // /latest now returns the populated snapshot — including hanja, which
     // has NO dedicated diagnostic_snapshots column (unlike reading/listening/
     // vocab/grammar): buildSnapshotDTO must source its estimate from
-    // evidence.dimensionStats alone, and this proves that round-trip.
+    // evidence.dimensionStats alone, and this proves that round-trip. writing
+    // DOES have a dedicated column (`writing_estimate`, populated for the
+    // first time by this Phase B change) but loadSnapshotDTO doesn't re-SELECT
+    // it — it too round-trips purely through evidence.dimensionStats, same
+    // path as hanja (see buildSnapshotDTO's doc in diagnostic.ts).
     const latest = await agent.get('/diagnostic/latest');
     expect(latest.status).toBe(200);
-    expect((latest.body.dimensions as unknown[]).length).toBe(5);
+    expect((latest.body.dimensions as unknown[]).length).toBe(6);
     expect((latest.body.dimensions as Array<{ key: string }>).map((d) => d.key).sort()).toEqual([
       'grammar',
       'hanja',
       'listening',
       'reading',
       'vocab',
+      'writing',
     ]);
+
+    // writing_estimate — the pre-existing diagnostic_snapshots column
+    // plan.ts's /plan/today already reads — is now actually populated
+    // (previously hardcoded NULL; no rubric before v1.4.0 ever scored writing).
+    const writingCol = await pg.pool.query<{ writing_estimate: string | null }>(
+      `SELECT writing_estimate::text AS writing_estimate FROM diagnostic_snapshots WHERE user_id = $1`,
+      [userId],
+    );
+    expect(writingCol.rows[0]?.writing_estimate).not.toBeNull();
   });
 
   it('an all-wrong run scores every dimension lower than an all-correct run', async () => {
@@ -1064,7 +1098,7 @@ describe('empty pool handling', () => {
 
     // Answer through to finish, fetching each following item via /next. The
     // empty reading/listening/hanja pools end the run early: /next returns
-    // null before the full 20-slot schedule is used.
+    // null before the full 22-slot schedule is used.
     let current: { responseId: number } | null = start.body.item;
     const runId = start.body.runId;
     while (current !== null) {
@@ -1085,7 +1119,11 @@ describe('empty pool handling', () => {
     const keys = (fin.body.snapshot.dimensions as Array<{ key: string }>).map((d) => d.key);
     expect(keys).not.toContain('reading');
     expect(keys).not.toContain('listening');
-    expect(keys.sort()).toEqual(['grammar', 'vocab']);
+    // writing (diagnostic-upgrade Phase B) ALSO scores here — its seed draws
+    // from the SAME kgiu_entries pool grammar does, so the one seeded row is
+    // enough to serve writing's 2 appended slots too (hanja stays absent —
+    // hanja_characters is unseeded in this test).
+    expect(keys.sort()).toEqual(['grammar', 'vocab', 'writing']);
   });
 });
 
@@ -1130,7 +1168,9 @@ describe('partial short pool — a dimension exhausted mid-run still scores (F-0
       scoreLow: number;
       scoreHigh: number;
     }>;
-    expect(dims.map((d) => d.key).sort()).toEqual(['grammar', 'reading', 'vocab']);
+    // writing (diagnostic-upgrade Phase B) also scores — same kgiu_entries
+    // seed pool as grammar.
+    expect(dims.map((d) => d.key).sort()).toEqual(['grammar', 'reading', 'vocab', 'writing']);
 
     // Exact 2-item scoring: both reading items are L4 (difficulty 4), both
     // correct → estimate 4 + 1.5·(1 − 0.5) = 4.75 → score 66. Band at n=2:
@@ -1148,7 +1188,7 @@ describe('partial short pool — a dimension exhausted mid-run still scores (F-0
     }>(`SELECT evidence FROM diagnostic_snapshots WHERE user_id = $1`, [userId]);
     const stats = snapRow.rows[0]?.evidence.dimensionStats;
     expect(stats).toBeDefined();
-    expect(Object.keys(stats!).sort()).toEqual(['grammar', 'reading', 'vocab']);
+    expect(Object.keys(stats!).sort()).toEqual(['grammar', 'reading', 'vocab', 'writing']);
     expect(stats!['reading']?.n).toBe(2);
     expect(stats!['reading']?.correct).toBe(2);
   });
@@ -1290,15 +1330,15 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
     // which keeps the trajectory deterministic even for generated items,
     // whose correct choice is shuffled to a random position ('b' would be
     // right ~25% of the time).
-    // θ staircase, all wrong (diagnostic-upgrade Phase A start-easy ramp):
-    // seed 2.0, step1 = 1.5 → 2.0 − 1.5 = 0.5 → clamped to 1.0 (THETA_MIN) —
-    // a struggling learner now floors after a SINGLE wrong answer (the lower
-    // seed + steeper early step reach both ends of the scale fast; see
-    // cat.test.ts's reachability tests). So served bands run L2, L1, L1, … —
-    // a beginner gets real L1/L2 items instead of the old θ-floor at 2.0 /
-    // 'basic'. Hanja items (schedule ordinals 5/10/15/20) interleave too but
-    // are COVERAGE-ONLY — graded and scored, but excluded from this θ
-    // ladder, so they never move it off the floor (verified below).
+    // θ staircase, all wrong (diagnostic-upgrade Phase B gradual start-easy
+    // ramp): seed 1.2, step1 = 0.7 → 1.2 − 0.7 = 0.5 → clamped to 1.0
+    // (THETA_MIN) — a struggling learner floors after a SINGLE wrong answer
+    // (see cat.test.ts's reachability tests), so the generated dims are served
+    // at L1 the whole run. Hanja items (schedule ordinals 5/10/15/20) interleave
+    // too but are COVERAGE-ONLY — graded and scored, yet excluded from this θ
+    // ladder; they're served at L2 (the hanja corpus has no L1 tier), so
+    // servedLevels shows both L1 and L2 while θ never moves off the floor
+    // (verified below).
     const start = await agent.post('/diagnostic').send({});
     expect(start.status).toBe(201);
     const runId = start.body.runId;
@@ -1381,8 +1421,8 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
     const { agent } = await registerUser(t.app, pg.pool);
 
     // All-skip run (a skip is deterministically incorrect): ordinal 1
-    // (reading) serves at SEED_THETA=2.0 → band L2 (diagnostic-upgrade Phase
-    // A start-easy ramp — L2 was L4 before) → L1/L2 bands skip the
+    // (reading) serves at SEED_THETA=1.2 → band L1 (diagnostic-upgrade Phase B
+    // gradual start-easy ramp) → L1/L2 bands skip the
     // proficiency-targeted attempt entirely and go straight to the TOPIK-I
     // paper preference, which matches EXACTLY the one untagged TOPIK I row
     // (deterministic despite ORDER BY random()) — so ordinal 1 itself is the
@@ -1457,14 +1497,21 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
     }
     const { agent } = await registerUser(t.app, pg.pool);
 
-    // All-skip staircase (diagnostic-upgrade Phase A ramp: seed 2.0, step1
-    // 1.5 → floors to θ=1.0/L1 after the very first wrong answer): vocab
+    // All-skip staircase (diagnostic-upgrade Phase B ramp: seed 1.2, step1
+    // 0.7 → floors to θ=1.0/L1 after the very first wrong answer): vocab
     // slots (5-wide schedule ordinals 3,8,13,18) and grammar slots (4,9,14,
     // 19) all serve at band L1 — ALL beginner-band, all four items each.
     // hanja_characters is unseeded here, so ordinals 5/10/15/20 (hanja) are
-    // silently skipped — the `source_kind='generated'` query below stays
-    // vocab+grammar only (8 rows), unaffected by hanja sharing that
-    // source_kind (see seedFullPool's beforeEach-truncate note above).
+    // silently skipped — the `source_kind='generated'` query below is
+    // vocab+grammar+writing (10 rows, diagnostic-upgrade Phase B: writing's 2
+    // appended slots ALSO reuse source_kind='generated', seeded from the SAME
+    // kgiu_entries pool grammar draws from), unaffected by hanja sharing that
+    // source_kind (see seedFullPool's beforeEach-truncate note above). By
+    // ordinals 21/22 (writing's slots) this all-skip staircase has long since
+    // floored θ at L1 (every answer is wrong), so writing's seed pick is
+    // beginner-band too — the per-row assertion below already generalizes to
+    // it (a writing row's `source_ref` is a kgiu_entries id exactly like
+    // grammar's, so it falls into the SAME `: basicKgiuId` branch).
     const runId = await runAllSkip(agent);
 
     const seeds = await pg.pool.query<{ section: string; source_ref: string; difficulty: string }>(
@@ -1474,7 +1521,7 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
         ORDER BY ordinal`,
       [runId],
     );
-    expect(seeds.rows).toHaveLength(8);
+    expect(seeds.rows).toHaveLength(10);
     for (const row of seeds.rows) {
       // Every beginner-band generated item was seeded from the basic pool…
       expect(row.source_ref).toBe(
@@ -1506,8 +1553,9 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
         ORDER BY ordinal`,
       [runId],
     );
-    // All 8 generated slots served — the empty basic pool never starved a slot.
-    expect(seeds.rows).toHaveLength(8);
+    // All 10 generated slots served (vocab+grammar+writing, diagnostic-
+    // upgrade Phase B) — the empty basic pool never starved a slot.
+    expect(seeds.rows).toHaveLength(10);
     for (const row of seeds.rows) {
       expect(row.source_ref).toBe(
         row.section === 'vocab' ? String(l3VocabId) : String(l3KgiuId),
@@ -1544,19 +1592,18 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
     // dry before the run's 4 reading slots are served, exercising the
     // any-fallback in the SAME test as the preference itself.
     //
-    // Ordinal 1 is unavoidably served at SEED_THETA=2.0 → band L2
-    // (diagnostic-upgrade Phase A start-easy ramp — this was L4 before the
-    // retune), which prefers TOPIK I, not TOPIK II — that slot is covered by
-    // the L1/L2 test above, not here. Instead this test drives reading +
-    // listening CORRECT (deterministic — every seeded row uses answer:1 →
-    // choice 'a') and vocab + grammar WRONG (skip — their generated choice
-    // order is shuffled server-side, so picking a fixed id is never
-    // deterministically correct), which climbs θ out of L2 into L3+
-    // territory by the run's 2nd reading slot and keeps it there for the
-    // 3rd/4th too (walked exactly in cat.test.ts-style math in the PR
-    // description; not re-pinned ordinal-by-ordinal here since the new
-    // steeper step makes that fragile to restate — the OBSERVABLE property
-    // this test pins is paper selection, not the θ trajectory itself).
+    // Ordinal 1 is unavoidably served at SEED_THETA=1.2 → band L1
+    // (diagnostic-upgrade Phase B gradual start-easy ramp), which prefers
+    // TOPIK I, not TOPIK II — that opener is covered by the L1/L2 test above,
+    // not here. To reach the L3+ bands this test cares about, it answers EVERY
+    // item correctly by echoing each item's stored correct_answer (the only
+    // deterministic way UP: generated MC choices are shuffled server-side, so a
+    // fixed pick is only ~25% correct). Under the gradual ramp an all-correct
+    // run climbs steadily out of the L1 seed — 1.2 → 1.9 → 2.57 → 3.21 → 3.82
+    // over the first four θ-bumping answers (hanja is coverage-only) — so the
+    // LATER reading slots (ordinals 6/11/16) are served in the L3+ bands, where
+    // pickTopikRow prefers TOPIK II. The OBSERVABLE property pinned here is
+    // paper selection by band, not the exact θ trajectory.
     const topik2Ids = [
       await seedTopikItem(pg.pool, {
         section: 'reading',
@@ -1591,10 +1638,18 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
     const runId = start.body.runId;
     let current: { responseId: number; section: string } | null = start.body.item;
     while (current !== null) {
-      const picked = current.section === 'reading' || current.section === 'listening' ? 'a' : null;
+      // Answer correctly by echoing the item's stored correct_answer: the
+      // shuffled correct letter for MC items, and the 'writing' sentinel for
+      // the writing item (a non-empty, non-BAD_ANSWER_SENTINEL string, which
+      // the scoreGrammarDrill stub grades 'good' → also correct). This drives a
+      // monotonic θ climb into the L3+ bands.
+      const correct = await pg.pool.query<{ correct_answer: string }>(
+        `SELECT correct_answer FROM diagnostic_responses WHERE id = $1`,
+        [current.responseId],
+      );
       const ans = await agent
         .post(`/diagnostic/${runId}/answer`)
-        .send({ responseId: current.responseId, picked });
+        .send({ responseId: current.responseId, picked: correct.rows[0]!.correct_answer });
       expect(ans.status).toBe(200);
       if (ans.body.done === true) {
         current = null;
@@ -1659,14 +1714,14 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
     await seedKgiuEntry(pg.pool, { proficiency: 'L4', pattern: '-는 바람에' });
     const { agent } = await registerUser(t.app, pg.pool);
 
-    // Ordinal 1 is unavoidably served at the seed's L2 band, which prefers
-    // TOPIK I directly (no fallback needed — not what this test is about;
-    // see the L1/L2 test above). Correct reading + listening answers
-    // (deterministic — every row here uses answer:1 → choice 'a') climb θ
-    // into L3+ by the run's 2nd reading slot (ordinal 6, the same
-    // trajectory the sibling "prefers TOPIK II" test walks through), so
-    // THAT slot is the one that actually exercises the "TOPIK II attempt
-    // matches nothing → falls to any" branch.
+    // This pool is TOPIK-I-ONLY: no TOPIK II item exists at all. So whatever
+    // band each reading slot lands in under the gradual ramp (ordinal 1 opens
+    // at the seed's L1 band), the paper-preference attempt that would want a
+    // TOPIK II row for an L3+ slot matches nothing, and the final "any" attempt
+    // still serves the TOPIK I rows — keeping the run whole. We drive reading +
+    // listening correct (deterministic answer:1 → 'a') and skip the generated
+    // dims; the OBSERVABLE property is that every reading slot is filled from
+    // the any-fallback, never left empty.
     const start = await agent.post('/diagnostic').send({});
     expect(start.status).toBe(201);
     const runId = start.body.runId;
@@ -1890,6 +1945,299 @@ describe('hanja — coverage-only dimension (diagnostic-upgrade Phase A)', () =>
   });
 });
 
+describe('writing — full leveled dimension (diagnostic-upgrade Phase B)', () => {
+  /** Seed just enough for a run that reaches writing's two appended slots
+   *  (ordinals 21/22): reading/listening pools (topik) + a vocab/grammar seed
+   *  (Claude stub) — writing draws its own seed from the SAME kgiu_entries
+   *  pool grammar does (buildWritingItem calls pickGrammarSeed exactly like
+   *  buildGeneratedItem's grammar branch). hanja_characters is deliberately
+   *  left unseeded (mirrors the 'empty pool handling' describe block above):
+   *  every hanja ordinal (5/10/15/20) silently skips, but the schedule still
+   *  reaches ordinal 21/22 in the same /next call — this test only cares
+   *  about writing, and unseeded hanja keeps the setup smaller. */
+  async function seedForWriting(): Promise<void> {
+    for (let i = 0; i < 5; i += 1) {
+      await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4', answer: 1 });
+      await seedTopikItem(pg.pool, { section: 'listening', proficiency: 'L4', answer: 1 });
+    }
+    await seedVocabEntry(pg.pool, { proficiency: 'L4', korean: '단어' });
+    await seedKgiuEntry(pg.pool, { proficiency: 'L4', pattern: '-는 바람에' });
+  }
+
+  /** Drive a run with all-skip answers up to (not including) ordinal
+   *  `target`, returning the still-unanswered item AT that ordinal (mirrors
+   *  the hanja describe block's own `serveToOrdinal` — duplicated locally
+   *  rather than hoisted, matching this file's existing per-block idiom). */
+  async function serveToOrdinal(
+    agent: RegisteredAgent['agent'],
+    target: number,
+    // Picked value for every item ANSWERED on the way to `target` (the
+    // target item itself is left unanswered, returned for the caller to
+    // grade). Defaults to a skip (null) — the hanja block's own convention.
+    // The BAD-writing-answer test overrides this to 'a': an all-skip drive
+    // floors θ at THETA_MIN well before ordinal 21 (reading/listening/vocab/
+    // grammar all graded wrong), leaving no room for a bad writing answer to
+    // move θ DOWN any further — 'a' is guaranteed-correct on every
+    // topik-sourced reading/listening item (seedTopikItem's answer=1), which
+    // keeps θ off the floor.
+    picked: string | null = null,
+  ): Promise<{
+    runId: number;
+    item: {
+      responseId: number;
+      ordinal: number;
+      section: string;
+      kind: string;
+      prompt: string;
+      passage?: string;
+      hint?: string;
+      choices: Array<{ id: string; kr: string; en: string }>;
+    };
+  }> {
+    const start = await agent.post('/diagnostic').send({});
+    expect(start.status).toBe(201);
+    const runId = start.body.runId as number;
+    let current = start.body.item;
+    while (current.ordinal < target) {
+      const ans = await agent
+        .post(`/diagnostic/${runId}/answer`)
+        .send({ responseId: current.responseId, picked });
+      expect(ans.status).toBe(200);
+      const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
+      expect(nxt.status).toBe(200);
+      current = nxt.body.next;
+    }
+    return { runId, item: current };
+  }
+
+  it('serves a writing-production item with a prompt but NO reference answer on the wire', async () => {
+    await seedForWriting();
+    const { agent } = await registerUser(t.app, pg.pool);
+    const { item } = await serveToOrdinal(agent, 21);
+
+    expect(item.section).toBe('writing');
+    expect(item.kind).toBe('writing-production');
+    expect(typeof item.prompt).toBe('string');
+    expect(item.prompt.length).toBeGreaterThan(0);
+    // No MC choices — a writing item has none to strip.
+    expect(item.choices).toEqual([]);
+    // Answer-stripping (THE security property) extends to writing's own
+    // secrets: the reference model + grading pattern must never reach the
+    // client before grading.
+    expect(item).not.toHaveProperty('correctAnswer');
+    expect(item).not.toHaveProperty('explain');
+    expect(item).not.toHaveProperty('referenceModelKr');
+    expect(item).not.toHaveProperty('referenceModelEn');
+    expect(item).not.toHaveProperty('patternDisplay');
+  });
+
+  it('a GOOD writing answer maps verdict→isCorrect=true and BUMPS θ (unlike hanja)', async () => {
+    await seedForWriting();
+    const { agent } = await registerUser(t.app, pg.pool);
+    const { runId, item } = await serveToOrdinal(agent, 21);
+
+    const before = await pg.pool.query<{ ability_estimate: string | null }>(
+      `SELECT ability_estimate::text AS ability_estimate FROM diagnostic_runs WHERE id = $1`,
+      [runId],
+    );
+    const thetaBefore = Number(before.rows[0]?.ability_estimate);
+
+    // No BAD_ANSWER_SENTINEL in the answer → the stub's scoreGrammarDrill
+    // grades 'good' (see tests/helpers/app.ts).
+    const ans = await agent
+      .post(`/diagnostic/${runId}/answer`)
+      .send({ responseId: item.responseId, picked: '그는 학생인 것 같다.' });
+    expect(ans.status).toBe(200);
+    expect(ans.body.result.correct).toBe(true);
+    expect(ans.body.result.verdict).toBe('good');
+    expect(typeof ans.body.result.summary).toBe('string');
+    expect(ans.body.result.referenceModelKr).toBe('모델 답안입니다.');
+    // Reference model is revealed ONLY now, post-answer.
+    expect(ans.body.result.corrections).toEqual([
+      { span: '___', issue: 'mock issue', fix: 'mock fix' },
+    ]);
+
+    const after = await pg.pool.query<{ ability_estimate: string | null }>(
+      `SELECT ability_estimate::text AS ability_estimate FROM diagnostic_runs WHERE id = $1`,
+      [runId],
+    );
+    const thetaAfter = Number(after.rows[0]?.ability_estimate);
+    // θ moved — and moved UP (correct), unlike a hanja answer which never
+    // moves θ at all.
+    expect(thetaAfter).not.toBe(thetaBefore);
+    expect(thetaAfter).toBeGreaterThan(thetaBefore);
+  });
+
+  it('a BAD writing answer (verdict needs_work/incorrect) maps to isCorrect=false and BUMPS θ DOWN', async () => {
+    await seedForWriting();
+    const { agent } = await registerUser(t.app, pg.pool);
+    const { runId, item } = await serveToOrdinal(agent, 21);
+
+    // serveToOrdinal answers every preceding item WRONG (picked:null), so θ has
+    // already bottomed out at THETA_MIN (1.0) by ordinal 21 — a further down-bump
+    // would clamp and be unobservable. Park θ mid-range first so the DOWN move is
+    // real, not a floor no-op. /answer reads the stored ability_estimate and
+    // applies one step to it (diagnostic.ts:1782-1783), so this UPDATE takes.
+    await pg.pool.query(`UPDATE diagnostic_runs SET ability_estimate = 4.0 WHERE id = $1`, [runId]);
+
+    const before = await pg.pool.query<{ ability_estimate: string | null }>(
+      `SELECT ability_estimate::text AS ability_estimate FROM diagnostic_runs WHERE id = $1`,
+      [runId],
+    );
+    const thetaBefore = Number(before.rows[0]?.ability_estimate);
+
+    // BAD_ANSWER_SENTINEL flips the stub's scoreGrammarDrill to 'incorrect'.
+    const ans = await agent
+      .post(`/diagnostic/${runId}/answer`)
+      .send({ responseId: item.responseId, picked: 'BAD_ANSWER_SENTINEL' });
+    expect(ans.status).toBe(200);
+    expect(ans.body.result.correct).toBe(false);
+    expect(ans.body.result.verdict).toBe('incorrect');
+
+    const after = await pg.pool.query<{ ability_estimate: string | null }>(
+      `SELECT ability_estimate::text AS ability_estimate FROM diagnostic_runs WHERE id = $1`,
+      [runId],
+    );
+    const thetaAfter = Number(after.rows[0]?.ability_estimate);
+    expect(thetaAfter).toBeLessThan(thetaBefore);
+  });
+
+  it('an empty/whitespace-only answer grades incorrect (θ down) WITHOUT calling Claude, and never crashes', async () => {
+    // A scoreGrammarDrill override that FAILS the test if it's ever called —
+    // proves the empty-answer path is graded locally, not via a wasted
+    // Claude call (the graceful path the spec calls for). Fix-pass SF2: this
+    // now also asserts the θ-down consequence of "graded incorrect", not
+    // just the verdict string — the same real-decrease bar the BAD-answer
+    // test above holds itself to.
+    setClaudeProxy(
+      makeStubProxy({
+        scoreGrammarDrill: async () => {
+          throw new Error('scoreGrammarDrill must not be called for an empty answer');
+        },
+      }),
+    );
+    try {
+      await seedForWriting();
+      const { agent } = await registerUser(t.app, pg.pool);
+      const { runId, item } = await serveToOrdinal(agent, 21);
+
+      // serveToOrdinal's default all-skip drive already floors θ at
+      // THETA_MIN by ordinal 21 (same reasoning as the BAD-answer test
+      // above) — a further down-bump would clamp and be unobservable. Park θ
+      // mid-range first so the DOWN move asserted below is real, not a floor
+      // no-op.
+      await pg.pool.query(`UPDATE diagnostic_runs SET ability_estimate = 4.0 WHERE id = $1`, [
+        runId,
+      ]);
+      const before = await pg.pool.query<{ ability_estimate: string | null }>(
+        `SELECT ability_estimate::text AS ability_estimate FROM diagnostic_runs WHERE id = $1`,
+        [runId],
+      );
+      const thetaBefore = Number(before.rows[0]?.ability_estimate);
+
+      const ans = await agent
+        .post(`/diagnostic/${runId}/answer`)
+        .send({ responseId: item.responseId, picked: '   ' });
+      expect(ans.status).toBe(200);
+      expect(ans.body.result.correct).toBe(false);
+      expect(ans.body.result.verdict).toBe('incorrect');
+
+      const after = await pg.pool.query<{ ability_estimate: string | null }>(
+        `SELECT ability_estimate::text AS ability_estimate FROM diagnostic_runs WHERE id = $1`,
+        [runId],
+      );
+      const thetaAfter = Number(after.rows[0]?.ability_estimate);
+      expect(thetaAfter).toBeLessThan(thetaBefore);
+    } finally {
+      setClaudeProxy(makeStubProxy());
+      resetLimiters();
+    }
+  });
+
+  it('fix-pass SF1: a duplicate /answer for a writing item already being graded short-circuits to 409 WITHOUT a second Claude call', async () => {
+    // Simulates the losing side of the race the SF1 fix closes: another
+    // request has already won `claimWritingGrade` (item_payload carries a
+    // live, un-expired gradingClaimedAt) and is presumably mid-Claude-call.
+    // A duplicate /answer for the SAME still-pending responseId must find
+    // the claim live and short-circuit to 409 WITHOUT itself calling Claude
+    // — proven the same way the empty-answer test proves it, by making the
+    // stub throw if invoked at all.
+    setClaudeProxy(
+      makeStubProxy({
+        scoreGrammarDrill: async () => {
+          throw new Error('scoreGrammarDrill must not be called for a claimed item');
+        },
+      }),
+    );
+    try {
+      await seedForWriting();
+      const { agent } = await registerUser(t.app, pg.pool);
+      const { runId, item } = await serveToOrdinal(agent, 21);
+
+      // Simulate an in-flight claim from a "first" concurrent request, as
+      // `claimWritingGrade` itself would have just written it.
+      await pg.pool.query(
+        `UPDATE diagnostic_responses
+            SET item_payload = item_payload || jsonb_build_object('gradingClaimedAt', now())
+          WHERE id = $1`,
+        [item.responseId],
+      );
+
+      const ans = await agent
+        .post(`/diagnostic/${runId}/answer`)
+        .send({ responseId: item.responseId, picked: '그는 학생인 것 같다.' });
+      expect(ans.status).toBe(409);
+      // Fix-pass 2 FIX B: this is the DISTINCT `writing_grade_in_progress`
+      // code, not the generic `conflict` code the double-answer test above
+      // asserts — the client relies on this to avoid treating a claim
+      // collision as "already recorded" (which would be factually wrong:
+      // the item is still unanswered, per the assertion below).
+      expect(ans.body.error.code).toBe('writing_grade_in_progress');
+
+      // The item is still genuinely unanswered — the claim alone never wrote
+      // answered_at, so a real retry (after the claim TTL or its release)
+      // could still legitimately grade it.
+      const row = await pg.pool.query<{ answered_at: Date | null }>(
+        `SELECT answered_at FROM diagnostic_responses WHERE id = $1`,
+        [item.responseId],
+      );
+      expect(row.rows[0]?.answered_at).toBeNull();
+    } finally {
+      setClaudeProxy(makeStubProxy());
+      resetLimiters();
+    }
+  });
+
+  it('fix-pass 2 FIX A: the writing-grade claim TTL is derived and strictly exceeds the worst-case Claude call duration', () => {
+    // Guard against reintroducing NF-1 (the original hardcoded 30s TTL,
+    // which was shorter than a single CLAUDE_TIMEOUT_MS attempt alone, let
+    // alone the full retry budget). This does NOT exercise real TTL expiry
+    // (that needs clock injection — out of scope, see FIX_REPORT2.md) but
+    // DOES fail immediately if someone reverts `writingClaimTtlSeconds()`
+    // back to a short hardcoded constant, since the derived value would
+    // then be smaller than the config's own worst-case call duration.
+    const worstCaseCallMs = maxClaudeCallDurationMs();
+    const ttlMs = writingClaimTtlSeconds() * 1000;
+    expect(ttlMs).toBeGreaterThan(worstCaseCallMs);
+    // Sanity: the margin is a real buffer (seconds), not a rounding fluke.
+    expect(ttlMs - worstCaseCallMs).toBeGreaterThanOrEqual(1000);
+  });
+
+  it('writing gets its own dimensionStats entry in the finished snapshot', async () => {
+    await seedForWriting();
+    const { agent } = await registerUser(t.app, pg.pool);
+    const runId = await runAllSkip(agent);
+
+    const fin = await agent.post(`/diagnostic/${runId}/finish`).send({});
+    expect(fin.status).toBe(200);
+    const dims = fin.body.snapshot.dimensions as Array<{ key: string; score: number }>;
+    const writing = dims.find((d) => d.key === 'writing');
+    expect(writing).toBeDefined();
+    expect(writing!.score).toBeGreaterThanOrEqual(0);
+    expect(writing!.score).toBeLessThanOrEqual(100);
+  });
+});
+
 describe('B1 — prompt is instruction, not stem (no duplicated question text)', () => {
   it('a reading item prompts with `instruction`; `passage` stays the stem — the two never match', async () => {
     // Before the fix, `stem` was BOTH the on-screen prompt AND the passage —
@@ -2015,7 +2363,7 @@ describe('F-119/F-206 — real listening audio on the diagnostic', () => {
   it('a TOPIK I listening item resolves the level-1 stream path', async () => {
     // Only a TOPIK I candidate exists. Ordinal 2 (listening) serves after a
     // wrong ordinal-1 answer has floored θ to 1.0/L1 (diagnostic-upgrade
-    // Phase A ramp), so the TOPIK-I-paper-targeted attempt matches this row
+    // Phase B ramp), so the TOPIK-I-paper-targeted attempt matches this row
     // directly — deterministic either way (it is the sole row in the pool).
     await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4', answer: 1 });
     await seedTopikItem(pg.pool, {
