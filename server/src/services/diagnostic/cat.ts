@@ -18,15 +18,16 @@ import type { ProficiencyLevel, DiagnosticTargetLevel } from '../claude/index.js
 /** Seed ability — L2 (start-easy ramp, diagnostic-upgrade Phase A). The first
  *  item is served at this band before any evidence exists.
  *
- *  Was 4.0 (L4 mid). At the old seed + step, the FIRST item of every
- *  dimension was served near the seed band, which dragged that dimension's
- *  mean-served-difficulty down for an advanced user (the per-dim estimate is
- *  mean(difficulty) + spread — see scoring.ts) even though θ itself climbed
- *  out of L4 within a few answers. Starting easier (L2) plus a steeper early
- *  `stepForAnswer` (below) reaches the ceiling just as fast for a strong
- *  learner while giving a genuine beginner a real, non-intimidating opener
- *  instead of a first item three bands above their level. */
-export const SEED_THETA = 2.0;
+ *  Was 4.0 (L4 mid), then 2.0 (L2). Now 1.2 (L1) paired with a GRADUAL
+ *  `stepForAnswer` (below). The diagnostic opens at true-beginner difficulty
+ *  and climbs roughly half a band per correct answer, so it "gets
+ *  progressively harder until you struggle" — the experience the 2.0-seed +
+ *  steep-step ramp failed to deliver, since that ramp jumped ~1.5 bands on the
+ *  FIRST correct answer (2.0 → L4) and reached L5+ by the 3rd, so the easy
+ *  opener lasted a single question. The 22-item budget absorbs the few extra
+ *  rungs a strong learner climbs, and the slower climb keeps more items near
+ *  the learner's true θ → a tighter per-dimension estimate. */
+export const SEED_THETA = 1.2;
 
 /** θ is clamped to this closed interval after every update. The 0–6 column
  *  CHECK in migration 001/014 is the durable guard; this keeps the in-memory
@@ -106,24 +107,29 @@ export function targetLevelForTheta(theta: number): DiagnosticTargetLevel {
 /**
  * Staircase step size for the n-th graded answer (1-based).
  *
- *   step_n = max(0.4, 1.5 − 0.15·(n − 1))
+ *   step_n = max(0.35, 0.7 − 0.03·(n − 1))
  *
- * So step decays 1.5, 1.35, 1.2, … and floors at 0.4 (from n=9 on). Early
- * answers move θ more (we know less), late answers fine-tune. The floor keeps
- * a long run from freezing θ entirely.
+ * So step decays 0.70, 0.67, 0.64, … and floors at 0.35 (from n=13 on). Bands
+ * are ~1.0 θ apart, so this moves roughly HALF a band per answer: a gradual
+ * climb rather than a cliff. Early answers still move θ a little more (we know
+ * less then); late answers fine-tune; the floor keeps a long run from freezing.
  *
- * Steepened from `max(0.4, 1.0 − 0.1·(n−1))` alongside the SEED_THETA 4.0→2.0
- * drop (start-easy ramp, diagnostic-upgrade Phase A): paired with the lower
- * seed, an all-correct run still reaches THETA_MAX (6.0) by the 3rd answer
- * (2.0 → 3.5 → 4.85 → 6.0, clamped) — as fast as the old seed/step reached it
- * from L4 — while a struggling learner descends to THETA_MIN just as quickly
- * on the other side. See cat.test.ts for the exact re-simulation.
+ * Softened from the steep `max(0.4, 1.5 − 0.15·(n−1))` ramp (diagnostic-upgrade
+ * Phase A) alongside the SEED_THETA 2.0→1.2 drop (Phase B retune). The steep
+ * ramp jumped ~1.5 bands on the FIRST correct answer (2.0 → 3.5 = L4) and hit
+ * THETA_MAX by the 3rd, so the "start easy" opener lasted a single question.
+ * With the gentle step an all-correct run from the L1 seed climbs
+ * 1.2 → 1.90 → 2.57 → 3.21 → 3.82 → 4.40 → 4.95 → 5.47 → 5.96 → 6.0 (clamped),
+ * reaching L5+ only by the 6th answer and the ceiling by the 9th — a genuine
+ * progressive climb. A struggling learner still floors fast (1.2 − 0.7 = 0.5 →
+ * THETA_MIN after a single miss), so the low end stays responsive. See
+ * cat.test.ts for the exact re-simulation.
  */
 export function stepForAnswer(answerNumber: number): number {
   if (!Number.isFinite(answerNumber) || answerNumber < 1) {
     throw new RangeError(`answerNumber must be an integer ≥ 1, got ${answerNumber}`);
   }
-  return Math.max(0.4, 1.5 - 0.15 * (answerNumber - 1));
+  return Math.max(0.35, 0.7 - 0.03 * (answerNumber - 1));
 }
 
 /** Clamp a θ to [THETA_MIN, THETA_MAX]. */

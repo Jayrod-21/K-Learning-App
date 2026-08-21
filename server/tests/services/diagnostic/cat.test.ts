@@ -46,8 +46,8 @@ describe('bandForTheta (5-band F-002 cuts)', () => {
     expect(bandForTheta(4.75)).toBe('L5+');
     expect(bandForTheta(6)).toBe('L5+');
   });
-  it('seed theta lands at L2 (start-easy ramp, diagnostic-upgrade Phase A)', () => {
-    expect(bandForTheta(SEED_THETA)).toBe('L2');
+  it('seed theta lands at L1 (gradual start-easy ramp, diagnostic-upgrade Phase B)', () => {
+    expect(bandForTheta(SEED_THETA)).toBe('L1');
   });
   it("never emits 'basic' anywhere across the θ range", () => {
     for (let theta = THETA_MIN; theta <= THETA_MAX; theta += 0.05) {
@@ -70,16 +70,16 @@ describe('targetLevelForTheta', () => {
   });
 });
 
-describe('stepForAnswer (steepened for the start-easy ramp, diagnostic-upgrade Phase A)', () => {
-  it('decays from 1.5 by 0.15 per answer', () => {
-    expect(stepForAnswer(1)).toBeCloseTo(1.5);
-    expect(stepForAnswer(2)).toBeCloseTo(1.35);
-    expect(stepForAnswer(3)).toBeCloseTo(1.2);
-    expect(stepForAnswer(5)).toBeCloseTo(0.9);
+describe('stepForAnswer (gradual ramp, diagnostic-upgrade Phase B)', () => {
+  it('decays from 0.7 by 0.03 per answer', () => {
+    expect(stepForAnswer(1)).toBeCloseTo(0.7);
+    expect(stepForAnswer(2)).toBeCloseTo(0.67);
+    expect(stepForAnswer(3)).toBeCloseTo(0.64);
+    expect(stepForAnswer(5)).toBeCloseTo(0.58);
   });
-  it('floors at 0.4 (from answer 9 on: 1.5 − 0.15·8 = 0.3, floored)', () => {
-    expect(stepForAnswer(9)).toBeCloseTo(0.4);
-    expect(stepForAnswer(20)).toBeCloseTo(0.4);
+  it('floors at 0.35 (from answer 13 on: 0.7 − 0.03·12 = 0.34, floored)', () => {
+    expect(stepForAnswer(13)).toBeCloseTo(0.35);
+    expect(stepForAnswer(20)).toBeCloseTo(0.35);
   });
   it('rejects non-positive answer numbers', () => {
     expect(() => stepForAnswer(0)).toThrow(RangeError);
@@ -97,48 +97,53 @@ describe('clampTheta', () => {
   });
 });
 
-describe('nextTheta (steepened step, diagnostic-upgrade Phase A)', () => {
+describe('nextTheta (gradual step, diagnostic-upgrade Phase B)', () => {
   it('rises on correct by step', () => {
-    expect(nextTheta(4.0, true, 1)).toBeCloseTo(5.5);
-    expect(nextTheta(4.0, true, 2)).toBeCloseTo(5.35);
+    expect(nextTheta(4.0, true, 1)).toBeCloseTo(4.7); // +0.70
+    expect(nextTheta(4.0, true, 2)).toBeCloseTo(4.67); // +0.67
   });
   it('falls on wrong/skip by step', () => {
-    expect(nextTheta(4.0, false, 1)).toBeCloseTo(2.5);
-    expect(nextTheta(4.0, false, 2)).toBeCloseTo(2.65);
+    expect(nextTheta(4.0, false, 1)).toBeCloseTo(3.3); // −0.70
+    expect(nextTheta(4.0, false, 2)).toBeCloseTo(3.33); // −0.67
   });
   it('clamps to the valid range', () => {
-    expect(nextTheta(5.8, true, 1)).toBe(THETA_MAX); // 7.3 → 6
-    expect(nextTheta(1.2, false, 1)).toBe(THETA_MIN); // 1.2 − 1.5 = −0.3 → 1
-    // The steeper step now clamps this case too (0.7 → floor), unlike the
-    // old max(0.4, 1.0−0.1(n−1)) step, which left it at 1.2 unclamped.
-    expect(nextTheta(2.2, false, 1)).toBe(THETA_MIN);
+    expect(nextTheta(5.8, true, 1)).toBe(THETA_MAX); // 5.8 + 0.7 = 6.5 → 6
+    expect(nextTheta(1.2, false, 1)).toBe(THETA_MIN); // 1.2 − 0.7 = 0.5 → 1
+    // A miss from low θ still floors in one step (1.5 − 0.7 = 0.8 → 1.0)…
+    expect(nextTheta(1.5, false, 1)).toBe(THETA_MIN);
+    // …but the GENTLE step no longer floors a mid-band miss in one move: a
+    // wrong answer from L3 lands at L2 (2.2 − 0.7 = 1.5), not the floor — the
+    // gradual descent that mirrors the gradual climb.
+    expect(nextTheta(2.2, false, 1)).toBeCloseTo(1.5);
   });
 
-  it('θ reaches 1.0 (L1 band) after a SINGLE miss from the new seed', () => {
-    // SEED_THETA 2.0, step1 = 1.5: 2.0 − 1.5 = 0.5 → clamped to 1.0. The
-    // lower seed + steeper early step means a struggling learner lands in L1
-    // almost immediately, rather than the old 4-answer descent from L4.
+  it('θ reaches 1.0 (L1 band) after a SINGLE miss from the seed', () => {
+    // SEED_THETA 1.2, step1 = 0.7: 1.2 − 0.7 = 0.5 → clamped to 1.0. Even with
+    // the gentle step, a first miss from the low L1 seed floors immediately,
+    // so a struggling beginner is placed at the bottom without a long descent.
     expect(nextTheta(SEED_THETA, false, 1)).toBe(THETA_MIN);
   });
 
-  it('θ reaches 6.0 (THETA_MAX) by the 3rd correct answer from the new seed', () => {
-    // The start-easy-ramp re-simulation the Phase A spec calls for: from
-    // SEED_THETA=2.0, an all-correct run climbs 2.0 → 3.5 → 4.85 → 6.0
-    // (clamped) — reaching the ceiling just as fast as the OLD seed/step
-    // reached it from L4, so a genuinely advanced learner is not stuck
-    // answering easy items for long.
+  it('climbs GRADUALLY from the L1 seed — reaching L5+ only by the 6th correct answer and the ceiling by the 9th', () => {
+    // Gradual start-easy ramp (diagnostic-upgrade Phase B retune). From
+    // SEED_THETA=1.2 an all-correct run climbs by the decaying step
+    // (0.70, 0.67, 0.64, …): 1.2 → 1.90 → 2.57 → 3.21 → 3.82 → 4.40 → 4.95 →
+    // 5.47 → 5.96 → 6.0 (clamped). Contrast the OLD steep ramp, which jumped
+    // 2.0 → 3.5 → 4.85 → 6.0 and hit the ceiling by answer 3 — so its "easy"
+    // opener lasted a single question. Here the opener is a true L1 item and
+    // the learner only reaches advanced (L5+) after six correct answers.
+    const expected = [1.9, 2.57, 3.21, 3.82, 4.4, 4.95, 5.47, 5.96, 6.0];
     let theta = SEED_THETA;
-    theta = nextTheta(theta, true, 1);
-    expect(theta).toBeCloseTo(3.5);
-    theta = nextTheta(theta, true, 2);
-    expect(theta).toBeCloseTo(4.85);
-    theta = nextTheta(theta, true, 3);
+    const bands: string[] = [bandForTheta(theta)]; // bands[0] = seed band
+    for (let n = 1; n <= expected.length; n += 1) {
+      theta = nextTheta(theta, true, n);
+      expect(theta).toBeCloseTo(expected[n - 1]!, 2);
+      bands.push(bandForTheta(theta)); // bands[n] = band after the n-th answer
+    }
     expect(theta).toBe(THETA_MAX);
-    expect(theta).toBe(6.0);
-    // …and the FIRST item was served at the easy L2 band while the
-    // all-correct learner still reaches L5+ (advanced) within 3 answers.
-    expect(bandForTheta(SEED_THETA)).toBe('L2');
-    expect(bandForTheta(theta)).toBe('L5+');
+    expect(bands[0]).toBe('L1'); // easy L1 opener
+    expect(bands[5]).toBe('L4'); // after 5 correct answers, still L4 (θ 4.40)
+    expect(bands[6]).toBe('L5+'); // advanced reached only at the 6th (θ 4.95)
   });
 });
 

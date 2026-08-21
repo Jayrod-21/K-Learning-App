@@ -496,13 +496,13 @@ describe('POST /diagnostic/:runId/answer — concurrent double-answer (B1)', () 
     expect(served.status).toBe(200);
     expect(served.body.next).not.toBeNull();
 
-    // θ after one correct answer at SEED_THETA (2.0), step n=1 (1.5) → 3.5.
+    // θ after one correct answer at SEED_THETA (1.2), step n=1 (0.7) → 1.9.
     const thetaAfterFirst = await pg.pool.query<{ ability_estimate: string }>(
       `SELECT ability_estimate::text AS ability_estimate
          FROM diagnostic_runs WHERE id = $1`,
       [runId],
     );
-    expect(Number(thetaAfterFirst.rows[0]?.ability_estimate)).toBeCloseTo(3.5);
+    expect(Number(thetaAfterFirst.rows[0]?.ability_estimate)).toBeCloseTo(1.9);
 
     // Count in-flight (unanswered) responses: exactly one — item #2.
     const inflightBefore = await pg.pool.query<{ n: string }>(
@@ -527,7 +527,7 @@ describe('POST /diagnostic/:runId/answer — concurrent double-answer (B1)', () 
          FROM diagnostic_runs WHERE id = $1`,
       [runId],
     );
-    expect(Number(thetaAfterReplay.rows[0]?.ability_estimate)).toBeCloseTo(3.5);
+    expect(Number(thetaAfterReplay.rows[0]?.ability_estimate)).toBeCloseTo(1.9);
 
     // Still exactly one item in flight — the replay served no second item.
     const inflightAfter = await pg.pool.query<{ n: string }>(
@@ -1330,15 +1330,15 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
     // which keeps the trajectory deterministic even for generated items,
     // whose correct choice is shuffled to a random position ('b' would be
     // right ~25% of the time).
-    // θ staircase, all wrong (diagnostic-upgrade Phase A start-easy ramp):
-    // seed 2.0, step1 = 1.5 → 2.0 − 1.5 = 0.5 → clamped to 1.0 (THETA_MIN) —
-    // a struggling learner now floors after a SINGLE wrong answer (the lower
-    // seed + steeper early step reach both ends of the scale fast; see
-    // cat.test.ts's reachability tests). So served bands run L2, L1, L1, … —
-    // a beginner gets real L1/L2 items instead of the old θ-floor at 2.0 /
-    // 'basic'. Hanja items (schedule ordinals 5/10/15/20) interleave too but
-    // are COVERAGE-ONLY — graded and scored, but excluded from this θ
-    // ladder, so they never move it off the floor (verified below).
+    // θ staircase, all wrong (diagnostic-upgrade Phase B gradual start-easy
+    // ramp): seed 1.2, step1 = 0.7 → 1.2 − 0.7 = 0.5 → clamped to 1.0
+    // (THETA_MIN) — a struggling learner floors after a SINGLE wrong answer
+    // (see cat.test.ts's reachability tests), so the generated dims are served
+    // at L1 the whole run. Hanja items (schedule ordinals 5/10/15/20) interleave
+    // too but are COVERAGE-ONLY — graded and scored, yet excluded from this θ
+    // ladder; they're served at L2 (the hanja corpus has no L1 tier), so
+    // servedLevels shows both L1 and L2 while θ never moves off the floor
+    // (verified below).
     const start = await agent.post('/diagnostic').send({});
     expect(start.status).toBe(201);
     const runId = start.body.runId;
@@ -1421,8 +1421,8 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
     const { agent } = await registerUser(t.app, pg.pool);
 
     // All-skip run (a skip is deterministically incorrect): ordinal 1
-    // (reading) serves at SEED_THETA=2.0 → band L2 (diagnostic-upgrade Phase
-    // A start-easy ramp — L2 was L4 before) → L1/L2 bands skip the
+    // (reading) serves at SEED_THETA=1.2 → band L1 (diagnostic-upgrade Phase B
+    // gradual start-easy ramp) → L1/L2 bands skip the
     // proficiency-targeted attempt entirely and go straight to the TOPIK-I
     // paper preference, which matches EXACTLY the one untagged TOPIK I row
     // (deterministic despite ORDER BY random()) — so ordinal 1 itself is the
@@ -1497,8 +1497,8 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
     }
     const { agent } = await registerUser(t.app, pg.pool);
 
-    // All-skip staircase (diagnostic-upgrade Phase A ramp: seed 2.0, step1
-    // 1.5 → floors to θ=1.0/L1 after the very first wrong answer): vocab
+    // All-skip staircase (diagnostic-upgrade Phase B ramp: seed 1.2, step1
+    // 0.7 → floors to θ=1.0/L1 after the very first wrong answer): vocab
     // slots (5-wide schedule ordinals 3,8,13,18) and grammar slots (4,9,14,
     // 19) all serve at band L1 — ALL beginner-band, all four items each.
     // hanja_characters is unseeded here, so ordinals 5/10/15/20 (hanja) are
@@ -1592,19 +1592,18 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
     // dry before the run's 4 reading slots are served, exercising the
     // any-fallback in the SAME test as the preference itself.
     //
-    // Ordinal 1 is unavoidably served at SEED_THETA=2.0 → band L2
-    // (diagnostic-upgrade Phase A start-easy ramp — this was L4 before the
-    // retune), which prefers TOPIK I, not TOPIK II — that slot is covered by
-    // the L1/L2 test above, not here. Instead this test drives reading +
-    // listening CORRECT (deterministic — every seeded row uses answer:1 →
-    // choice 'a') and vocab + grammar WRONG (skip — their generated choice
-    // order is shuffled server-side, so picking a fixed id is never
-    // deterministically correct), which climbs θ out of L2 into L3+
-    // territory by the run's 2nd reading slot and keeps it there for the
-    // 3rd/4th too (walked exactly in cat.test.ts-style math in the PR
-    // description; not re-pinned ordinal-by-ordinal here since the new
-    // steeper step makes that fragile to restate — the OBSERVABLE property
-    // this test pins is paper selection, not the θ trajectory itself).
+    // Ordinal 1 is unavoidably served at SEED_THETA=1.2 → band L1
+    // (diagnostic-upgrade Phase B gradual start-easy ramp), which prefers
+    // TOPIK I, not TOPIK II — that opener is covered by the L1/L2 test above,
+    // not here. To reach the L3+ bands this test cares about, it answers EVERY
+    // item correctly by echoing each item's stored correct_answer (the only
+    // deterministic way UP: generated MC choices are shuffled server-side, so a
+    // fixed pick is only ~25% correct). Under the gradual ramp an all-correct
+    // run climbs steadily out of the L1 seed — 1.2 → 1.9 → 2.57 → 3.21 → 3.82
+    // over the first four θ-bumping answers (hanja is coverage-only) — so the
+    // LATER reading slots (ordinals 6/11/16) are served in the L3+ bands, where
+    // pickTopikRow prefers TOPIK II. The OBSERVABLE property pinned here is
+    // paper selection by band, not the exact θ trajectory.
     const topik2Ids = [
       await seedTopikItem(pg.pool, {
         section: 'reading',
@@ -1639,10 +1638,18 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
     const runId = start.body.runId;
     let current: { responseId: number; section: string } | null = start.body.item;
     while (current !== null) {
-      const picked = current.section === 'reading' || current.section === 'listening' ? 'a' : null;
+      // Answer correctly by echoing the item's stored correct_answer: the
+      // shuffled correct letter for MC items, and the 'writing' sentinel for
+      // the writing item (a non-empty, non-BAD_ANSWER_SENTINEL string, which
+      // the scoreGrammarDrill stub grades 'good' → also correct). This drives a
+      // monotonic θ climb into the L3+ bands.
+      const correct = await pg.pool.query<{ correct_answer: string }>(
+        `SELECT correct_answer FROM diagnostic_responses WHERE id = $1`,
+        [current.responseId],
+      );
       const ans = await agent
         .post(`/diagnostic/${runId}/answer`)
-        .send({ responseId: current.responseId, picked });
+        .send({ responseId: current.responseId, picked: correct.rows[0]!.correct_answer });
       expect(ans.status).toBe(200);
       if (ans.body.done === true) {
         current = null;
@@ -1707,14 +1714,14 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
     await seedKgiuEntry(pg.pool, { proficiency: 'L4', pattern: '-는 바람에' });
     const { agent } = await registerUser(t.app, pg.pool);
 
-    // Ordinal 1 is unavoidably served at the seed's L2 band, which prefers
-    // TOPIK I directly (no fallback needed — not what this test is about;
-    // see the L1/L2 test above). Correct reading + listening answers
-    // (deterministic — every row here uses answer:1 → choice 'a') climb θ
-    // into L3+ by the run's 2nd reading slot (ordinal 6, the same
-    // trajectory the sibling "prefers TOPIK II" test walks through), so
-    // THAT slot is the one that actually exercises the "TOPIK II attempt
-    // matches nothing → falls to any" branch.
+    // This pool is TOPIK-I-ONLY: no TOPIK II item exists at all. So whatever
+    // band each reading slot lands in under the gradual ramp (ordinal 1 opens
+    // at the seed's L1 band), the paper-preference attempt that would want a
+    // TOPIK II row for an L3+ slot matches nothing, and the final "any" attempt
+    // still serves the TOPIK I rows — keeping the run whole. We drive reading +
+    // listening correct (deterministic answer:1 → 'a') and skip the generated
+    // dims; the OBSERVABLE property is that every reading slot is filled from
+    // the any-fallback, never left empty.
     const start = await agent.post('/diagnostic').send({});
     expect(start.status).toBe(201);
     const runId = start.body.runId;
@@ -2356,7 +2363,7 @@ describe('F-119/F-206 — real listening audio on the diagnostic', () => {
   it('a TOPIK I listening item resolves the level-1 stream path', async () => {
     // Only a TOPIK I candidate exists. Ordinal 2 (listening) serves after a
     // wrong ordinal-1 answer has floored θ to 1.0/L1 (diagnostic-upgrade
-    // Phase A ramp), so the TOPIK-I-paper-targeted attempt matches this row
+    // Phase B ramp), so the TOPIK-I-paper-targeted attempt matches this row
     // directly — deterministic either way (it is the sole row in the pool).
     await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4', answer: 1 });
     await seedTopikItem(pg.pool, {
