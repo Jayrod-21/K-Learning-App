@@ -214,6 +214,14 @@
  * "Generated Audio" list below on its next fetch — two views of the same
  * server state, no dedup needed. Additive only, same posture as F-210's
  * section (see `GeneratedStoryCreator`).
+ *
+ * The card also surfaces F-211 illustrations (Listen-tab
+ * illustration-visibility work) via the SHARED `useStoryImages` hook
+ * (hooks/useStoryImages.ts) and `StoryIllustrations` gallery component
+ * (components/StoryIllustrations.tsx) — the exact same state machine and
+ * markup the story reader uses, so the batch of scene images the server
+ * auto-enqueues at creation is visible right here instead of only after
+ * "Open in reader" (see `CreatedStoryCard`).
  */
 import {
   useCallback,
@@ -240,6 +248,7 @@ import { Pill, type PillTone } from '../components/Pill';
 import { ShowMore } from '../components/ShowMore';
 import { ScrollSnapCarousel } from '../components/ScrollSnapCarousel';
 import { StoryGenerator } from '../components/StoryGenerator';
+import { StoryIllustrations } from '../components/StoryIllustrations';
 import { Tabs } from '../components/Tabs';
 import { Tapword } from '../components/Tapword';
 import { WordPopover } from '../components/WordPopover';
@@ -258,6 +267,7 @@ import {
   AUDIO_FAILED_FALLBACK_COPY,
   useStoryAudio,
 } from '../hooks/useStoryAudio';
+import { useStoryImages } from '../hooks/useStoryImages';
 import { useTapWord } from '../hooks/useTapWord';
 import { audioUploadErrorMessage, errorMessageFor } from '../lib/errorCopy';
 import { navItem } from '../lib/nav';
@@ -1378,12 +1388,32 @@ function GeneratedStoryCreator(): JSX.Element {
  * not a dead button; only an explicit false hides (forward-compat). The
  * daily-cap 429 and a `failed` envelope's `error` are server-authored
  * whitelisted copy shown verbatim (the sanctioned F-210 exception).
+ *
+ * F-211 illustrations (Listen-tab illustration-visibility work): the batch
+ * the server auto-enqueues at story creation had nowhere to surface on this
+ * card before — a fresh story's images generated silently in the
+ * background, visible only via "Open in reader". Now the SHARED
+ * `useStoryImages` state machine (the same hydrate → POST → bounded poll
+ * machine as the audio above, hooks/useStoryImages.ts) feeds the SHARED
+ * `StoryIllustrations` gallery component (components/StoryIllustrations.tsx
+ * — the reader's exact F-211 markup, extracted so both surfaces render the
+ * one implementation): "Illustrating…" while the batch runs, the
+ * hero-plus-grid gallery once done, an on-demand "Generate illustrations"
+ * for an old/never-illustrated story, and nothing at all on a dormant
+ * deploy (`imageGenConfigured: false`) — same absence-not-a-dead-button
+ * posture as the audio section.
  */
 function CreatedStoryCard({ story }: { story: GeneratedStory }): JSX.Element {
   const navigate = useNavigate();
   const { audio, requesting, requestError, requestAudio } = useStoryAudio(
     story.id,
   );
+  const {
+    images,
+    requesting: requestingImages,
+    requestError: imagesRequestError,
+    requestImages,
+  } = useStoryImages(story.id);
 
   // Hidden while the mount hydrate is in flight (the card never waits on
   // the probe — title/reader link render immediately), and hidden outright
@@ -1493,6 +1523,19 @@ function CreatedStoryCard({ story }: { story: GeneratedStory }): JSX.Element {
           </>
         )
       ) : null}
+
+      {/* F-211 — the batch-at-create illustrations, alongside the audio
+          section above. Same shared component the reader uses; renders
+          nothing during the mount hydrate and nothing on a dormant
+          deploy. */}
+      <StoryIllustrations
+        storyId={story.id}
+        storyTitle={story.title}
+        images={images}
+        requesting={requestingImages}
+        requestError={imagesRequestError}
+        onRequest={requestImages}
+      />
     </CityCard>
   );
 }

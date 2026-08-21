@@ -48,15 +48,19 @@ import { getAudioTrack, getSharedAudio, listMyAudio } from '../services/audio';
 import {
   generateStory,
   getStoryAudio,
+  getStoryImages,
   listGeneratedAudio,
   requestStoryAudio,
+  requestStoryImages,
 } from '../services/reading';
 import type {
   GeneratedAudioItem,
   GeneratedStory,
   StoryAudio,
+  StoryImagesEnvelope,
 } from '../services/reading';
 import { AUDIO_FAILED_FALLBACK_COPY } from '../hooks/useStoryAudio';
+import { IMAGES_FAILED_FALLBACK_COPY } from '../hooks/useStoryImages';
 import { mineWord } from '../services/vocab';
 import type {
   AudioTrackDetail,
@@ -110,6 +114,10 @@ vi.mock('../services/reading', async (importOriginal) => {
     generateStory: vi.fn(),
     getStoryAudio: vi.fn(),
     requestStoryAudio: vi.fn(),
+    // F-211: the created-story card's shared illustration gallery rides the
+    // same getStoryImages/requestStoryImages pair the reader uses.
+    getStoryImages: vi.fn(),
+    requestStoryImages: vi.fn(),
   };
 });
 
@@ -339,6 +347,52 @@ const CREATOR_AUDIO_FAILED: StoryAudio = {
   segments: [],
 };
 
+/** F-211 image envelopes for the created-story card's shared gallery. The
+ *  done fixture's blobUrl matches the REAL `buildStoryImageSrc` allow-list
+ *  (unmocked) for CREATED_STORY's id (55). */
+const CREATOR_IMAGES_NONE: StoryImagesEnvelope = {
+  status: 'none',
+  jobId: null,
+  error: null,
+  images: [],
+};
+
+const CREATOR_IMAGES_PENDING: StoryImagesEnvelope = {
+  status: 'pending',
+  jobId: 9,
+  error: null,
+  images: [],
+};
+
+const CREATOR_IMAGES_DONE: StoryImagesEnvelope = {
+  status: 'done',
+  jobId: 9,
+  error: null,
+  images: [
+    {
+      imageNumber: 1,
+      blobUrl: '/reading/generated/55/image/1/blob',
+      prompt: 'SCAFFOLD-PROMPT scene one',
+      width: 1024,
+      height: 1024,
+    },
+    {
+      imageNumber: 2,
+      blobUrl: '/reading/generated/55/image/2/blob',
+      prompt: 'SCAFFOLD-PROMPT scene two',
+      width: 1024,
+      height: 1024,
+    },
+  ],
+};
+
+const CREATOR_IMAGES_FAILED: StoryImagesEnvelope = {
+  status: 'failed',
+  jobId: 9,
+  error: 'The image service is unavailable right now. Try again later.',
+  images: [],
+};
+
 /** F-207: surfaces the router location so Read-button navigation (into the
  *  reading routes this page doesn't render) is assertable. */
 function LocationProbe(): JSX.Element {
@@ -431,6 +485,10 @@ beforeEach(() => {
   vi.mocked(generateStory).mockReset();
   vi.mocked(getStoryAudio).mockReset().mockResolvedValue(CREATOR_AUDIO_NONE);
   vi.mocked(requestStoryAudio).mockReset();
+  // F-211: same posture — the card's mount hydrate defaults to a fresh
+  // never-illustrated envelope until a test drives it otherwise.
+  vi.mocked(getStoryImages).mockReset().mockResolvedValue(CREATOR_IMAGES_NONE);
+  vi.mocked(requestStoryImages).mockReset();
   // F-162: each test gets a clean scroll-restore slate — a saved position
   // from one test must never leak into the next.
   window.sessionStorage.clear();
@@ -1061,6 +1119,108 @@ describe('Ttmik page — landing story creator (Listen-tab story generator)', ()
       creator.compareDocumentPosition(voiced) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+
+  // F-211 — the batch-at-create illustrations. The shared `useStoryImages`
+  // hook + `StoryIllustrations` gallery (the reader's exact state machine
+  // and markup) now render alongside the audio section above, so a fresh
+  // story's auto-enqueued scene images are visible right on this card.
+  describe('F-211 illustrations', () => {
+    it('a batch-at-create story shows "Illustrating…" with no click, then the gallery once done', async () => {
+      vi.useFakeTimers();
+      vi.mocked(getStoryImages)
+        .mockResolvedValueOnce(CREATOR_IMAGES_PENDING) // card-mount hydrate
+        .mockResolvedValue(CREATOR_IMAGES_DONE); // poll tick 1+
+      vi.mocked(generateStory).mockResolvedValue(CREATED_STORY);
+      renderPage();
+      await flushAsync();
+
+      fireEvent.click(screen.getByRole('button', { name: /Generate story/ }));
+      await flushAsync();
+      const card = screen.getByRole('group', { name: 'New story: 달빛 아래 서울' });
+
+      // Auto-enqueued at creation — no click, straight to the busy status.
+      expect(within(card).getByText(/Illustrating/)).toBeInTheDocument();
+      expect(vi.mocked(requestStoryImages)).not.toHaveBeenCalled();
+
+      // The hook's bounded poll (2.5s cadence) lands the settle.
+      await flushAsync(2500);
+      const imgs = card.querySelectorAll<HTMLImageElement>(
+        '.km-reading__images-item img',
+      );
+      expect(imgs).toHaveLength(2);
+      expect(Array.from(imgs).map((img) => img.getAttribute('src'))).toEqual([
+        '/reading/generated/55/image/1/blob',
+        '/reading/generated/55/image/2/blob',
+      ]);
+      vi.useRealTimers();
+    });
+
+    it('an old/never-illustrated story offers "Generate illustrations" and POSTs on click', async () => {
+      vi.mocked(requestStoryImages).mockResolvedValue(CREATOR_IMAGES_PENDING);
+      const user = userEvent.setup();
+      renderPage();
+
+      const card = await createStory(user);
+      await user.click(
+        await within(card).findByRole('button', {
+          name: /Generate illustrations/,
+        }),
+      );
+      expect(vi.mocked(requestStoryImages)).toHaveBeenCalledWith(
+        55,
+        expect.any(AbortSignal),
+      );
+      expect(
+        await within(card).findByText(/Illustrating/),
+      ).toBeInTheDocument();
+    });
+
+    it('a failed envelope shows the server-authored copy VERBATIM, and a null error falls back to fixed copy', async () => {
+      vi.mocked(getStoryImages).mockResolvedValue(CREATOR_IMAGES_FAILED);
+      const user = userEvent.setup();
+      renderPage();
+
+      const card = await createStory(user);
+      const alerts = await within(card).findAllByRole('alert');
+      expect(alerts.map((a) => a.textContent)).toContain(
+        'The image service is unavailable right now. Try again later.',
+      );
+
+      cleanup();
+      vi.mocked(getStoryImages).mockResolvedValue({
+        ...CREATOR_IMAGES_FAILED,
+        error: null,
+      });
+      renderPage();
+      const secondCard = await createStory(userEvent.setup());
+      const secondAlerts = await within(secondCard).findAllByRole('alert');
+      expect(secondAlerts.map((a) => a.textContent)).toContain(
+        IMAGES_FAILED_FALLBACK_COPY,
+      );
+    });
+
+    it('imageGenConfigured:false hides the illustration affordance entirely — the audio section is untouched', async () => {
+      vi.mocked(getStoryImages).mockResolvedValue({
+        ...CREATOR_IMAGES_NONE,
+        imageGenConfigured: false,
+      });
+      const user = userEvent.setup();
+      renderPage();
+
+      const card = await createStory(user);
+      await waitFor(() => {
+        expect(vi.mocked(getStoryImages)).toHaveBeenCalled();
+      });
+      expect(
+        within(card).queryByRole('button', { name: /Generate illustrations/ }),
+      ).not.toBeInTheDocument();
+      expect(card.querySelector('.km-reading__images')).toBeNull();
+      // The audio affordance (a separate dormancy flag) is unaffected.
+      expect(
+        await within(card).findByRole('button', { name: /Generate audio/ }),
+      ).toBeInTheDocument();
+    });
   });
 });
 
