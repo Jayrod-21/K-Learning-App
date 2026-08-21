@@ -211,20 +211,38 @@ export function makeStubProxy(overrides: Partial<ClaudeProxy> = {}): ClaudeProxy
       },
       metadata: { ...baseMeta, requestId: randomUUID() },
     }),
-    scoreGrammarDrill: async () => ({
-      // Deterministic score: a passing grade with one correction. Lets the submit
-      // route test assert the row update + reference reveal without Anthropic.
-      result: {
-        score: 82,
-        verdict: 'good' as const,
-        usesPattern: true,
-        summary: 'mock score summary',
-        corrections: [
-          { span: '___', issue: 'mock issue', fix: 'mock fix' },
-        ],
-      },
-      metadata: { ...baseMeta, requestId: randomUUID() },
-    }),
+    scoreGrammarDrill: async (input) => {
+      // Deterministic score, CONTROLLABLE per-test via a sentinel substring in
+      // the learner's answer (diagnostic-upgrade Phase B needs both the
+      // correct AND wrong grading paths testable without touching Anthropic —
+      // the diagnostic writing branch and grammarDrill.ts's submit route both
+      // exercise this same stub). Default (no sentinel) is the pre-existing
+      // passing grade with one correction, unchanged for every existing
+      // grammarDrill.ts test that doesn't use the sentinel.
+      const isBad = input.userAnswer.includes('BAD_ANSWER_SENTINEL');
+      return {
+        result: isBad
+          ? {
+              score: 20,
+              verdict: 'incorrect' as const,
+              usesPattern: false,
+              summary: 'mock score summary (needs work)',
+              corrections: [
+                { span: '___', issue: 'mock issue (bad)', fix: 'mock fix (bad)' },
+              ],
+            }
+          : {
+              score: 82,
+              verdict: 'good' as const,
+              usesPattern: true,
+              summary: 'mock score summary',
+              corrections: [
+                { span: '___', issue: 'mock issue', fix: 'mock fix' },
+              ],
+            },
+        metadata: { ...baseMeta, requestId: randomUUID() },
+      };
+    },
     generateWritingPrompt: async (input) => ({
       // Deterministic prompt per mode/rubric. Lets the /writing/generate route
       // test assert the wire shape without touching Anthropic. lengthHint is

@@ -26,20 +26,41 @@
  *     the client NEVER contains correct_answer or explain; grading is
  *     server-side; the verdict + correct choice + explain are revealed only in
  *     the /answer response, after the user has committed a pick. This is the
- *     answer-tampering defense and THE security property of this pass.
+ *     answer-tampering defense and THE security property of this pass. A
+ *     writing item's `referenceModelKr`/`referenceModelEn` (diagnostic-upgrade
+ *     Phase B) are the same kind of secret as `correct_answer` — stored in
+ *     `item_payload` but never spread onto a `ClientItem` (see
+ *     `pendingClientItem`/`toClientItem`'s explicit field allow-lists).
  *   - Out-of-order / double answers are rejected 409 (replay defense).
- *   - Item generation (vocab/grammar via Claude) is behind diagnosticLimiter on
- *     the routes that can generate (/diagnostic, /:runId/next) — the diagnostic
- *     run's OWN rate-limit bucket (middleware/rateLimits.ts), sized for a full
- *     run's route-entry count rather than sharing the app-wide expensiveLimiter
- *     bucket with every other paid-upstream route. Genuine Claude calls are
- *     bounded to ≤ 2*ITEMS_PER_DIMENSION (8) per run by the fixed 20-item,
- *     4-each schedule plus /next's re-serve-pending idempotency. Grading
- *     (/answer) never calls Claude, so it sits behind cheapLimiter — a limiter
- *     429 can no longer withhold a reveal the user already earned.
+ *   - Item generation (vocab/grammar/writing via Claude) is behind
+ *     diagnosticLimiter on the routes that can generate (/diagnostic,
+ *     /:runId/next) — the diagnostic run's OWN rate-limit bucket
+ *     (middleware/rateLimits.ts), sized for a full run's route-entry count
+ *     rather than sharing the app-wide expensiveLimiter bucket with every
+ *     other paid-upstream route. Genuine GENERATION calls are bounded to
+ *     ≤ (4 vocab + 4 grammar + 2 writing) = 10 per run by the fixed 22-item,
+ *     WEIGHTS-driven schedule plus /next's re-serve-pending idempotency.
+ *     Grading (/answer) never calls Claude for MC items, so it sits behind
+ *     cheapLimiter — a limiter 429 can no longer withhold a reveal the user
+ *     already earned. A WRITING /answer is the one exception (Phase B): it
+ *     DOES make one `scoreGrammarDrill` Claude call to grade the learner's
+ *     free-text sentence. This is DELIBERATELY still cheapLimiter, not
+ *     diagnosticLimiter: the call is bounded to at most 2/run (the fixed
+ *     writing weight, not user-controllable — the single-shot `answered_at
+ *     IS NULL` gate makes a re-answer of the same item impossible, and the
+ *     schedule caps total writing slots at 2), so the worst case is 2 extra
+ *     cheap-bucket-gated Claude calls per run — negligible next to the 10
+ *     generation calls already riding diagnosticLimiter, and moving it to
+ *     diagnosticLimiter would let a limiter 429 withhold a writing reveal the
+ *     user already earned, the exact harm cheapLimiter exists to avoid for
+ *     the other four gradeable dimensions.
  *
  * Reading/listening items come from the real topik_items pool (no Claude);
- * vocab/grammar items are authored by the Claude proxy from a corpus seed.
+ * vocab/grammar items are authored by the Claude proxy from a corpus seed;
+ * writing items (diagnostic-upgrade Phase B) reuse that SAME generate+grade
+ * Claude pipeline (`generateGrammarDrill`/`scoreGrammarDrill`, Pass 9's
+ * grammar-production-drill route) rather than a new Claude route — see
+ * `buildWritingItem` and the /answer handler's writing branch.
  */
 import { Router } from 'express';
 import { z } from 'zod';
@@ -50,7 +71,12 @@ import { query, withTransaction } from '../db/pool.js';
 import { ConflictError, NotFoundError, UpstreamError, mapClaudeError } from '../middleware/errors.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
 import { NO_TRANSCRIPT_STEM_PREFIX } from './topik.js';
-import type { DiagnosticTargetLevel, ProficiencyLevel } from '../services/claude/index.js';
+import type {
+  DiagnosticTargetLevel,
+  DrillVerdict,
+  GrammarDrillItem,
+  ProficiencyLevel,
+} from '../services/claude/index.js';
 import {
   SEED_THETA,
   bandForTheta,
@@ -79,27 +105,69 @@ router.use(requireAuth);
 // Types + constants
 // ---------------------------------------------------------------------------
 
-/** Items served per dimension. 4 balances reliability against Claude cost
- *  (vocab+grammar are generated → 2*ITEMS_PER_DIMENSION Claude calls/run).
- *  hanja is corpus-only (no Claude call, see `buildHanjaItem`) so it rides
- *  the same uniform count for free — kept uniform across all five dimensions
- *  rather than a per-dimension weight map (diagnostic-upgrade Phase A) both
- *  for simplicity and because `scoring.ts`'s confidence-band math is written
- *  against "the standard 4-item schedule". */
-const ITEMS_PER_DIMENSION = 4;
+/**
+ * Items served per dimension (diagnostic-upgrade Phase B: a per-dimension
+ * WEIGHTS map, replacing the old uniform `ITEMS_PER_DIMENSION = 4`). Five
+ * dimensions keep the original 4: reading/listening/vocab/grammar cost one
+ * Claude generation call each (topik-sourced reading/listening cost none),
+ * hanja costs none (corpus-only, see `buildHanjaItem`). `writing` is
+ * deliberately WEIGHTED DOWN to 2 — each writing item costs TWO Claude calls
+ * (one `generateGrammarDrill` at serve time, one `scoreGrammarDrill` at grade
+ * time) versus one for vocab/grammar, so 4 would roughly double the run's
+ * total Claude spend for one dimension. 2 is enough signal to move θ a
+ * couple of steps without that cost (the user's locked "Claude-graded short
+ * response" ask never specified a count; 2 was chosen as the cheap end of
+ * "more than one, not four").
+ */
+const WEIGHTS: Record<DiagnosticDimensionKey, number> = {
+  reading: 4,
+  listening: 4,
+  vocab: 4,
+  grammar: 4,
+  hanja: 4,
+  writing: 2,
+};
 
-/** Fixed, interleaved serve schedule: DIMENSION_ORDER repeated
- *  ITEMS_PER_DIMENSION times → reading,listening,vocab,grammar,hanja,
- *  reading,… Interleaving spreads the adaptivity across all five skills. */
-const SCHEDULE: readonly DiagnosticDimensionKey[] = Array.from(
-  { length: ITEMS_PER_DIMENSION },
-  () => DIMENSION_ORDER,
-).flat();
+/**
+ * Fixed serve schedule. The five WEIGHTS=4 dimensions round-robin-interleave
+ * across 4 full rounds — EXACTLY the pre-Phase-B schedule (reading,
+ * listening, vocab, grammar, hanja, reading, …, 20 slots) — then writing's 2
+ * slots are appended at the very end (ordinals 21, 22).
+ *
+ * Why appended, not interleaved mid-run: the locked design only requires
+ * writing's two items not BOTH land at the very start ("a strong writing
+ * signal needs the θ to have moved") — it does not mandate even spacing.
+ * Appending both after the full core round-robin (a) trivially satisfies
+ * that constraint (θ has had the MAXIMUM possible evidence — 20 answers —
+ * behind it by the time either writing item serves, which is strictly
+ * BETTER signal quality than a mid-run placement, not just adequate), and
+ * (b) leaves every existing reading/listening/vocab/grammar/hanja ordinal
+ * (1, 6, 11, 16, …) byte-for-byte unchanged, so the CAT interleave the other
+ * five dimensions rely on — and every test asserting on it — is undisturbed
+ * by this change.
+ */
+const CORE_ROUND_ROBIN_DIMENSIONS: readonly DiagnosticDimensionKey[] = DIMENSION_ORDER.filter(
+  (d) => d !== 'writing',
+);
+const CORE_ROUNDS = 4; // WEIGHTS value shared by every core-round-robin dimension.
+const SCHEDULE: readonly DiagnosticDimensionKey[] = [
+  ...Array.from({ length: CORE_ROUNDS }, () => CORE_ROUND_ROBIN_DIMENSIONS).flat(),
+  ...(Array.from({ length: WEIGHTS.writing }, () => 'writing') as DiagnosticDimensionKey[]),
+];
 
-const TARGET_ITEM_COUNT = SCHEDULE.length; // 20 (5 dimensions × 4)
+const TARGET_ITEM_COUNT = SCHEDULE.length; // 22 (4×5 core dims + 2 writing)
 
 type ChoiceId = 'a' | 'b' | 'c' | 'd';
 const CHOICE_IDS: readonly ChoiceId[] = ['a', 'b', 'c', 'd'];
+
+/**
+ * `diagnostic_responses.correct_answer` is NOT NULL, but a writing item
+ * (diagnostic-upgrade Phase B) has no MC choice to record there — it is
+ * graded by `scoreGrammarDrill`'s verdict, not a `picked === correct_answer`
+ * compare. This sentinel satisfies the NOT NULL constraint without being a
+ * value that could ever collide with a real choice id ('a'..'d').
+ */
+const WRITING_ANSWER_SENTINEL = 'writing' as const;
 
 interface ChoiceDTO {
   readonly id: ChoiceId;
@@ -132,10 +200,29 @@ interface ServerItem {
   readonly audioStartMs?: number;
   readonly audioEndMs?: number;
   readonly choices: readonly ChoiceDTO[];
-  /** Correct choice id — NEVER serialized to the client before reveal. */
-  readonly correctAnswer: ChoiceId;
+  /** Correct choice id — NEVER serialized to the client before reveal. A
+   *  writing item (diagnostic-upgrade Phase B) has no MC choices to compare
+   *  against; it stores the `WRITING_ANSWER_SENTINEL` here instead (the
+   *  `correct_answer` column is NOT NULL — grading for writing branches on
+   *  `section === 'writing'`, not on this value, so the sentinel is never
+   *  actually compared against anything). */
+  readonly correctAnswer: ChoiceId | typeof WRITING_ANSWER_SENTINEL;
   /** Explanation — NEVER serialized to the client before reveal. */
   readonly explain: string;
+  /**
+   * The Claude-authored reference model answer (Korean + English), present
+   * ONLY on a writing item. COLUMN-PRIVATE exactly like `correctAnswer`:
+   * persisted into `item_payload` by `insertResponse` but never spread onto
+   * a `ClientItem` (see `StoredItemPayload`'s narrower field list) — the
+   * learner must never see the model sentence before they submit their own.
+   */
+  readonly referenceModelKr?: string;
+  readonly referenceModelEn?: string;
+  /** The grammar pattern this writing item drills, echoed back to
+   *  `scoreGrammarDrill` at grade time (it requires `patternDisplay`).
+   *  COLUMN-PRIVATE for the same reason as `referenceModelKr` — not load-
+   *  bearing for the client, no reason to put it on the wire early. */
+  readonly patternDisplay?: string;
 }
 
 /** Answer-stripped item the client receives. */
@@ -893,6 +980,112 @@ async function buildHanjaItem(
 }
 
 /**
+ * Build a writing (Claude-graded production) ServerItem via the SAME
+ * generate+grade pipeline Pass 9's Grammar screen drill uses
+ * (`generateGrammarDrill` / `scoreGrammarDrill`, see the /answer handler's
+ * writing branch below) — NO new Claude route (diagnostic-upgrade Phase B,
+ * the user's locked "Claude-graded short response" decision). Always
+ * requests the 'transformation' drill type (the simplest one-sentence form:
+ * rewrite a given base sentence using the target pattern). cloze/conversation
+ * exist for the Grammar screen's variety but add nothing the diagnostic
+ * needs, and locking the type keeps the served shape — and the grading
+ * input it reconstructs from `item_payload` — uniform across both of a run's
+ * writing slots.
+ *
+ * Returns null when no kgiu_entries seed exists for the target band (empty
+ * corpus) — the caller then skips this ordinal, same contract as every other
+ * builder. Claude errors surface as UpstreamError, mirroring
+ * `buildGeneratedItem` exactly (never forward a raw Claude/SDK error message
+ * to the client — R2-BLOCKER posture).
+ */
+async function buildWritingItem(
+  theta: number,
+  correlationId: string | undefined,
+  userId: number,
+): Promise<ServerItem | null> {
+  const target = targetLevelForTheta(theta);
+  const seed = await pickGrammarSeed(target);
+  if (seed === null) return null;
+
+  // GrammarDrillGenInputSchema bounds patternKey/patternDisplay to 120 chars.
+  // kgiu_entries.pattern is a short pattern string in live data, but slice
+  // defensively so a corpus outlier can never fail proxy validation (mirrors
+  // lib/grammarBank.ts's client-side patternDisplay trim/slice).
+  const patternKey = seed.seedKorean.slice(0, 120);
+  const patternDisplay = patternKey;
+  const meaning = (seed.seedEnglish ?? seed.seedGloss)?.slice(0, 300);
+
+  const proxy = getClaudeProxy();
+  const { result } = await proxy
+    .generateGrammarDrill(
+      {
+        patternKey,
+        patternDisplay,
+        ...(meaning !== undefined ? { meaning } : {}),
+        drillType: 'transformation',
+      },
+      { ...(correlationId !== undefined ? { requestId: correlationId } : {}), userId },
+    )
+    .catch((err: unknown) => {
+      // Mirrors buildGeneratedItem's mapClaudeError wrap exactly: a
+      // recognized ClaudeProxyError is already a safe UpstreamError, reuse
+      // it; anything else (raw network/SDK error) is logged server-side only
+      // and rethrown as a fixed, wire-safe message.
+      const mapped = mapClaudeError(err);
+      if (mapped !== err) throw mapped;
+      getLogger().error(
+        {
+          correlationId,
+          err:
+            err instanceof Error
+              ? { name: err.name, message: err.message }
+              : { value: String(err) },
+        },
+        'diagnostic writing item generation failed',
+      );
+      throw new UpstreamError('diagnostic writing item generation failed');
+    });
+
+  // The route always REQUESTS 'transformation' — a different `type` back
+  // means the model ignored the forced tool schema, a server-side invariant
+  // violation (mirrors grammarDrill.ts POST /'s identical assertion), not a
+  // user-facing error.
+  if (result.type !== 'transformation') {
+    throw new UpstreamError('diagnostic writing item generation returned an unexpected drill type');
+  }
+  const drill: Extract<GrammarDrillItem, { type: 'transformation' }> = result;
+
+  return {
+    section: 'writing',
+    sourceKind: 'generated',
+    sourceRef: seed.sourceRef,
+    // Difficulty recorded = the TARGET level the item was generated at —
+    // same convention buildGeneratedItem uses for vocab/grammar (not the
+    // learner's actual answer, which is unknown until grading).
+    difficulty: proficiencyToNumber(target),
+    kind: 'writing-production',
+    level: target,
+    // The on-screen prompt: Claude's EN task instruction ("Rewrite using
+    // -는 것 같다") is the `prompt`; the KR base sentence to transform rides in
+    // `passage` (reused — same "Korean text the prompt is about" role a
+    // reading passage plays) so the client's existing PassageCard renders it
+    // with no new wire field; the EN gloss of that base sentence rides in
+    // `hint` (both fields already exist on ServerItem/ClientItem).
+    prompt: drill.instruction,
+    passage: drill.sourceKr,
+    hint: drill.sourceEn,
+    choices: [],
+    correctAnswer: WRITING_ANSWER_SENTINEL,
+    explain: '',
+    // COLUMN-PRIVATE — see the ServerItem field docs. Read back by the
+    // /answer writing branch, never spread onto a ClientItem.
+    referenceModelKr: drill.referenceModelKr,
+    referenceModelEn: drill.referenceModelEn,
+    patternDisplay,
+  };
+}
+
+/**
  * Build the next ServerItem for `section` at the current θ, excluding topik
  * ids / hanja chars already served. Returns null when the section pool/seed
  * is empty (the caller serves fewer items and scores only answered dims).
@@ -915,6 +1108,9 @@ async function buildItemForSection(
   }
   if (section === 'hanja') {
     return buildHanjaItem(band, excludeHanjaChars);
+  }
+  if (section === 'writing') {
+    return buildWritingItem(theta, correlationId, userId);
   }
   return buildGeneratedItem(section, theta, correlationId, userId);
 }
@@ -980,6 +1176,19 @@ async function insertResponse(
     ...(item.audioEndMs !== undefined ? { audioEndMs: item.audioEndMs } : {}),
     choices: item.choices,
     explain: item.explain,
+    // COLUMN-PRIVATE (diagnostic-upgrade Phase B): stored so /answer's writing
+    // branch and grading can read them back, but deliberately NOT part of
+    // `StoredItemPayload`'s narrower field list, so `pendingClientItem`'s
+    // explicit allow-list spread can never leak them onto a ClientItem —
+    // mirrors `explain` above, which has ridden this same private-payload
+    // pattern since Pass 5.
+    ...(item.referenceModelKr !== undefined
+      ? { referenceModelKr: item.referenceModelKr }
+      : {}),
+    ...(item.referenceModelEn !== undefined
+      ? { referenceModelEn: item.referenceModelEn }
+      : {}),
+    ...(item.patternDisplay !== undefined ? { patternDisplay: item.patternDisplay } : {}),
   };
   const { rows } = await query<{ id: string }>(
     `INSERT INTO diagnostic_responses (
@@ -1054,9 +1263,9 @@ async function serveNextItem(
     );
     if (item === null) {
       // Empty/short pool — skip this ordinal. Scoring already tolerates a
-      // dimension that received < ITEMS_PER_DIMENSION items (and omits one
-      // that got 0), but a silently shrinking run is a corpus-data problem we
-      // want visible in the logs, not swallowed.
+      // dimension that received < WEIGHTS[dim] items (and omits one that got
+      // 0), but a silently shrinking run is a corpus-data problem we want
+      // visible in the logs, not swallowed.
       getLogger().warn(
         { runId, ordinal, section, ...(correlationId !== undefined ? { correlationId } : {}) },
         'diagnostic: section pool empty — skipping ordinal',
@@ -1100,6 +1309,7 @@ const DIMENSION_LABELS: Record<DiagnosticDimensionKey, { label: string; kr: stri
   vocab: { label: 'Vocabulary', kr: '어휘' },
   grammar: { label: 'Grammar', kr: '문법' },
   hanja: { label: 'Hanja', kr: '한자' },
+  writing: { label: 'Writing', kr: '쓰기' },
 };
 
 /** Reference lines for the snapshot chart, lowest-first. F-002 fixpass SF-1:
@@ -1208,15 +1418,20 @@ function buildSnapshotDTO(
   const dimensions: SnapshotDimensionDTO[] = [];
   for (const key of DIMENSION_ORDER) {
     const stat = stats[key];
-    // The snapshot table's estimate columns (reading_estimate/listening_
-    // estimate/…) exist only for the pre-v1.3.0 four dimensions — `hanja`
-    // (diagnostic-upgrade Phase A) has NO dedicated column, so its estimate
-    // lives ONLY in evidence.dimensionStats (see DimensionStat below). Prefer
-    // the stat's estimate for every dimension when present — it is
-    // bit-identical to the fixed-column value for reading/listening/vocab/
-    // grammar, both computed from the same `scored` array within the same
-    // /finish call — and fall back to `estimates[key]` (the fixed columns)
-    // only for legacy rows (pre-v1.1.0) that predate dimensionStats entirely.
+    // `estimates` here is whatever the CALLER read back (loadSnapshotDTO only
+    // SELECTs reading/listening/grammar/vocab_estimate — the pre-v1.3.0 four
+    // — even though `writing_estimate` (diagnostic-upgrade Phase B) IS now a
+    // real, populated column; it just has no reason to be re-read here, see
+    // below). `hanja` (Phase A) has NO dedicated column at all. Both
+    // dimensions' estimates live ONLY in evidence.dimensionStats when read
+    // through this path (see DimensionStat below). Prefer the stat's
+    // estimate for every dimension when present — it is bit-identical to the
+    // fixed-column value for reading/listening/vocab/grammar, both computed
+    // from the same `scored` array within the same /finish call, and it is
+    // the ONLY source for hanja/writing — and fall back to `estimates[key]`
+    // (the fixed columns) only for legacy rows (pre-v1.1.0) that predate
+    // dimensionStats entirely, where hanja/writing estimates are moot anyway
+    // (neither dimension existed yet).
     const est = stat !== undefined ? stat.estimate : estimates[key];
     if (est === undefined || est === null) continue;
     const score = estimateToScore(est);
@@ -1255,7 +1470,14 @@ const RunParamsSchema = z.object({
 });
 const AnswerBodySchema = z.object({
   responseId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  picked: z.union([z.enum(['a', 'b', 'c', 'd']), z.null()]),
+  // 'a'..'d' for a multiple-choice item; a free-text Korean sentence (bounded
+  // like grammar-drill's own `answer` field, GrammarDrillScoreInputSchema.
+  // userAnswer max 600) for a writing item (diagnostic-upgrade Phase B); null
+  // = skip. The route determines WHICH shape applies from the server-stored
+  // item's own `section`, never from this union alone — an MC item with a
+  // stray free-text `picked` simply fails the `=== correct_answer` compare
+  // (graded wrong), the same as any other wrong guess.
+  picked: z.union([z.enum(['a', 'b', 'c', 'd']), z.string().max(600), z.null()]),
   timeMs: z.number().int().nonnegative().max(60 * 60 * 1000).optional(),
 });
 
@@ -1298,13 +1520,126 @@ router.post('/', diagnosticLimiter(), validateBody(EmptyBodySchema), async (req,
   }
 });
 
+/** One writing item's item_payload, as `insertResponse` persists it — the
+ *  slice the /answer writing branch needs to reconstruct the grading input.
+ *  Deliberately narrower than `StoredItemPayload` below: this is read ONLY
+ *  server-side, pre-transaction, to decide whether a Claude grading call is
+ *  needed — it is never spread onto a ClientItem. */
+interface WritingItemPayload {
+  readonly passage?: string;
+  readonly referenceModelKr?: string;
+  readonly referenceModelEn?: string;
+  readonly patternDisplay?: string;
+}
+
+/** The graded outcome of a writing item's Claude scoring call, resolved
+ *  BEFORE the grading transaction opens (external I/O must never happen
+ *  inside an open DB tx — mirrors `POST /` and grammarDrill.ts's submit
+ *  route). `null` on any non-writing item (the common case). */
+interface WritingGrade {
+  readonly isCorrect: boolean;
+  readonly score: number;
+  readonly verdict: DrillVerdict;
+  readonly summary: string;
+  readonly corrections: ReadonlyArray<{ span: string; issue: string; fix: string }>;
+  readonly referenceModelKr: string;
+  readonly referenceModelEn: string;
+}
+
+/** {excellent,good} → correct (θ up); {needs_work,incorrect} → wrong (θ
+ *  down). Binary by design (locked decision) — a needs_work "half credit"
+ *  step is a later refinement, not built here. */
+function isCorrectVerdict(verdict: DrillVerdict): boolean {
+  return verdict === 'excellent' || verdict === 'good';
+}
+
+/**
+ * Grade a writing item's free-text answer via `scoreGrammarDrill` — the SAME
+ * Claude call Pass 9's Grammar screen submit route makes, reused rather than
+ * a new route (diagnostic-upgrade Phase B). Called OUTSIDE any DB
+ * transaction (external I/O). An empty/whitespace-only answer never reaches
+ * Claude at all — it is graded incorrect locally (a real user must type
+ * something to submit; this is the server-side graceful path for a client
+ * that skips that enforcement or crashes mid-type, never a 400/500 — see
+ * spec: "the server must not crash/hang").
+ */
+async function gradeWritingAnswer(
+  payload: WritingItemPayload,
+  userAnswer: string,
+  correlationId: string | undefined,
+  userId: number,
+): Promise<WritingGrade> {
+  const referenceModelKr = payload.referenceModelKr;
+  const referenceModelEn = payload.referenceModelEn ?? '';
+  const patternDisplay = payload.patternDisplay;
+  if (referenceModelKr === undefined || patternDisplay === undefined) {
+    // Server-authored payload must always carry these for a writing item —
+    // reaching here means insertResponse/buildWritingItem drifted from this
+    // reader. Fail loudly rather than silently mis-grade.
+    throw new Error('diagnostic writing item_payload missing referenceModelKr/patternDisplay');
+  }
+  const trimmed = userAnswer.trim();
+  if (trimmed === '') {
+    return {
+      isCorrect: false,
+      score: 0,
+      verdict: 'incorrect',
+      summary: 'No answer was submitted.',
+      corrections: [],
+      referenceModelKr,
+      referenceModelEn,
+    };
+  }
+  const promptText = payload.passage ?? '';
+  const proxy = getClaudeProxy();
+  const { result: scored } = await proxy
+    .scoreGrammarDrill(
+      {
+        drillType: 'transformation',
+        patternDisplay,
+        promptText,
+        referenceModelKr,
+        userAnswer: trimmed,
+      },
+      { ...(correlationId !== undefined ? { requestId: correlationId } : {}), userId },
+    )
+    .catch((err: unknown) => {
+      // Mirrors buildWritingItem's / buildGeneratedItem's wrap exactly.
+      const mapped = mapClaudeError(err);
+      if (mapped !== err) throw mapped;
+      getLogger().error(
+        {
+          correlationId,
+          err:
+            err instanceof Error
+              ? { name: err.name, message: err.message }
+              : { value: String(err) },
+        },
+        'diagnostic writing grading failed',
+      );
+      throw new UpstreamError('diagnostic writing grading failed');
+    });
+  return {
+    isCorrect: isCorrectVerdict(scored.verdict),
+    score: scored.score,
+    verdict: scored.verdict,
+    summary: scored.summary,
+    corrections: scored.corrections,
+    referenceModelKr,
+    referenceModelEn,
+  };
+}
+
 /**
  * POST /diagnostic/:runId/answer — grade the current item and return the
  * reveal. Does NOT serve the next item: grading is cheap local DB work and
  * must never block on Claude (B-006) — the client calls /:runId/next for the
  * following item during the reveal dwell. cheapLimiter for the same reason:
  * nothing here is expensive, and an expensive-bucket 429 must not be able to
- * withhold the reveal for an answer the user already committed.
+ * withhold the reveal for an answer the user already committed. A WRITING
+ * item is the one exception (diagnostic-upgrade Phase B): grading it DOES
+ * make one Claude call (`scoreGrammarDrill`) — see the top-of-file SECURITY
+ * note for why this route stays on cheapLimiter anyway (bounded to ≤2/run).
  */
 router.post(
   '/:runId/answer',
@@ -1324,6 +1659,36 @@ router.post(
       // inside the transaction below; we keep `target_item_count` from this read
       // (it is immutable for the run's lifetime) to decide when to stop serving.
       const run = await loadUserRun(params.runId, userId);
+
+      // Pre-transaction, UNLOCKED read: is the item being answered a writing
+      // item that still needs grading? Scoped to exactly this responseId
+      // (not "the current pending item" — that re-check happens under the
+      // lock below) so an out-of-order/wrong responseId simply gets no grade
+      // precomputed and falls through to the existing 409 replay defense.
+      // Claude I/O must happen HERE, before the transaction opens (mirrors
+      // `POST /` and grammarDrill.ts's submit route) — never inside an open
+      // DB tx.
+      const { rows: preRows } = await query<{
+        section: DiagnosticDimensionKey;
+        answered_at: Date | null;
+        item_payload: WritingItemPayload;
+      }>(
+        `SELECT section, answered_at, item_payload
+           FROM diagnostic_responses
+          WHERE id = $1 AND run_id = $2`,
+        [body.responseId, params.runId],
+      );
+      const pre = preRows[0];
+      let writingGrade: WritingGrade | null = null;
+      if (pre !== undefined && pre.section === 'writing' && pre.answered_at === null) {
+        const userAnswer = typeof body.picked === 'string' ? body.picked : '';
+        writingGrade = await gradeWritingAnswer(
+          pre.item_payload,
+          userAnswer,
+          req.correlationId,
+          userId,
+        );
+      }
 
       // Grade + θ-bump + the single-shot transition all happen inside ONE
       // transaction that locks the run row FOR UPDATE. This closes the
@@ -1374,8 +1739,15 @@ router.post(
           throw new ConflictError('responseId does not match the current item');
         }
 
-        // Grade server-side. A skip (picked null) is is_correct=false.
-        const isCorrect = body.picked !== null && body.picked === current.correct_answer;
+        // Grade server-side. A skip (picked null) is is_correct=false. A
+        // WRITING item (diagnostic-upgrade Phase B) never compares `picked`
+        // against `correct_answer` (the sentinel isn't a real key) — its
+        // verdict was already resolved by `gradeWritingAnswer` BEFORE this
+        // transaction opened; reuse that result here under the lock.
+        const isWriting = current.section === 'writing';
+        const isCorrect = isWriting
+          ? (writingGrade?.isCorrect ?? false)
+          : body.picked !== null && body.picked === current.correct_answer;
 
         // COVERAGE-ONLY (diagnostic-upgrade Phase A): a hanja answer is
         // graded and recorded exactly like any other item, but it must NEVER
@@ -1388,6 +1760,13 @@ router.post(
         // through the run never dilutes the other dimensions' staircase —
         // core-skill step N is always "the Nth core-skill answer", regardless
         // of how many hanja items were answered alongside it.
+        //
+        // FULL LEVELED DIMENSION (diagnostic-upgrade Phase B): writing is
+        // DELIBERATELY the opposite of hanja here — a writing answer DOES
+        // bump θ and DOES consume a step-ordinal slot. No new branch was
+        // needed: the guard below is already `section <> 'hanja'`, not an
+        // allow-list of the original four, so writing falls through it
+        // exactly like reading/listening/vocab/grammar always have.
         const isHanja = current.section === 'hanja';
         let updatedTheta: number | null = null;
         if (!isHanja) {
@@ -1415,6 +1794,27 @@ router.post(
         if (upd.rowCount !== 1) {
           throw new ConflictError('responseId does not match the current item');
         }
+        // Persist the Claude grade (score/verdict/summary/corrections) into
+        // item_payload for the reveal + any later re-read (mirrors
+        // grammarDrill.ts's `feedback` JSONB write). A jsonb `||` merge keeps
+        // the original referenceModelKr/En/patternDisplay/passage/prompt keys
+        // intact — this only ADDS the graded-* keys.
+        if (isWriting && writingGrade !== null) {
+          await client.query(
+            `UPDATE diagnostic_responses
+                SET item_payload = item_payload || $2::jsonb
+              WHERE id = $1`,
+            [
+              body.responseId,
+              JSON.stringify({
+                gradedScore: writingGrade.score,
+                gradedVerdict: writingGrade.verdict,
+                gradedSummary: writingGrade.summary,
+                gradedCorrections: writingGrade.corrections,
+              }),
+            ],
+          );
+        }
         if (updatedTheta !== null) {
           await client.query(
             `UPDATE diagnostic_runs
@@ -1438,10 +1838,28 @@ router.post(
         };
       });
 
+      // For a writing item, the reveal is the Claude verdict/summary/
+      // corrections/reference model, not an MC explain string — `explain`
+      // still degrades to `writingGrade.summary` so a client that hasn't
+      // wired the writing-specific fields yet still shows something
+      // meaningful, but the dedicated fields below are what the client
+      // actually renders.
       const result = {
         correct: graded.isCorrect,
         correctAnswer: graded.correctAnswer,
-        explain: await explainFor(params.runId, body.responseId),
+        explain:
+          writingGrade !== null
+            ? writingGrade.summary
+            : await explainFor(params.runId, body.responseId),
+        ...(writingGrade !== null
+          ? {
+              verdict: writingGrade.verdict,
+              summary: writingGrade.summary,
+              corrections: writingGrade.corrections,
+              referenceModelKr: writingGrade.referenceModelKr,
+              referenceModelEn: writingGrade.referenceModelEn,
+            }
+          : {}),
       };
 
       // `done` = the graded item's ordinal was the last SCHEDULED slot, so no
@@ -1787,17 +2205,26 @@ router.post(
         if (locked && locked.status === 'finished' && locked.snapshot_id !== null) {
           return Number(locked.snapshot_id);
         }
+        // writing_estimate (diagnostic-upgrade Phase B): this column has
+        // existed since 001_core_schema and `plan.ts`'s /plan/today ALREADY
+        // reads it (to band-prefer reading content) — it was hardcoded NULL
+        // here only because no rubric version before v1.4.0 ever scored a
+        // writing dimension. Wiring `estimates.writing` through activates
+        // that pre-existing plan.ts consumer for real, at no cost (same INSERT,
+        // one fewer hardcoded NULL). `register_estimate` stays NULL — no
+        // dimension here produces a register signal.
         const { rows } = await client.query<{ id: string }>(
           `INSERT INTO diagnostic_snapshots (
               user_id, reading_estimate, listening_estimate, writing_estimate,
               grammar_estimate, vocab_estimate, register_estimate,
               evidence, rubric_version)
-           VALUES ($1, $2, $3, NULL, $4, $5, NULL, $6::jsonb, $7)
+           VALUES ($1, $2, $3, $4, $5, $6, NULL, $7::jsonb, $8)
            RETURNING id::text AS id`,
           [
             userId,
             estimates.reading,
             estimates.listening,
+            estimates.writing,
             estimates.grammar,
             estimates.vocab,
             JSON.stringify(evidence),

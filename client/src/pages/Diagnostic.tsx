@@ -80,7 +80,7 @@ import { Bilingual } from '../components/Bilingual';
 import { Card } from '../components/Card';
 import { CityCard } from '../components/CityCard';
 import { Button } from '../components/Button';
-import { Pill } from '../components/Pill';
+import { Pill, type PillTone } from '../components/Pill';
 import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
 import { DoubleRule } from '../components/DoubleRule';
@@ -110,6 +110,7 @@ import type {
   DiagnosticNextResponse,
   DiagnosticProgress,
   DiagnosticSnapshot,
+  DrillVerdict,
 } from '../types/domain';
 import { cn } from '../lib/cn';
 import { errorMessageFor } from '../lib/errorCopy';
@@ -122,29 +123,37 @@ const CHOICE_MARKERS = ['①', '②', '③', '④'] as const;
 /**
  * Static intro descriptors — the Intro no longer pre-fetches a test bundle.
  * The live run is built server-side (4 each reading/listening/vocab/grammar/
- * hanja, 20 items, ~20 min adaptive); these are the human-readable section
- * labels the Intro card lists. Kept module-scope (immutable, never
- * re-allocated). `hanja` (diagnostic-upgrade Phase A) is coverage-only — it
- * still gets its own intro row like every other section.
+ * hanja + 2 writing, 22 items, ~20 min adaptive); these are the human-
+ * readable section labels + per-section item counts the Intro card lists.
+ * Kept module-scope (immutable, never re-allocated). `hanja` (diagnostic-
+ * upgrade Phase A) is coverage-only — it still gets its own intro row like
+ * every other section. `writing` (diagnostic-upgrade Phase B) is weighted
+ * DOWN to 2 items (server `WEIGHTS.writing` in `server/src/routes/
+ * diagnostic.ts`) — the first dimension with a non-uniform per-section count,
+ * hence the `items` field per row instead of one shared constant.
  */
-const INTRO_SECTIONS: ReadonlyArray<{ id: string; label: string; kr: string }> =
-  [
-    { id: 'reading', label: 'Reading', kr: '읽기' },
-    { id: 'listening', label: 'Listening', kr: '듣기' },
-    { id: 'vocab', label: 'Vocabulary', kr: '어휘' },
-    { id: 'grammar', label: 'Grammar', kr: '문법' },
-    { id: 'hanja', label: 'Hanja', kr: '한자' },
-  ];
+const INTRO_SECTIONS: ReadonlyArray<{
+  id: string;
+  label: string;
+  kr: string;
+  items: number;
+}> = [
+  { id: 'reading', label: 'Reading', kr: '읽기', items: 4 },
+  { id: 'listening', label: 'Listening', kr: '듣기', items: 4 },
+  { id: 'vocab', label: 'Vocabulary', kr: '어휘', items: 4 },
+  { id: 'grammar', label: 'Grammar', kr: '문법', items: 4 },
+  { id: 'hanja', label: 'Hanja', kr: '한자', items: 4 },
+  { id: 'writing', label: 'Writing', kr: '쓰기', items: 2 },
+];
 
-// These MUST mirror the server's test shape — `ITEMS_PER_DIMENSION` in
-// `server/src/routes/diagnostic.ts` (4 per dimension × 5 dimensions →
-// 20-item schedule, diagnostic-upgrade Phase A added `hanja` as the 5th).
-// The taking-screen progress bar counts to the server's total, so a stale
-// intro promise here is a user-visible contradiction (F-011 fixpass R3 B1).
-// Retune all three together when turning the server knob.
+// MUST mirror the server's test shape — `WEIGHTS`/`TARGET_ITEM_COUNT` in
+// `server/src/routes/diagnostic.ts` (4 each reading/listening/vocab/grammar/
+// hanja + 2 writing → a 22-item schedule, diagnostic-upgrade Phase B). The
+// taking-screen progress bar counts to the server's total, so a stale intro
+// promise here is a user-visible contradiction (F-011 fixpass R3 B1). Retune
+// alongside `INTRO_SECTIONS`' per-row `items` when turning the server knob.
 const INTRO_TOTAL_MINS = 20;
-const INTRO_TOTAL_ITEMS = 20;
-const INTRO_PER_SECTION = 4;
+const INTRO_TOTAL_ITEMS = 22;
 
 /**
  * Normalise a thrown value to user-facing FIXED copy (F-UP-018). Previously
@@ -350,8 +359,8 @@ function IntroBlock({ onBegin, onCancel }: IntroProps): JSX.Element {
               </span>
               <span className="km-diagnostic__section-count">
                 <Bilingual
-                  en={`${String(INTRO_PER_SECTION)} items`}
-                  kr={`${String(INTRO_PER_SECTION)}문항`}
+                  en={`${String(s.items)} items`}
+                  kr={`${String(s.items)}문항`}
                   compact
                 />
               </span>
@@ -364,8 +373,8 @@ function IntroBlock({ onBegin, onCancel }: IntroProps): JSX.Element {
 
       <p className="km-diagnostic__hint">
         <Bilingual
-          en="Multiple choice. Adaptive — questions track your level. Answer honestly — skips count as unsure."
-          kr="객관식이에요. 난이도가 실력에 맞춰 조정돼요. 솔직하게 답하세요 — 건너뛰면 모른다고 기록돼요."
+          en="Mostly multiple choice, plus two short Korean writing prompts. Adaptive — questions track your level. Answer honestly — skips count as unsure."
+          kr="대부분 객관식이고, 짧은 한국어 쓰기 문제가 2개 있어요. 난이도가 실력에 맞춰 조정돼요. 솔직하게 답하세요 — 건너뛰면 모른다고 기록돼요."
         />
       </p>
 
@@ -745,6 +754,11 @@ function TakingBlock({
   const revealBlockId = `dg-reveal-${String(item.responseId)}`;
   const section = sectionLabel(item.section);
   const total = progress.total;
+  // diagnostic-upgrade Phase B: the ONE item kind with no `choices` at all —
+  // drives the textarea render branch + the writing-specific reveal below,
+  // instead of `<ChoiceList>`/the MC correct/explain reveal.
+  const isWriting = item.kind === 'writing-production';
+  const canSubmitWriting = picked !== null && picked.trim() !== '';
 
   return (
     <section aria-labelledby="dg-taking-h" className="km-diagnostic__taking">
@@ -821,22 +835,53 @@ function TakingBlock({
           <AudioBlock transcriptKr={item.audio.transcript} />
         ) : null}
 
-        {item.passage ? <PassageCard item={item} /> : null}
+        {isWriting ? (
+          // The writing item's KR base sentence + EN gloss (Phase B reuses
+          // `passage`/`hint` on the wire — no new fields — but the generic
+          // PassageCard/hint-only-without-a-passage rendering below doesn't
+          // fit a "transform this sentence" task, so it gets its own small
+          // block instead. Reuses the Grammar screen's `km-grammar__context`/
+          // `km-grammar__model-en` classes (already global CSS) so a writing
+          // diagnostic item looks like the drill it actually is.
+          <>
+            <Eyebrow>
+              <Bilingual en="Transform this" kr="문장을 바꿔 쓰세요" />
+            </Eyebrow>
+            {item.passage ? (
+              <p className="kr km-grammar__context">{item.passage}</p>
+            ) : null}
+            {item.hint ? <p className="km-grammar__model-en">{item.hint}</p> : null}
+          </>
+        ) : (
+          <>
+            {item.passage ? <PassageCard item={item} /> : null}
+            {item.hint && !item.passage ? (
+              <div className="km-diagnostic__hint">{item.hint}</div>
+            ) : null}
+          </>
+        )}
 
-        {item.hint && !item.passage ? (
-          <div className="km-diagnostic__hint">{item.hint}</div>
-        ) : null}
-
-        <ChoiceList
-          item={item}
-          picked={picked}
-          revealed={revealed}
-          reveal={reveal}
-          revealBlockId={revealBlockId}
-          onPick={(id) => {
-            if (!revealed && !inFlight) setPicked(id);
-          }}
-        />
+        {isWriting ? (
+          <WritingInput
+            value={picked ?? ''}
+            revealed={revealed}
+            disabled={inFlight}
+            onChange={(text) => {
+              if (!revealed && !inFlight) setPicked(text);
+            }}
+          />
+        ) : (
+          <ChoiceList
+            item={item}
+            picked={picked}
+            revealed={revealed}
+            reveal={reveal}
+            revealBlockId={revealBlockId}
+            onPick={(id) => {
+              if (!revealed && !inFlight) setPicked(id);
+            }}
+          />
+        )}
 
         {reveal ? (
           <Card
@@ -844,38 +889,46 @@ function TakingBlock({
             className="km-diagnostic__reveal"
             id={revealBlockId}
           >
-            <Eyebrow>
-              {reveal.correct ? (
-                <Bilingual en="Correct" kr="정답" />
-              ) : (
-                <Bilingual en="Not quite" kr="아쉬워요" />
-              )}
-            </Eyebrow>
-            <p className="km-diagnostic__explain">{reveal.explain}</p>
-            {/* F-020: hand the graded item to the Chat tutor. The stem lives on
-                `item`, the key + explanation on the server's `reveal` — the
-                choice ids are resolved to their display text here so the seed
-                reads naturally. When the correct id can't be resolved (corrupt
-                data — the green highlight is equally broken then), the line is
-                OMITTED via '' rather than seeding a bare id like "b" that
-                corresponds to nothing the learner saw (choices are labelled
-                ①②③④ on screen). */}
-            <div style={{ marginTop: 10 }}>
-              <AskAboutThisButton
-                prompt={item.prompt}
-                correctText={
-                  item.choices.find((c) => c.id === reveal.correctAnswer)?.kr ??
-                  ''
-                }
-                passage={buildSeedPassage(item)}
-                explanation={reveal.explain}
-                userPick={
-                  !reveal.correct && picked !== null
-                    ? item.choices.find((c) => c.id === picked)?.kr
-                    : undefined
-                }
-              />
-            </div>
+            {isWriting ? (
+              <WritingReveal reveal={reveal} />
+            ) : (
+              <>
+                <Eyebrow>
+                  {reveal.correct ? (
+                    <Bilingual en="Correct" kr="정답" />
+                  ) : (
+                    <Bilingual en="Not quite" kr="아쉬워요" />
+                  )}
+                </Eyebrow>
+                <p className="km-diagnostic__explain">{reveal.explain}</p>
+                {/* F-020: hand the graded item to the Chat tutor. The stem lives on
+                    `item`, the key + explanation on the server's `reveal` — the
+                    choice ids are resolved to their display text here so the seed
+                    reads naturally. When the correct id can't be resolved (corrupt
+                    data — the green highlight is equally broken then), the line is
+                    OMITTED via '' rather than seeding a bare id like "b" that
+                    corresponds to nothing the learner saw (choices are labelled
+                    ①②③④ on screen). Guarded to non-writing items only — a
+                    writing item has no `choices` for this lookup to resolve
+                    against (spec: "no choices for writing"). */}
+                <div style={{ marginTop: 10 }}>
+                  <AskAboutThisButton
+                    prompt={item.prompt}
+                    correctText={
+                      item.choices.find((c) => c.id === reveal.correctAnswer)?.kr ??
+                      ''
+                    }
+                    passage={buildSeedPassage(item)}
+                    explanation={reveal.explain}
+                    userPick={
+                      !reveal.correct && picked !== null
+                        ? item.choices.find((c) => c.id === picked)?.kr
+                        : undefined
+                    }
+                  />
+                </div>
+              </>
+            )}
           </Card>
         ) : null}
 
@@ -909,7 +962,7 @@ function TakingBlock({
           {!revealed ? (
             <Button
               variant="gold"
-              disabled={picked === null || inFlight}
+              disabled={(isWriting ? !canSubmitWriting : picked === null) || inFlight}
               aria-busy={phase === 'answering'}
               onClick={submit}
             >
@@ -960,6 +1013,8 @@ function sectionLabel(
       return { en: 'Grammar', kr: '문법' };
     case 'hanja':
       return { en: 'Hanja', kr: '한자' };
+    case 'writing':
+      return { en: 'Writing', kr: '쓰기' };
     default: {
       // Exhaustiveness guard — a new section must update this switch.
       const _never: never = section;
@@ -1013,6 +1068,118 @@ function PassageCard({ item }: PassageCardProps): JSX.Element {
         </span>
       ))}
     </div>
+  );
+}
+
+/** Max length mirrors the server's `AnswerBodySchema.picked` free-text bound
+ *  (`z.string().max(600)`) — a client-side soft cap, defensive only; the
+ *  server enforces its own. */
+const WRITING_ANSWER_MAX_LENGTH = 600;
+
+interface WritingInputProps {
+  value: string;
+  revealed: boolean;
+  disabled: boolean;
+  onChange: (text: string) => void;
+}
+
+/**
+ * The writing item's answer surface (diagnostic-upgrade Phase B) — a free-
+ * text `<textarea>`, NOT `<ChoiceList>` (a writing item ships no `choices`).
+ * Mirrors the Grammar screen's own production-drill textarea (same maxLength
+ * convention, same disabled-while-revealed/scoring posture).
+ */
+function WritingInput({
+  value,
+  revealed,
+  disabled,
+  onChange,
+}: WritingInputProps): JSX.Element {
+  return (
+    <>
+      <label htmlFor="dg-writing-answer" className="km-sr-only">
+        Write one sentence in Korean
+      </label>
+      <textarea
+        id="dg-writing-answer"
+        className="kr km-grammar__textarea focusring"
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value);
+        }}
+        placeholder="Write one sentence in Korean…"
+        rows={3}
+        disabled={revealed || disabled}
+        maxLength={WRITING_ANSWER_MAX_LENGTH}
+      />
+    </>
+  );
+}
+
+/** Verdict → Pill tone/label, mirroring Grammar.tsx's own `VERDICT_META`
+ *  (duplicated locally rather than imported — Grammar.tsx is a page module,
+ *  not a shared component, and this is a 4-entry lookup table). */
+const WRITING_VERDICT_META: Record<DrillVerdict, { tone: PillTone; label: string }> = {
+  excellent: { tone: 'green', label: 'Excellent' },
+  good: { tone: 'gold', label: 'Good' },
+  needs_work: { tone: 'ochre', label: 'Needs work' },
+  incorrect: { tone: 'red', label: 'Incorrect' },
+};
+
+interface WritingRevealProps {
+  reveal: DiagnosticAnswerResult;
+}
+
+/**
+ * The writing item's reveal (diagnostic-upgrade Phase B) — Claude's verdict/
+ * summary/corrections/reference model, NOT the MC correct-choice/explain
+ * reveal (a writing item has no choice to mark correct). Reuses the Grammar
+ * screen's `km-grammar__*` reveal classes (already global CSS) so a writing
+ * diagnostic item's reveal looks like the drill reveal it actually is. No
+ * own `id` — the enclosing `<Card id={revealBlockId}>` already carries the
+ * canonical reveal-block id; duplicating it here would be invalid HTML.
+ */
+function WritingReveal({ reveal }: WritingRevealProps): JSX.Element {
+  // Defensive fallback: `verdict` is optional on the wire type (only present
+  // for a writing item), but this component only renders when the item IS
+  // writing — `reveal.correct` still degrades sensibly if the server ever
+  // omitted verdict for some reason.
+  const meta =
+    reveal.verdict !== undefined
+      ? WRITING_VERDICT_META[reveal.verdict]
+      : { tone: (reveal.correct ? 'green' : 'red') as PillTone, label: reveal.correct ? 'Correct' : 'Not quite' };
+  return (
+    <>
+      <Eyebrow>
+        <Bilingual en="Writing" kr="쓰기" />
+      </Eyebrow>
+      <div className="km-grammar__score-head">
+        <Pill tone={meta.tone}>{meta.label}</Pill>
+      </div>
+      {reveal.summary ? <p className="km-grammar__summary">{reveal.summary}</p> : null}
+      {reveal.corrections && reveal.corrections.length > 0 ? (
+        <ul className="km-grammar__corrections">
+          {reveal.corrections.map((c, i) => (
+            <li key={`${c.span}-${String(i)}`} className="km-grammar__correction">
+              <span className="km-grammar__correction-span kr">{c.span}</span>
+              <span className="km-grammar__correction-issue">{c.issue}</span>
+              <span className="km-grammar__correction-fix kr">{c.fix}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {reveal.referenceModelKr ? (
+        <>
+          <Eyebrow>
+            <Bilingual en="Model answer" kr="모범 답안" />
+          </Eyebrow>
+          <p className="kr km-grammar__model">{reveal.referenceModelKr}</p>
+          {reveal.referenceModelEn ? (
+            <p className="km-grammar__model-en">{reveal.referenceModelEn}</p>
+          ) : null}
+        </>
+      ) : null}
+    </>
   );
 }
 

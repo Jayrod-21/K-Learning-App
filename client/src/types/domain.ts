@@ -48,7 +48,10 @@ export type VocabListKind = 'vocab' | 'grammar' | 'hanja' | 'mixed';
 /** Diagnostic item kind — drives the screen's render branch. `hanja-reading`
  *  / `hanja-meaning` (diagnostic-upgrade Phase A) render through the SAME
  *  `<ChoiceList>` branch as every other MC kind — they add no new render
- *  path, just a label (see `sectionLabel` in Diagnostic.tsx). */
+ *  path, just a label (see `sectionLabel` in Diagnostic.tsx). `writing-
+ *  production` (diagnostic-upgrade Phase B) is the ONE kind that does NOT
+ *  render through `<ChoiceList>` — it has no `choices` at all, and drives a
+ *  dedicated `<textarea>` branch instead (see Diagnostic.tsx's TakingBlock). */
 export type DiagnosticItemKind =
   | 'cloze'
   | 'synonym'
@@ -57,7 +60,8 @@ export type DiagnosticItemKind =
   | 'inference'
   | 'audio-mc'
   | 'hanja-reading'
-  | 'hanja-meaning';
+  | 'hanja-meaning'
+  | 'writing-production';
 
 /** Conversation role — tutor uses formal 합쇼체, user is the learner. */
 export type ConversationRole = 'tutor' | 'user';
@@ -480,8 +484,16 @@ export interface DiagnosticChoice {
 }
 
 /** The section a diagnostic item exercises. `hanja` (diagnostic-upgrade
- *  Phase A) is coverage-only — see `DiagnosticDimension.key`. */
-export type DiagnosticSection = 'vocab' | 'grammar' | 'reading' | 'listening' | 'hanja';
+ *  Phase A) is coverage-only — see `DiagnosticDimension.key`. `writing`
+ *  (diagnostic-upgrade Phase B) is a FULL leveled dimension — unlike hanja,
+ *  it DOES bump the server's global θ ladder. */
+export type DiagnosticSection =
+  | 'vocab'
+  | 'grammar'
+  | 'reading'
+  | 'listening'
+  | 'hanja'
+  | 'writing';
 
 /**
  * The proficiency band the server serves a live diagnostic item at.
@@ -528,12 +540,37 @@ export interface DiagnosticLiveItem {
   choices: DiagnosticChoice[];
 }
 
-/** Server's reveal after grading one answer — the only place the key surfaces. */
+/**
+ * Server's reveal after grading one answer — the only place the key surfaces.
+ *
+ * The `verdict`/`summary`/`corrections`/`referenceModel*` fields (diagnostic-
+ * upgrade Phase B) are present ONLY for a writing item — the server grades
+ * writing via the SAME Claude pipeline (`generateGrammarDrill`/
+ * `scoreGrammarDrill`) the Grammar screen's production drill uses, so this
+ * reveal reuses that pipeline's own `DrillVerdict`/`DrillCorrection` types
+ * rather than inventing parallel ones. `correct` still carries the same
+ * pass/fail boolean for a writing item too (verdict `excellent`/`good` →
+ * true), so any caller reading only `correct`/`explain` (pre-Phase-B shape)
+ * still gets a sensible degraded reveal.
+ */
 export interface DiagnosticAnswerResult {
   correct: boolean;
-  /** The correct choice id, revealed only after the user answers. */
+  /** The correct choice id, revealed only after the user answers. For a
+   *  writing item this is the server's opaque sentinel — never a real MC
+   *  choice id, and never rendered as one. */
   correctAnswer: string;
   explain: string;
+  /** Writing items only — Claude's overall verdict bucket. */
+  verdict?: DrillVerdict;
+  /** Writing items only — Claude's EN feedback summary. */
+  summary?: string;
+  /** Writing items only — inline corrections, each citing a verbatim KR
+   *  fragment. May be empty (a flawless answer). */
+  corrections?: DrillCorrection[];
+  /** Writing items only — the reference model sentence, revealed post-answer. */
+  referenceModelKr?: string;
+  /** Writing items only — English gloss of the reference model sentence. */
+  referenceModelEn?: string;
 }
 
 /** Progress within a run — drives the progressbar's ARIA values. */

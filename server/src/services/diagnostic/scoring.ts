@@ -32,19 +32,45 @@
  *  here changed — the bump is purely additive (a 5th key), so old snapshots
  *  (no `hanja` estimate) still compare cleanly against new ones on every
  *  OTHER dimension; only cross-version hanja comparisons are meaningless
- *  (the dimension didn't exist before v1.3.0). */
-export const RUBRIC_VERSION = 'v1.3.0';
+ *  (the dimension didn't exist before v1.3.0).
+ *
+ *  v1.4.0 (diagnostic-upgrade Phase B): `writing` joins DIMENSION_ORDER as a
+ *  FULL leveled dimension — unlike `hanja`, a writing response DOES bump the
+ *  run's global θ ladder and DOES consume a step-ordinal slot (see
+ *  `routes/diagnostic.ts`'s `/answer` handler: the `section <> 'hanja'` guard
+ *  already generalizes to "every non-coverage-only section", so writing rides
+ *  the exact same non-hanja path grammar/vocab/reading/listening already use
+ *  — no new θ-gating code was needed). A writing item is Claude-graded via
+ *  the existing `generateGrammarDrill`/`scoreGrammarDrill` pipeline (Pass 9)
+ *  rather than a new Claude route; the verdict buckets {excellent,good} map
+ *  to correct, {needs_work,incorrect} map to wrong. `writing` is
+ *  DELIBERATELY excluded from `CORE_DIMENSION_ORDER` below — the F-212
+ *  ability/IRT estimator keeps writing opt-in (`includeWriting`) per its own
+ *  sparse-evidence design; this migration only makes the diagnostic WRITE
+ *  writing evidence rows, it does not change what the estimator reads by
+ *  default. No formula here changed — again purely additive (a 6th key), so
+ *  every snapshot pre-v1.4.0 (no `writing` estimate) still compares cleanly
+ *  on every other dimension. */
+export const RUBRIC_VERSION = 'v1.4.0';
 
-/** The five diagnostic dimensions, in the fixed display order. `hanja` is
- *  coverage-only (see the v1.3.0 rubric note above) — it is scored the same
- *  way as the other four but excluded from the global θ ladder. */
-export const DIMENSION_ORDER = ['reading', 'listening', 'vocab', 'grammar', 'hanja'] as const;
+/** The six diagnostic dimensions, in the fixed display order. `hanja` is
+ *  coverage-only (see the v1.3.0 rubric note above) — scored like the others
+ *  but excluded from the global θ ladder. `writing` (v1.4.0) is a FULL
+ *  leveled dimension — scored AND it drives θ, unlike hanja. */
+export const DIMENSION_ORDER = [
+  'reading',
+  'listening',
+  'vocab',
+  'grammar',
+  'hanja',
+  'writing',
+] as const;
 export type DiagnosticDimensionKey = (typeof DIMENSION_ORDER)[number];
 
 /**
  * The FOUR "ability" dimensions — the strict subset of DIMENSION_ORDER the
- * F-212 ability/IRT layer (`services/ability/*`) scores. `hanja` is
- * DELIBERATELY excluded: it has no IRT calibration/anchors (services/
+ * F-212 ability/IRT layer (`services/ability/*`) scores BY DEFAULT. `hanja`
+ * is DELIBERATELY excluded: it has no IRT calibration/anchors (services/
  * ability/anchors.ts's `AbilityDimension` union is hand-written and does NOT
  * include it), and F-212's `ability_evidence` view (migration 084, leg 6)
  * happens to pass `diagnostic_responses.section` through as raw text — so an
@@ -54,7 +80,17 @@ export type DiagnosticDimensionKey = (typeof DIMENSION_ORDER)[number];
  * constant, never `DIMENSION_ORDER`, for exactly that reason — importing
  * DIMENSION_ORDER there would both fail to typecheck against
  * `AbilityDimension` and silently feed a dimension the estimator was never
- * designed to calibrate. */
+ * designed to calibrate.
+ *
+ * `writing` (v1.4.0, diagnostic-upgrade Phase B) is ALSO excluded from this
+ * constant, but for a different reason than hanja: `AbilityDimension`
+ * already includes `'writing'` and the estimator CAN score it — but only
+ * opt-in (`includeWriting`, see `services/ability/evidence.ts`), because
+ * writing evidence is sparse/expensive and scores on a Claude-verdict scale
+ * the estimator's designers deliberately kept out of the default 4-dimension
+ * read. The diagnostic now WRITES writing evidence rows (this rubric version
+ * scores + levels writing); whether the estimator READS them by default is a
+ * separate, already-made F-212 decision this change does not revisit. */
 export const CORE_DIMENSION_ORDER = ['reading', 'listening', 'vocab', 'grammar'] as const;
 
 /** One graded response, reduced to the fields scoring needs. */
