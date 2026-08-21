@@ -53,7 +53,13 @@
  *     generation calls already riding diagnosticLimiter, and moving it to
  *     diagnosticLimiter would let a limiter 429 withhold a writing reveal the
  *     user already earned, the exact harm cheapLimiter exists to avoid for
- *     the other four gradeable dimensions.
+ *     the other four gradeable dimensions. A concurrent DUPLICATE request for
+ *     the same still-pending writing item cannot inflate this bound further:
+ *     `claimWritingGrade` atomically claims grading rights before the Claude
+ *     call runs, so a racing duplicate short-circuits to a 409 instead of
+ *     also spending a call (fix-pass SF1 — the pre-fix-pass version of this
+ *     route read `answered_at IS NULL` unlocked and could let a duplicate
+ *     spend a real Claude call before losing the DB race).
  *
  * Reading/listening items come from the real topik_items pool (no Claude);
  * vocab/grammar items are authored by the Claude proxy from a corpus seed;
@@ -1562,6 +1568,10 @@ function isCorrectVerdict(verdict: DrillVerdict): boolean {
  * something to submit; this is the server-side graceful path for a client
  * that skips that enforcement or crashes mid-type, never a 400/500 — see
  * spec: "the server must not crash/hang").
+ *
+ * Callers MUST win `claimWritingGrade` for this response BEFORE calling this
+ * function (fix-pass SF1) — this function itself does not check or enforce
+ * the claim, it only performs the grading.
  */
 async function gradeWritingAnswer(
   payload: WritingItemPayload,
@@ -1630,6 +1640,62 @@ async function gradeWritingAnswer(
   };
 }
 
+/** How long a writing grading claim stays live before it is treated as
+ *  abandoned (fix-pass SF1). A real grading call finishes in a few seconds;
+ *  this only exists to self-heal a claim orphaned by a process crash or an
+ *  unhandled exception mid-grading, so a legitimate retry is never wedged
+ *  forever. */
+const WRITING_CLAIM_TTL_SECONDS = 30;
+
+/**
+ * Atomically claim grading rights for a still-pending writing response
+ * BEFORE the Claude call runs (fix-pass SF1: the idempotency guard must run
+ * strictly before the paid call, not after). A single `UPDATE ... WHERE` is
+ * atomic in Postgres on its own — no transaction required — so this claims
+ * without holding a connection/lock open across the ~2-5s Claude call. That
+ * matters here specifically because `withTransaction`'s own contract (see
+ * db/pool.ts: "No external I/O inside an open transaction.") and this
+ * route's existing convention (mirrors `POST /` and grammarDrill.ts) both
+ * bar holding a DB transaction across external I/O — a claim marker gets the
+ * same duplicate-suppression guarantee without violating that contract.
+ *
+ * Returns true iff THIS call won the claim (no prior live claim existed, or
+ * the prior claim is older than `WRITING_CLAIM_TTL_SECONDS` and therefore
+ * abandoned). A losing caller must NOT call Claude — it should short-circuit
+ * (409) instead, exactly like the existing out-of-order/double-answer replay
+ * defense.
+ */
+async function claimWritingGrade(responseId: number, runId: number): Promise<boolean> {
+  const { rowCount } = await query(
+    `UPDATE diagnostic_responses
+        SET item_payload = item_payload || jsonb_build_object('gradingClaimedAt', now())
+      WHERE id = $1 AND run_id = $2 AND answered_at IS NULL
+        AND (
+          item_payload->>'gradingClaimedAt' IS NULL
+          OR (item_payload->>'gradingClaimedAt')::timestamptz
+               < now() - make_interval(secs => $3::int)
+        )`,
+    [responseId, runId, WRITING_CLAIM_TTL_SECONDS],
+  );
+  return rowCount === 1;
+}
+
+/**
+ * Release a writing grading claim after a failed Claude call, so a genuine
+ * client retry doesn't have to wait out `WRITING_CLAIM_TTL_SECONDS`. Purely
+ * best-effort — the caller swallows this function's own errors, since the
+ * TTL is the backstop if this also fails (e.g. a connection blip right after
+ * the Claude error).
+ */
+async function releaseWritingClaim(responseId: number): Promise<void> {
+  await query(
+    `UPDATE diagnostic_responses
+        SET item_payload = item_payload - 'gradingClaimedAt'
+      WHERE id = $1`,
+    [responseId],
+  );
+}
+
 /**
  * POST /diagnostic/:runId/answer — grade the current item and return the
  * reveal. Does NOT serve the next item: grading is cheap local DB work and
@@ -1668,6 +1734,15 @@ router.post(
       // Claude I/O must happen HERE, before the transaction opens (mirrors
       // `POST /` and grammarDrill.ts's submit route) — never inside an open
       // DB tx.
+      //
+      // FIX-PASS SF1: this read alone is not an idempotency guard — two
+      // concurrent /answer calls for the same still-pending writing item
+      // could both pass it and both spend a real Claude call before the FOR
+      // UPDATE lock below serializes the WRITE (only one θ-bump ever lands,
+      // but the losing request's Claude call already happened — wasted
+      // spend). `claimWritingGrade` closes that gap with an atomic
+      // claim-before-call: a duplicate finds the claim already live and
+      // short-circuits to 409 WITHOUT spending a Claude call.
       const { rows: preRows } = await query<{
         section: DiagnosticDimensionKey;
         answered_at: Date | null;
@@ -1681,13 +1756,31 @@ router.post(
       const pre = preRows[0];
       let writingGrade: WritingGrade | null = null;
       if (pre !== undefined && pre.section === 'writing' && pre.answered_at === null) {
+        const claimed = await claimWritingGrade(body.responseId, params.runId);
+        if (!claimed) {
+          // Already answered by a request that beat us here, or another
+          // concurrent request is actively grading it right now. Either way:
+          // no Claude call from this request, and no θ risk — the client's
+          // existing 409 handling (out-of-order/double-answer replay) covers
+          // this the same way it covers a stale re-answer.
+          throw new ConflictError('writing item is already being graded — retry shortly');
+        }
         const userAnswer = typeof body.picked === 'string' ? body.picked : '';
-        writingGrade = await gradeWritingAnswer(
-          pre.item_payload,
-          userAnswer,
-          req.correlationId,
-          userId,
-        );
+        try {
+          writingGrade = await gradeWritingAnswer(
+            pre.item_payload,
+            userAnswer,
+            req.correlationId,
+            userId,
+          );
+        } catch (err) {
+          // Release the claim on failure so a legitimate client retry after
+          // a genuine Claude/upstream error doesn't have to wait out the
+          // claim TTL. Best-effort: the TTL is the backstop if this also
+          // fails.
+          await releaseWritingClaim(body.responseId).catch(() => undefined);
+          throw err;
+        }
       }
 
       // Grade + θ-bump + the single-shot transition all happen inside ONE
@@ -1800,9 +1893,13 @@ router.post(
         // the original referenceModelKr/En/patternDisplay/passage/prompt keys
         // intact — this only ADDS the graded-* keys.
         if (isWriting && writingGrade !== null) {
+          // The `- 'gradingClaimedAt'` strips the fix-pass SF1 claim marker
+          // now that grading is genuinely done — harmless to leave (never
+          // reclaimable once answered_at is set, never spread onto a
+          // ClientItem), but tidier than letting dead metadata accumulate.
           await client.query(
             `UPDATE diagnostic_responses
-                SET item_payload = item_payload || $2::jsonb
+                SET item_payload = (item_payload || $2::jsonb) - 'gradingClaimedAt'
               WHERE id = $1`,
             [
               body.responseId,

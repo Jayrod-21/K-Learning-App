@@ -2088,10 +2088,13 @@ describe('writing — full leveled dimension (diagnostic-upgrade Phase B)', () =
     expect(thetaAfter).toBeLessThan(thetaBefore);
   });
 
-  it('an empty/whitespace-only answer grades incorrect WITHOUT calling Claude, and never crashes', async () => {
+  it('an empty/whitespace-only answer grades incorrect (θ down) WITHOUT calling Claude, and never crashes', async () => {
     // A scoreGrammarDrill override that FAILS the test if it's ever called —
     // proves the empty-answer path is graded locally, not via a wasted
-    // Claude call (the graceful path the spec calls for).
+    // Claude call (the graceful path the spec calls for). Fix-pass SF2: this
+    // now also asserts the θ-down consequence of "graded incorrect", not
+    // just the verdict string — the same real-decrease bar the BAD-answer
+    // test above holds itself to.
     setClaudeProxy(
       makeStubProxy({
         scoreGrammarDrill: async () => {
@@ -2104,12 +2107,81 @@ describe('writing — full leveled dimension (diagnostic-upgrade Phase B)', () =
       const { agent } = await registerUser(t.app, pg.pool);
       const { runId, item } = await serveToOrdinal(agent, 21);
 
+      // serveToOrdinal's default all-skip drive already floors θ at
+      // THETA_MIN by ordinal 21 (same reasoning as the BAD-answer test
+      // above) — a further down-bump would clamp and be unobservable. Park θ
+      // mid-range first so the DOWN move asserted below is real, not a floor
+      // no-op.
+      await pg.pool.query(`UPDATE diagnostic_runs SET ability_estimate = 4.0 WHERE id = $1`, [
+        runId,
+      ]);
+      const before = await pg.pool.query<{ ability_estimate: string | null }>(
+        `SELECT ability_estimate::text AS ability_estimate FROM diagnostic_runs WHERE id = $1`,
+        [runId],
+      );
+      const thetaBefore = Number(before.rows[0]?.ability_estimate);
+
       const ans = await agent
         .post(`/diagnostic/${runId}/answer`)
         .send({ responseId: item.responseId, picked: '   ' });
       expect(ans.status).toBe(200);
       expect(ans.body.result.correct).toBe(false);
       expect(ans.body.result.verdict).toBe('incorrect');
+
+      const after = await pg.pool.query<{ ability_estimate: string | null }>(
+        `SELECT ability_estimate::text AS ability_estimate FROM diagnostic_runs WHERE id = $1`,
+        [runId],
+      );
+      const thetaAfter = Number(after.rows[0]?.ability_estimate);
+      expect(thetaAfter).toBeLessThan(thetaBefore);
+    } finally {
+      setClaudeProxy(makeStubProxy());
+      resetLimiters();
+    }
+  });
+
+  it('fix-pass SF1: a duplicate /answer for a writing item already being graded short-circuits to 409 WITHOUT a second Claude call', async () => {
+    // Simulates the losing side of the race the SF1 fix closes: another
+    // request has already won `claimWritingGrade` (item_payload carries a
+    // live, un-expired gradingClaimedAt) and is presumably mid-Claude-call.
+    // A duplicate /answer for the SAME still-pending responseId must find
+    // the claim live and short-circuit to 409 WITHOUT itself calling Claude
+    // — proven the same way the empty-answer test proves it, by making the
+    // stub throw if invoked at all.
+    setClaudeProxy(
+      makeStubProxy({
+        scoreGrammarDrill: async () => {
+          throw new Error('scoreGrammarDrill must not be called for a claimed item');
+        },
+      }),
+    );
+    try {
+      await seedForWriting();
+      const { agent } = await registerUser(t.app, pg.pool);
+      const { runId, item } = await serveToOrdinal(agent, 21);
+
+      // Simulate an in-flight claim from a "first" concurrent request, as
+      // `claimWritingGrade` itself would have just written it.
+      await pg.pool.query(
+        `UPDATE diagnostic_responses
+            SET item_payload = item_payload || jsonb_build_object('gradingClaimedAt', now())
+          WHERE id = $1`,
+        [item.responseId],
+      );
+
+      const ans = await agent
+        .post(`/diagnostic/${runId}/answer`)
+        .send({ responseId: item.responseId, picked: '그는 학생인 것 같다.' });
+      expect(ans.status).toBe(409);
+
+      // The item is still genuinely unanswered — the claim alone never wrote
+      // answered_at, so a real retry (after the claim TTL or its release)
+      // could still legitimately grade it.
+      const row = await pg.pool.query<{ answered_at: Date | null }>(
+        `SELECT answered_at FROM diagnostic_responses WHERE id = $1`,
+        [item.responseId],
+      );
+      expect(row.rows[0]?.answered_at).toBeNull();
     } finally {
       setClaudeProxy(makeStubProxy());
       resetLimiters();
