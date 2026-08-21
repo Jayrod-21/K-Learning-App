@@ -360,3 +360,95 @@
 .km-reading__images-slot > .km-reading__images-request {
   margin-top: 14px;
 }
+
+/* ── Webtoon-scroll story panels ─────────────────────────────────────────
+ * The Story Reader's inline illustration beats, dropped between paragraphs
+ * (or read-along sentence lines) at even narrative intervals — see
+ * `computePanelSlots` (lib/storyPanels.ts) and Reading.tsx's `StoryReader`.
+ * A NEW class, deliberately not reusing the locked `.km-reading__images*`
+ * gallery selectors those still pin (StoryIllustrations.css / the Listen-tab
+ * card): this is a different surface with a different job — a full-bleed
+ * "page" of a picture book, not a gallery grid cell.
+ *
+ * Token-driven only — `--radius-lg`/`--shadow`/`--card-hairline` already
+ * carry the Day-hanji vs. Night-neon split, so both themes and every accent
+ * preset come free with no theme-specific rule needed here. */
+.km-reading__panel {
+  margin: 22px 0;
+  border-radius: var(--radius-lg);
+  overflow: hidden; /* clip the <img> to the frame's rounded corners */
+  border: var(--card-hairline);
+  box-shadow: var(--shadow);
+  background: var(--ink-1);
+  /* A quiet settle, not a jarring pop — see the reduced-motion override
+   * below (Set consistency: every primitive stylesheet stills its motion,
+   * even this small a reveal). */
+  animation: km-reading-panel-in 420ms ease both;
+}
+
+/* The card already carries its own top/bottom padding (quieted below) — a
+ * panel touching either edge of the reading surface shouldn't also stack
+ * its own margin on top of that padding. */
+.km-reading__reader-card--story > .km-reading__panel:first-child {
+  margin-top: 2px;
+}
+.km-reading__reader-card--story > .km-reading__panel:last-child {
+  margin-bottom: 2px;
+}
+
+/* height:auto against the reserved width/height attrs keeps the intrinsic
+ * aspect ratio while those attrs prevent lazy-load layout shift (the
+ * StoryIllustrations.css gallery's exact posture). Edge-to-edge: the frame
+ * above already caps the width to the (already-clamped) content column, so
+ * the image itself just fills it. */
+.km-reading__panel img {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+}
+
+@keyframes km-reading-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .km-reading__panel {
+    animation: none;
+  }
+}
+
+/* Quiet the reader card's own chrome in story mode — the one deliberate
+ * "less like a UI card" move this redesign makes (see this page's own doc
+ * comment / Reading.tsx's StoryReader): tighter padding than CityCard's
+ * default 20px so the illustration panels above read as pages bound into a
+ * book, not tiles bolted onto a widget. Equal-specificity override of
+ * CityCard.css's own `.km-citycard` rule — Reading.css's import always
+ * lands after CityCard's in the bundle (the established precedent this
+ * class's pre-existing `margin-top` rule already relied on). */
+.km-reading__reader-card--story {
+  margin-top: 14px;
+  padding: 16px;
+}
+
+/* Night's default CityCard read is a neon signboard (colored glow border +
+ * inset glow) — striking for a callout, too loud for a page of running
+ * prose. Story mode borrows the SAME quiet treatment the design system
+ * already gives `tone="plain"` in the dark theme (CityCard.css) rather than
+ * inventing a second "calm dark card" recipe: a neutral hairline, no color
+ * glow, no title text-shadow. Day's hanji-paper default is already calm
+ * (hairline border, low shadow) and needs no theme-specific override. */
+[data-theme='dark'] .km-citycard.km-reading__reader-card--story {
+  border: 1.5px solid var(--line-strong);
+  box-shadow: var(--shadow);
+}
+[data-theme='dark'] .km-citycard.km-reading__reader-card--story .km-citycard__title {
+  text-shadow: none;
+}

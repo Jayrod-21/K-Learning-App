@@ -2573,22 +2573,27 @@ describe('Reading — story illustrations (F-211)', () => {
     });
   }
 
-  const galleryImgs = (container: HTMLElement): HTMLImageElement[] =>
+  // DOM-shape change (webtoon-scroll redesign): the reader no longer
+  // renders the `.km-reading__images-item` gallery grid for a `done`
+  // envelope (StoryIllustrations is passed `galleryWhenReady={false}`
+  // there) — it interleaves the same done images as `.km-reading__panel`
+  // figures between paragraphs instead. The gallery grid itself is
+  // untouched and still covered by Ttmik.test.tsx (the Listen-tab created
+  // -story card, which doesn't pass that prop).
+  const panelImgs = (container: HTMLElement): HTMLImageElement[] =>
     Array.from(
-      container.querySelectorAll<HTMLImageElement>(
-        '.km-reading__images-item img',
-      ),
+      container.querySelectorAll<HTMLImageElement>('.km-reading__panel img'),
     );
 
-  it('an already-illustrated story shows the gallery on mount — allow-listed srcs, lazy, generic alt, no POST', async () => {
+  it('an already-illustrated story shows inline webtoon panels on mount — allow-listed srcs, lazy, generic alt, no POST, no double-rendered gallery', async () => {
     readingSvc.getStoryImages.mockResolvedValue(IMAGES_DONE);
 
     const { container } = renderStory();
 
     await waitFor(() => {
-      expect(galleryImgs(container)).toHaveLength(3);
+      expect(panelImgs(container)).toHaveLength(3);
     });
-    const imgs = galleryImgs(container);
+    const imgs = panelImgs(container);
     // The REAL buildStoryImageSrc resolved each wire blobUrl (empty API
     // base → app-relative src through the allow-list), in ordinal order.
     expect(imgs.map((img) => img.getAttribute('src'))).toEqual([
@@ -2610,6 +2615,42 @@ describe('Reading — story illustrations (F-211)', () => {
       screen.queryByRole('button', { name: /Generate illustrations/ }),
     ).not.toBeInTheDocument();
     expect(readingSvc.requestStoryImages).not.toHaveBeenCalled();
+    // `galleryWhenReady={false}` suppression: the gallery grid itself must
+    // NOT also be in the tree — every done image renders exactly once
+    // (inline), never twice.
+    expect(container.querySelector('.km-reading__images')).toBeNull();
+    expect(
+      container.querySelectorAll('.km-reading__images-item'),
+    ).toHaveLength(0);
+  });
+
+  it('interleaves panels between paragraphs at the computed beats (P<N fixture: 2 paragraphs, 3 images) instead of one block above the prose', async () => {
+    readingSvc.getStoryImages.mockResolvedValue(IMAGES_DONE);
+
+    const { container } = renderStory();
+    await waitFor(() => {
+      expect(panelImgs(container)).toHaveLength(3);
+    });
+
+    // `computePanelSlots(2, 3)` → [[0, 1], [2]]: paragraph 1 is followed by
+    // images 1+2, paragraph 2 (the last) by image 3 — text always comes
+    // first, and nothing sits above the whole prose card as one gallery
+    // block anymore.
+    const card = container.querySelector('.km-reading__reader-card');
+    expect(card).not.toBeNull();
+    // Filter to just the passage/panel children — `rail` also renders a
+    // leading DancheongRail decoration as a CityCard child, irrelevant to
+    // the text/panel interleave under test.
+    const shape = Array.from(card!.children)
+      .filter(
+        (el) =>
+          el.classList.contains('km-reading__passage') ||
+          el.classList.contains('km-reading__panel'),
+      )
+      .map((el) =>
+        el.classList.contains('km-reading__passage') ? 'text' : 'panel',
+      );
+    expect(shape).toEqual(['text', 'panel', 'panel', 'text', 'panel']);
   });
 
   it('a tampered/off-origin blobUrl dies at the allow-list — only the valid scene renders an <img>', async () => {
@@ -2619,9 +2660,9 @@ describe('Reading — story illustrations (F-211)', () => {
 
     // The valid middle image survives…
     await waitFor(() => {
-      expect(galleryImgs(container)).toHaveLength(1);
+      expect(panelImgs(container)).toHaveLength(1);
     });
-    expect(galleryImgs(container)[0]).toHaveAttribute(
+    expect(panelImgs(container)[0]).toHaveAttribute(
       'src',
       '/reading/generated/7/image/2/blob',
     );
@@ -2645,7 +2686,7 @@ describe('Reading — story illustrations (F-211)', () => {
     await act(async () => {}); // flush the envelope's setState
     // …and the ENTIRE surface is absent: no gallery, no imgs, no button.
     expect(container.querySelector('.km-reading__images')).toBeNull();
-    expect(galleryImgs(container)).toHaveLength(0);
+    expect(panelImgs(container)).toHaveLength(0);
     expect(
       screen.queryByRole('button', { name: /Generate illustrations/ }),
     ).not.toBeInTheDocument();
@@ -2706,8 +2747,8 @@ describe('Reading — story illustrations (F-211)', () => {
 
     // Tick 2 (2.5s): done — the gallery mounts with resolved srcs.
     await flushAsync(2500);
-    expect(galleryImgs(container)).toHaveLength(3);
-    expect(galleryImgs(container)[0]).toHaveAttribute(
+    expect(panelImgs(container)).toHaveLength(3);
+    expect(panelImgs(container)[0]).toHaveAttribute(
       'src',
       '/reading/generated/7/image/1/blob',
     );
@@ -2816,17 +2857,17 @@ describe('Reading — story illustrations (F-211)', () => {
 
     const { container } = renderStory();
     await waitFor(() => {
-      expect(galleryImgs(container)).toHaveLength(3);
+      expect(panelImgs(container)).toHaveLength(3);
     });
 
     // The first scene's bytes fail (deleted blob / decode error).
-    fireEvent.error(galleryImgs(container)[0]!);
+    fireEvent.error(panelImgs(container)[0]!);
 
     await waitFor(() => {
-      expect(galleryImgs(container)).toHaveLength(2);
+      expect(panelImgs(container)).toHaveLength(2);
     });
     // The survivors keep their own srcs — absence, not reshuffling.
-    expect(galleryImgs(container).map((img) => img.getAttribute('src'))).toEqual([
+    expect(panelImgs(container).map((img) => img.getAttribute('src'))).toEqual([
       '/reading/generated/7/image/2/blob',
       '/reading/generated/7/image/3/blob',
     ]);
@@ -2864,7 +2905,7 @@ describe('Reading — story illustrations (F-211)', () => {
 
     // Gallery AND the real audio player, side by side.
     await waitFor(() => {
-      expect(galleryImgs(container)).toHaveLength(3);
+      expect(panelImgs(container)).toHaveLength(3);
     });
     await waitFor(() => {
       expect(container.querySelector('audio')).not.toBeNull();
@@ -2894,7 +2935,7 @@ describe('Reading — story illustrations (F-211)', () => {
     const { container } = renderStory();
 
     await waitFor(() => {
-      expect(galleryImgs(container)).toHaveLength(3);
+      expect(panelImgs(container)).toHaveLength(3);
     });
     // The pre-F-211 story surface is untouched: paragraphs, translate,
     // audio affordance.
@@ -2906,6 +2947,22 @@ describe('Reading — story illustrations (F-211)', () => {
     ).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: /Generate audio/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('N===0 (no done images yet): pure text, no panels anywhere in the prose', async () => {
+    // IMAGES_NONE (beforeEach default) — no batch, no done images at all.
+    const { container } = renderStory();
+
+    await screen.findByRole('button', { name: /Generate illustrations/ });
+    expect(container.querySelectorAll('.km-reading__panel')).toHaveLength(0);
+    // The paragraphs still render normally either side of the (empty)
+    // interleave.
+    expect(
+      screen.getByRole('button', { name: 'Translate paragraph 1' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Translate paragraph 2' }),
     ).toBeInTheDocument();
   });
 });
@@ -3105,11 +3162,13 @@ describe('Reading — unified story experience (F-216)', () => {
       '/audio/tracks/9/stream',
     );
 
-    // Images poll tick (2.5s): settles done → the gallery mounts.
+    // Images poll tick (2.5s): settles done → the inline webtoon panels
+    // mount (DOM-shape change: the reader interleaves done images between
+    // paragraphs rather than a gallery grid — see `panelImgs` above).
     await flushAsync(500);
     expect(readingSvc.getStoryImages).toHaveBeenCalledTimes(2);
     expect(
-      container.querySelectorAll('.km-reading__images-item img'),
+      container.querySelectorAll('.km-reading__panel img'),
     ).toHaveLength(3);
 
     // Both settled → both polls stopped themselves; and with both halves
@@ -3154,8 +3213,9 @@ describe('Reading — unified story experience (F-216)', () => {
       expect(container.querySelector('audio')).not.toBeNull();
     });
     await waitFor(() => {
+      // DOM-shape change: inline webtoon panels, not the gallery grid.
       expect(
-        container.querySelectorAll('.km-reading__images-item img'),
+        container.querySelectorAll('.km-reading__panel img'),
       ).toHaveLength(3);
     });
     expect(
