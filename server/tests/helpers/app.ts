@@ -397,6 +397,17 @@ export function buildTestApp(opts: BuildOptions): TestApp {
   process.env.RATE_LIMIT_DIAGNOSTIC_MAX = '30';
   process.env.RATE_LIMIT_AUTH_MAX = '5';
   process.env.LOG_LEVEL = 'silent';
+  // The route suite stubs the Claude proxy (`setClaudeProxy`/`makeStubProxy`)
+  // so no test needs a REAL key — but a few call sites (diagnostic.ts's
+  // `writingClaimTtlSeconds`, fix-pass 2 FIX A) read plain config knobs
+  // (CLAUDE_TIMEOUT_MS / retry budget) straight off `services/claude/config`
+  // via `loadConfig()`, which Zod-validates the WHOLE Claude env schema
+  // together — including ANTHROPIC_API_KEY — even though nothing here ever
+  // dials out. `??=` so a suite that wants to test the missing-key path
+  // (none currently do via this helper) can still set its own value first.
+  // Mirrors the same fake-but-schema-valid key `tests/services/claude/setup.ts`
+  // already uses for the same reason.
+  process.env.ANTHROPIC_API_KEY ??= 'sk-test-' + 'x'.repeat(30);
   // Pass Login: provision the fixed test AES key (so TOTP secrets encrypt/decrypt
   // deterministically) and default to the LEGACY single-step login so the
   // pre-existing auth tests keep their direct-session expectations. The MFA suite

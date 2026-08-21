@@ -24,7 +24,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import request from 'supertest';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, makeStubProxy, teardownTestApp, type TestApp } from '../helpers/app.js';
-import { setClaudeProxy } from '../../src/services/claudeProxy.js';
+import { setClaudeProxy, maxClaudeCallDurationMs } from '../../src/services/claudeProxy.js';
+import { writingClaimTtlSeconds } from '../../src/routes/diagnostic.js';
 import {
   registerUser,
   seedTopikItem,
@@ -424,6 +425,12 @@ describe('POST /diagnostic/:runId/answer — grading (reveal only, B-006)', () =
       .post(`/diagnostic/${runId}/answer`)
       .send({ responseId: item.responseId, picked: 'a' });
     expect(dup.status).toBe(409);
+    // Fix-pass 2 FIX B: the generic "already recorded" 409 carries the
+    // ordinary ConflictError code — DISTINCT from the writing-claim-
+    // collision 409's `writing_grade_in_progress` code below, so the client
+    // can tell the two apart and not misroute a claim collision into the
+    // "already recorded — continuing" resync flow.
+    expect(dup.body.error.code).toBe('conflict');
   });
 
   it("another user cannot answer someone else's run (IDOR → 404)", async () => {
@@ -2173,6 +2180,12 @@ describe('writing — full leveled dimension (diagnostic-upgrade Phase B)', () =
         .post(`/diagnostic/${runId}/answer`)
         .send({ responseId: item.responseId, picked: '그는 학생인 것 같다.' });
       expect(ans.status).toBe(409);
+      // Fix-pass 2 FIX B: this is the DISTINCT `writing_grade_in_progress`
+      // code, not the generic `conflict` code the double-answer test above
+      // asserts — the client relies on this to avoid treating a claim
+      // collision as "already recorded" (which would be factually wrong:
+      // the item is still unanswered, per the assertion below).
+      expect(ans.body.error.code).toBe('writing_grade_in_progress');
 
       // The item is still genuinely unanswered — the claim alone never wrote
       // answered_at, so a real retry (after the claim TTL or its release)
@@ -2186,6 +2199,21 @@ describe('writing — full leveled dimension (diagnostic-upgrade Phase B)', () =
       setClaudeProxy(makeStubProxy());
       resetLimiters();
     }
+  });
+
+  it('fix-pass 2 FIX A: the writing-grade claim TTL is derived and strictly exceeds the worst-case Claude call duration', () => {
+    // Guard against reintroducing NF-1 (the original hardcoded 30s TTL,
+    // which was shorter than a single CLAUDE_TIMEOUT_MS attempt alone, let
+    // alone the full retry budget). This does NOT exercise real TTL expiry
+    // (that needs clock injection — out of scope, see FIX_REPORT2.md) but
+    // DOES fail immediately if someone reverts `writingClaimTtlSeconds()`
+    // back to a short hardcoded constant, since the derived value would
+    // then be smaller than the config's own worst-case call duration.
+    const worstCaseCallMs = maxClaudeCallDurationMs();
+    const ttlMs = writingClaimTtlSeconds() * 1000;
+    expect(ttlMs).toBeGreaterThan(worstCaseCallMs);
+    // Sanity: the margin is a real buffer (seconds), not a rounding fluke.
+    expect(ttlMs - worstCaseCallMs).toBeGreaterThanOrEqual(1000);
   });
 
   it('writing gets its own dimensionStats entry in the finished snapshot', async () => {

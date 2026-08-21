@@ -416,11 +416,23 @@ interface TakingProps {
  *  landed yet (we're awaiting it, showing a busy Next button). */
 type Phase = 'starting' | 'answering' | 'advancing' | 'finishing' | 'idle' | 'error';
 
+/** How long to wait before retrying a writing `/answer` submit that lost the
+ *  server's atomic writing-grade claim race (fix-pass 2 FIX B) — the item is
+ *  very likely still being graded by the request that won the claim, so an
+ *  immediate re-submit would probably just collide again. Short because this
+ *  is a rare double-submit case, not a real outage — no elaborate polling. */
+const WRITING_CLAIM_RETRY_DELAY_MS = 1500;
+/** Cap on automatic claim-collision retries before falling back to the
+ *  normal error UI (manual retry) — bounds a pathological repeat-collision
+ *  case to a handful of short waits instead of retrying forever. */
+const WRITING_CLAIM_MAX_RETRIES = 3;
+
 function TakingBlock({
   onExit,
   onComplete,
   onAlreadyRecorded,
 }: TakingProps): JSX.Element {
+  const { toast } = useToast();
   const [runId, setRunId] = useState<number | null>(null);
   const [item, setItem] = useState<DiagnosticLiveItem | null>(null);
   const [progress, setProgress] = useState<DiagnosticProgress | null>(null);
@@ -454,6 +466,10 @@ function TakingBlock({
   // NEXT answer (which aborts the previous foreground call) can never cancel
   // a prefetch, and so unmount/exit still aborts it.
   const nextCtrlRef = useRef<AbortController | null>(null);
+  // Count of automatic retries issued for a writing-grade claim collision on
+  // the CURRENT item (fix-pass 2 FIX B) — reset whenever a new item is
+  // served, so the cap applies per-item, not per-run.
+  const writingClaimRetryRef = useRef(0);
 
   // Fresh AbortController for a new network step; aborts any prior in-flight.
   const beginCall = useCallback((): AbortController => {
@@ -476,6 +492,7 @@ function TakingBlock({
         setItem(res.item);
         setProgress(res.progress);
         servedAtRef.current = Date.now();
+        writingClaimRetryRef.current = 0;
         setPhase('idle');
       })
       .catch((err: unknown) => {
@@ -568,6 +585,38 @@ function TakingBlock({
         })
         .catch((err: unknown) => {
           if (ctrl.signal.aborted) return;
+          // Writing-grade claim collision (fix-pass 2 FIX B): a concurrent
+          // duplicate submit lost the server's atomic claim race
+          // (`writing_grade_in_progress`, distinct from the generic 409
+          // below). This is NOT "already recorded" — the item is very
+          // likely still unanswered, mid-grade by the request that WON the
+          // claim — so the correct recovery is a short retry in place, not
+          // the resync-and-exit flow `onAlreadyRecorded` drives. Capped so a
+          // persistent collision still surfaces as a normal, manually-
+          // retryable error instead of looping forever.
+          if (err instanceof ApiError && err.code === 'writing_grade_in_progress') {
+            if (writingClaimRetryRef.current < WRITING_CLAIM_MAX_RETRIES) {
+              writingClaimRetryRef.current += 1;
+              toast({
+                message: 'Still grading your answer — one moment…',
+                tone: 'info',
+              });
+              // Back to 'idle' (not 'answering') so `gradeAnswer`'s own
+              // `inFlight` guard doesn't block the delayed retry call below.
+              setPhase('idle');
+              setErrorMsg(null);
+              window.setTimeout(() => {
+                if (ctrl.signal.aborted) return;
+                gradeAnswer(choice);
+              }, WRITING_CLAIM_RETRY_DELAY_MS);
+              return;
+            }
+            setPhase('error');
+            setErrorMsg(
+              'Still grading your previous answer — please try again in a moment.',
+            );
+            return;
+          }
           // 409 auto-resync (E-DG-409): the server already recorded this
           // answer (a double-submit, or a retry after a lost success
           // response). Re-grading the same `responseId` would only 409 again,
@@ -582,7 +631,7 @@ function TakingBlock({
           setErrorMsg(toMessage(err, 'Could not submit your answer.'));
         });
     },
-    [runId, item, inFlight, reveal, beginCall, prefetchNext, onAlreadyRecorded],
+    [runId, item, inFlight, reveal, beginCall, prefetchNext, onAlreadyRecorded, toast],
   );
 
   // Submit the currently-picked choice.
@@ -652,6 +701,7 @@ function TakingBlock({
         setLastReveal(false);
         setProgress(res.progress);
         servedAtRef.current = Date.now();
+        writingClaimRetryRef.current = 0;
         setPhase('idle');
       })
       .catch((err: unknown) => {

@@ -1439,6 +1439,86 @@ describe('writing item (diagnostic-upgrade Phase B) — textarea, not ChoiceList
     );
   });
 
+  it('a writing-grade claim collision (409 writing_grade_in_progress) retries in place instead of the already-recorded resync (fix-pass 2 FIX B)', async () => {
+    // Real timers deliberately (not vi.useFakeTimers()): this file's
+    // interactions are all userEvent-based, and userEvent is documented to
+    // deadlock against fake timers in happy-dom (see MyAudio.test.tsx's
+    // GOTCHA note). WRITING_CLAIM_RETRY_DELAY_MS is only 1.5s, so a real
+    // wait here is cheap and keeps userEvent usable throughout.
+    hookState.snapshot = { data: EMPTY_SNAPSHOT, loading: false, error: null, isMock: true };
+    startDiagnostic.mockResolvedValue({
+      runId: 55,
+      item: WRITING_ITEM,
+      progress: { ordinal: 21, total: 22 },
+    });
+    // First submit loses the server's atomic claim race — distinct `code`
+    // from the generic "already recorded" 409 the E-DG-409 test above uses.
+    // Second submit (the automatic retry) succeeds normally.
+    answerDiagnostic
+      .mockRejectedValueOnce(
+        new ApiError('writing item is already being graded — retry shortly', {
+          status: 409,
+          code: 'writing_grade_in_progress',
+        }),
+      )
+      .mockResolvedValueOnce({
+        result: {
+          correct: true,
+          correctAnswer: 'writing',
+          explain: 'Great use of the pattern.',
+          verdict: 'good',
+          summary: 'Great use of the pattern.',
+          corrections: [],
+          referenceModelKr: '그는 학생인 것 같다.',
+          referenceModelEn: 'It seems he is a student.',
+        },
+        done: false,
+        progress: { ordinal: 21, total: 22 },
+      });
+
+    const user = userEvent.setup();
+    renderWithRouter();
+    await user.click(screen.getByRole('button', { name: /begin test/i }));
+    await screen.findByText(WRITING_ITEM.prompt);
+
+    const textbox = screen.getByRole('textbox', {
+      name: /write one sentence in korean/i,
+    });
+    await user.type(textbox, '그는 학생인 것 같다.');
+    await user.click(screen.getByRole('button', { name: /submit/i }));
+
+    // The transient in-progress state, NOT the terminal "already recorded"
+    // toast/flow-exit — the run stays on the Taking flow.
+    expect(
+      await screen.findByText(/still grading your answer/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/answer already recorded — continuing/i),
+    ).not.toBeInTheDocument();
+    expect(refetchSpy).not.toHaveBeenCalled();
+
+    // The automatic retry lands: same responseId re-submitted, and the real
+    // reveal (from the second, successful call) renders — proving the run
+    // continued rather than resyncing out.
+    await waitFor(
+      () => {
+        expect(answerDiagnostic).toHaveBeenCalledTimes(2);
+      },
+      { timeout: 3000 },
+    );
+    expect(answerDiagnostic).toHaveBeenNthCalledWith(
+      2,
+      55,
+      expect.objectContaining({
+        responseId: WRITING_ITEM.responseId,
+        picked: '그는 학생인 것 같다.',
+      }),
+    );
+    expect(
+      await screen.findByText('Great use of the pattern.'),
+    ).toBeInTheDocument();
+  });
+
   it('the reveal shows the Claude verdict/summary/corrections/reference model, not the MC correct/explain reveal', async () => {
     hookState.snapshot = { data: EMPTY_SNAPSHOT, loading: false, error: null, isMock: true };
     startDiagnostic.mockResolvedValue({

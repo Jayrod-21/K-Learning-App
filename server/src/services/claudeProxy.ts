@@ -13,7 +13,10 @@
  */
 import type { Pool } from 'pg';
 import type { Logger } from 'pino';
-import { createClaudeProxy as createClaudeProxyImpl } from './claude/index.js';
+import {
+  createClaudeProxy as createClaudeProxyImpl,
+  maxClaudeCallDurationMs,
+} from './claude/index.js';
 import type {
   ClaudeProxy,
   ConversationTitle,
@@ -91,6 +94,11 @@ export type {
 // import it through this adapter, keeping the "routes import only from
 // claudeProxy.ts" boundary intact.
 export { sanitizeUserInput } from './claude/index.js';
+
+// Worst-case Claude call duration (see services/claude/index.ts) — exported
+// so a caller sizing a claim/lock TTL against a live-but-slow call (not a
+// crash) derives it from the real configured knobs instead of guessing.
+export { maxClaudeCallDurationMs };
 
 let _proxy: ClaudeProxy | null = null;
 

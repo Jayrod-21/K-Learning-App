@@ -74,8 +74,14 @@ import { getUserId, requireAuth } from '../middleware/auth.js';
 import { cheapLimiter, diagnosticLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateParams } from '../middleware/validate.js';
 import { query, withTransaction } from '../db/pool.js';
-import { ConflictError, NotFoundError, UpstreamError, mapClaudeError } from '../middleware/errors.js';
-import { getClaudeProxy } from '../services/claudeProxy.js';
+import {
+  ConflictError,
+  NotFoundError,
+  UpstreamError,
+  WritingGradeInProgressError,
+  mapClaudeError,
+} from '../middleware/errors.js';
+import { getClaudeProxy, maxClaudeCallDurationMs } from '../services/claudeProxy.js';
 import { NO_TRANSCRIPT_STEM_PREFIX } from './topik.js';
 import type {
   DiagnosticTargetLevel,
@@ -1640,12 +1646,43 @@ async function gradeWritingAnswer(
   };
 }
 
-/** How long a writing grading claim stays live before it is treated as
- *  abandoned (fix-pass SF1). A real grading call finishes in a few seconds;
- *  this only exists to self-heal a claim orphaned by a process crash or an
- *  unhandled exception mid-grading, so a legitimate retry is never wedged
- *  forever. */
-const WRITING_CLAIM_TTL_SECONDS = 30;
+/**
+ * Fixed overhead budget layered on top of the worst-case Claude round trip
+ * (fix-pass 2 NF-1 / FIX A): the claim/release queries' own DB round-trips,
+ * JSON (de)serialization, Express middleware, and general request-handling
+ * slop around the Claude call itself. 30s is generous next to the
+ * millisecond-scale reality of that overhead — the whole point of this
+ * buffer is to be provably safe, not tight.
+ */
+const WRITING_CLAIM_TTL_BUFFER_MS = 30_000;
+
+/**
+ * How long a writing grading claim stays live before it is treated as
+ * abandoned (fix-pass SF1). This MUST exceed the worst-case wall-clock time
+ * a single legitimate (not crashed, not erroring) `scoreGrammarDrill` call
+ * can take — including every retry attempt's own SDK timeout and the
+ * backoff sleeps between attempts — or a still-alive-but-slow grade can
+ * outlive its own claim: a concurrent duplicate would then win a FRESH
+ * claim and fire a second paid Claude call while the first is still
+ * running, reopening the exact double-spend SF1 exists to close (fix-pass 2
+ * NF-1 — the original 30-SECOND hardcoded value was shorter than a single
+ * `CLAUDE_TIMEOUT_MS` attempt alone, let alone the full retry budget).
+ *
+ * Derived from the live Claude proxy config (`maxClaudeCallDurationMs()`)
+ * rather than hardcoded, so a future change to `CLAUDE_TIMEOUT_MS` or the
+ * retry budget can't silently desync this again. The TTL still serves its
+ * original self-heal purpose too: an abandoned claim (process crash mid-
+ * grading) releases after this same window, so a legitimate retry is never
+ * wedged forever — it just now waits out a bound sized against the app's
+ * OWN worst case instead of a guessed constant.
+ *
+ * Computed per-call (not cached at module load) so it always reflects the
+ * currently-loaded config — this matters for tests, which reset the Claude
+ * config between cases via `__resetConfigForTests()`.
+ */
+export function writingClaimTtlSeconds(): number {
+  return Math.ceil((maxClaudeCallDurationMs() + WRITING_CLAIM_TTL_BUFFER_MS) / 1000);
+}
 
 /**
  * Atomically claim grading rights for a still-pending writing response
@@ -1660,7 +1697,7 @@ const WRITING_CLAIM_TTL_SECONDS = 30;
  * same duplicate-suppression guarantee without violating that contract.
  *
  * Returns true iff THIS call won the claim (no prior live claim existed, or
- * the prior claim is older than `WRITING_CLAIM_TTL_SECONDS` and therefore
+ * the prior claim is older than `writingClaimTtlSeconds()` and therefore
  * abandoned). A losing caller must NOT call Claude — it should short-circuit
  * (409) instead, exactly like the existing out-of-order/double-answer replay
  * defense.
@@ -1675,14 +1712,14 @@ async function claimWritingGrade(responseId: number, runId: number): Promise<boo
           OR (item_payload->>'gradingClaimedAt')::timestamptz
                < now() - make_interval(secs => $3::int)
         )`,
-    [responseId, runId, WRITING_CLAIM_TTL_SECONDS],
+    [responseId, runId, writingClaimTtlSeconds()],
   );
   return rowCount === 1;
 }
 
 /**
  * Release a writing grading claim after a failed Claude call, so a genuine
- * client retry doesn't have to wait out `WRITING_CLAIM_TTL_SECONDS`. Purely
+ * client retry doesn't have to wait out `writingClaimTtlSeconds()`. Purely
  * best-effort — the caller swallows this function's own errors, since the
  * TTL is the backstop if this also fails (e.g. a connection blip right after
  * the Claude error).
@@ -1760,10 +1797,13 @@ router.post(
         if (!claimed) {
           // Already answered by a request that beat us here, or another
           // concurrent request is actively grading it right now. Either way:
-          // no Claude call from this request, and no θ risk — the client's
-          // existing 409 handling (out-of-order/double-answer replay) covers
-          // this the same way it covers a stale re-answer.
-          throw new ConflictError('writing item is already being graded — retry shortly');
+          // no Claude call from this request, and no θ risk. Fix-pass 2
+          // FIX B: this is a DISTINCT wire error from the generic "already
+          // recorded" 409 — the item is very likely not yet recorded at all
+          // — so it uses `WritingGradeInProgressError` (code
+          // `writing_grade_in_progress`), not `ConflictError`, letting the
+          // client retry in place instead of resyncing out of the run.
+          throw new WritingGradeInProgressError();
         }
         const userAnswer = typeof body.picked === 'string' ? body.picked : '';
         try {
