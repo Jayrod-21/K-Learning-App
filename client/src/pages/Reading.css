@@ -338,60 +338,7 @@
   color: var(--paper-dim);
 }
 
-/* ── Story illustrations (F-211) ────────────────────────────── */
-
-/* Hero-plus-grid gallery: the first surviving figure spans the full width
- * (the "cover" scene), the rest share a two-up grid. Using :first-of-type
- * rather than a hero class means a hidden/failed first image promotes the
- * next one automatically — the layout never shows a hole. */
-.km-reading__images {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 10px;
-  margin-top: 14px;
-}
-
-.km-reading__images-item {
-  margin: 0; /* reset the UA figure margin */
-}
-
-.km-reading__images-item:first-of-type {
-  grid-column: 1 / -1;
-}
-
-/* height:auto against the width/height attrs keeps the intrinsic aspect
- * ratio while the reserved box prevents lazy-load layout shift. */
-.km-reading__images-item img {
-  display: block;
-  width: 100%;
-  max-width: 100%;
-  height: auto;
-  border-radius: var(--radius);
-}
-
-.km-reading__images-busy {
-  margin: 14px 0 0;
-  font-size: 0.84375rem;
-  color: var(--paper-dim);
-}
-
-.km-reading__images-error {
-  margin: 0;
-  font-size: 0.78125rem;
-  color: var(--danger-ink);
-}
-
-.km-reading__images-request {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-top: 14px;
-}
-
-/* Mirror the shared .km-btn:disabled paint while the request is in flight —
- * aria-disabled (not `disabled`) keeps keyboard focus put (the audio card's
- * pattern). */
-.km-reading__images-request .km-btn[aria-disabled='true'] {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
+/* Story illustrations (F-211): the `.km-reading__images*` gallery rules
+ * moved to `components/StoryIllustrations.css`, colocated with the shared
+ * gallery component the Listen-tab created-story card now also renders
+ * (Listen-tab illustration-visibility work). Selectors are unchanged. */
