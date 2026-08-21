@@ -18,7 +18,7 @@ router.use(requireAuth);
 
 /**
  * GET /ability/estimate — one AbilityEstimate per diagnostic dimension
- * (DIMENSION_ORDER), each either a θ/SE/band/score or an insufficient marker.
+ * (CORE_DIMENSION_ORDER), each either a θ/SE/band/score or an insufficient marker.
  */
 router.get('/estimate', cheapLimiter(), async (req, res, next) => {
   try {

@@ -15,9 +15,18 @@
 
 import type { ProficiencyLevel, DiagnosticTargetLevel } from '../claude/index.js';
 
-/** Seed ability — L4 mid. The first item is served at this band before any
- *  evidence exists. */
-export const SEED_THETA = 4.0;
+/** Seed ability — L2 (start-easy ramp, diagnostic-upgrade Phase A). The first
+ *  item is served at this band before any evidence exists.
+ *
+ *  Was 4.0 (L4 mid). At the old seed + step, the FIRST item of every
+ *  dimension was served near the seed band, which dragged that dimension's
+ *  mean-served-difficulty down for an advanced user (the per-dim estimate is
+ *  mean(difficulty) + spread — see scoring.ts) even though θ itself climbed
+ *  out of L4 within a few answers. Starting easier (L2) plus a steeper early
+ *  `stepForAnswer` (below) reaches the ceiling just as fast for a strong
+ *  learner while giving a genuine beginner a real, non-intimidating opener
+ *  instead of a first item three bands above their level. */
+export const SEED_THETA = 2.0;
 
 /** θ is clamped to this closed interval after every update. The 0–6 column
  *  CHECK in migration 001/014 is the durable guard; this keeps the in-memory
@@ -97,17 +106,24 @@ export function targetLevelForTheta(theta: number): DiagnosticTargetLevel {
 /**
  * Staircase step size for the n-th graded answer (1-based).
  *
- *   step_n = max(0.4, 1.0 − 0.1·(n − 1))
+ *   step_n = max(0.4, 1.5 − 0.15·(n − 1))
  *
- * So step decays 1.0, 0.9, 0.8, … and floors at 0.4. Early answers move θ
- * more (we know less), late answers fine-tune. The floor keeps a long run from
- * freezing θ entirely.
+ * So step decays 1.5, 1.35, 1.2, … and floors at 0.4 (from n=9 on). Early
+ * answers move θ more (we know less), late answers fine-tune. The floor keeps
+ * a long run from freezing θ entirely.
+ *
+ * Steepened from `max(0.4, 1.0 − 0.1·(n−1))` alongside the SEED_THETA 4.0→2.0
+ * drop (start-easy ramp, diagnostic-upgrade Phase A): paired with the lower
+ * seed, an all-correct run still reaches THETA_MAX (6.0) by the 3rd answer
+ * (2.0 → 3.5 → 4.85 → 6.0, clamped) — as fast as the old seed/step reached it
+ * from L4 — while a struggling learner descends to THETA_MIN just as quickly
+ * on the other side. See cat.test.ts for the exact re-simulation.
  */
 export function stepForAnswer(answerNumber: number): number {
   if (!Number.isFinite(answerNumber) || answerNumber < 1) {
     throw new RangeError(`answerNumber must be an integer ≥ 1, got ${answerNumber}`);
   }
-  return Math.max(0.4, 1.0 - 0.1 * (answerNumber - 1));
+  return Math.max(0.4, 1.5 - 0.15 * (answerNumber - 1));
 }
 
 /** Clamp a θ to [THETA_MIN, THETA_MAX]. */

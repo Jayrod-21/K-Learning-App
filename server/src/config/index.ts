@@ -393,6 +393,17 @@ const EnvSchema = z.object({
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
   RATE_LIMIT_CHEAP_MAX: z.coerce.number().int().positive().default(120),
   RATE_LIMIT_EXPENSIVE_MAX: z.coerce.number().int().positive().default(20),
+  // The diagnostic run's OWN bucket (middleware/rateLimits.ts's diagnosticLimiter),
+  // split out from RATE_LIMIT_EXPENSIVE_MAX (diagnostic-upgrade Phase A fix-pass,
+  // R2 SF-1): a 20-item run makes ~20 route-entry hits on POST /diagnostic +
+  // /diagnostic/:id/next (diagnostic-upgrade Phase A grew the run 16→20), even
+  // though most of those hits are cheap DB reads (only vocab/grammar generation
+  // calls Claude). Sizing the SHARED expensive bucket to a full run's length
+  // would loosen abuse protection for every OTHER paid-upstream route (writing
+  // gen, conversation, TTS, OCR, image-gen) that shares it — so the diagnostic
+  // gets its own ceiling instead. 30 covers a full run plus retry/refresh
+  // headroom.
+  RATE_LIMIT_DIAGNOSTIC_MAX: z.coerce.number().int().positive().default(30),
   RATE_LIMIT_AUTH_MAX: z.coerce.number().int().positive().default(10),
   // Audio streaming: one listening session fires many Range requests (each seek
   // = several partials), so audio gets its OWN, higher, per-user bucket rather

@@ -7,7 +7,7 @@
  * The estimator math is covered in tests/services/ability/{irt,estimate}; here
  * the contract under test is the HTTP surface: auth gate, server-bound tenant
  * isolation, the {estimates: AbilityEstimate[]} wire shape, the insufficient
- * path, and DIMENSION_ORDER ordering.
+ * path, and CORE_DIMENSION_ORDER ordering.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
@@ -18,7 +18,7 @@ import { registerUser } from '../helpers/seed.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
 import { ESTIMATOR_VERSION } from '../../src/services/ability/irt.js';
 import {
-  DIMENSION_ORDER,
+  CORE_DIMENSION_ORDER,
   RUBRIC_VERSION,
 } from '../../src/services/diagnostic/scoring.js';
 
@@ -94,13 +94,13 @@ describe('GET /ability/estimate — auth required', () => {
 });
 
 describe('GET /ability/estimate — shape + insufficient path', () => {
-  it('a fresh user gets 4 insufficient estimates in DIMENSION_ORDER', async () => {
+  it('a fresh user gets 4 insufficient estimates in CORE_DIMENSION_ORDER', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.get('/ability/estimate');
     expect(res.status).toBe(200);
 
     const parsed = ResponseSchema.parse(res.body);
-    expect(parsed.estimates.map((e) => e.dimension)).toEqual([...DIMENSION_ORDER]);
+    expect(parsed.estimates.map((e) => e.dimension)).toEqual([...CORE_DIMENSION_ORDER]);
     for (const estimate of parsed.estimates) {
       expect(estimate.insufficient).toBe(true);
       expect(estimate.theta).toBeNull();

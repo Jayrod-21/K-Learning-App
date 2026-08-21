@@ -45,14 +45,19 @@ export type HanjaState = 'new' | 'practicing' | 'banked';
 /** Vocab list kind — what the list contains. */
 export type VocabListKind = 'vocab' | 'grammar' | 'hanja' | 'mixed';
 
-/** Diagnostic item kind — drives the screen's render branch. */
+/** Diagnostic item kind — drives the screen's render branch. `hanja-reading`
+ *  / `hanja-meaning` (diagnostic-upgrade Phase A) render through the SAME
+ *  `<ChoiceList>` branch as every other MC kind — they add no new render
+ *  path, just a label (see `sectionLabel` in Diagnostic.tsx). */
 export type DiagnosticItemKind =
   | 'cloze'
   | 'synonym'
   | 'pattern'
   | 'passage-mc'
   | 'inference'
-  | 'audio-mc';
+  | 'audio-mc'
+  | 'hanja-reading'
+  | 'hanja-meaning';
 
 /** Conversation role — tutor uses formal 합쇼체, user is the learner. */
 export type ConversationRole = 'tutor' | 'user';
@@ -411,8 +416,10 @@ export interface MockResult {
 export interface DiagnosticDimension {
   // `grammar` was added in Pass 5 when the diagnostic went live: the server
   // now scores reading/listening/vocab/grammar. `writing` stays in the union
-  // for forward-compat (Pass 8 wires it) even though the server omits it today.
-  key: 'reading' | 'listening' | 'writing' | 'vocab' | 'grammar';
+  // for forward-compat (Pass 8 wires it) even though the server omits it
+  // today. `hanja` (diagnostic-upgrade Phase A) is COVERAGE-ONLY — scored and
+  // displayed like the others, but excluded from the server's global θ ladder.
+  key: 'reading' | 'listening' | 'writing' | 'vocab' | 'grammar' | 'hanja';
   label: string;
   kr: string;
   score: number;
@@ -472,8 +479,9 @@ export interface DiagnosticChoice {
   en: string;
 }
 
-/** The section a diagnostic item exercises. */
-export type DiagnosticSection = 'vocab' | 'grammar' | 'reading' | 'listening';
+/** The section a diagnostic item exercises. `hanja` (diagnostic-upgrade
+ *  Phase A) is coverage-only — see `DiagnosticDimension.key`. */
+export type DiagnosticSection = 'vocab' | 'grammar' | 'reading' | 'listening' | 'hanja';
 
 /**
  * The proficiency band the server serves a live diagnostic item at.

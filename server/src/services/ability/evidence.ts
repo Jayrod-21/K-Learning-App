@@ -17,7 +17,7 @@
  */
 
 import { query } from '../../db/pool.js';
-import { DIMENSION_ORDER } from '../diagnostic/scoring.js';
+import { CORE_DIMENSION_ORDER } from '../diagnostic/scoring.js';
 import { EVIDENCE_SOURCES, type AbilityDimension, type EvidenceSource } from './anchors.js';
 import {
   normalizeRow,
@@ -78,9 +78,20 @@ export async function getAbilityEvidence(
   if (q.dimension !== undefined) {
     params.push(q.dimension);
     where.push(`dimension = $${params.length}`);
-  } else if (q.includeWriting !== true) {
-    // Default: the 4 diagnostic dimensions only (see module note).
-    where.push(`dimension <> 'writing'`);
+  } else {
+    // Default (no explicit dimension): an EXPLICIT allow-list of
+    // CORE_DIMENSION_ORDER (+ 'writing' iff includeWriting), not a negative
+    // filter. The `ability_evidence` view (migration 084, leg 6) passes
+    // `diagnostic_responses.section` through as raw text, so a diagnostic
+    // 'hanja' row (diagnostic-upgrade Phase A) is queryable there — a
+    // `dimension <> 'writing'` filter would let it through by omission. An
+    // allow-list excludes hanja (and any future non-core dimension) BY
+    // CONSTRUCTION, matching CORE_DIMENSION_ORDER's own doc in scoring.ts.
+    const allowed: string[] = q.includeWriting === true
+      ? [...CORE_DIMENSION_ORDER, 'writing']
+      : [...CORE_DIMENSION_ORDER];
+    params.push(allowed);
+    where.push(`dimension = ANY($${params.length})`);
   }
 
   if (q.since !== undefined) {
@@ -109,8 +120,10 @@ export async function getAbilityEvidence(
 
 /**
  * Per-dimension rollup over a user's evidence: one entry per diagnostic
- * dimension (reading/listening/vocab/grammar, in DIMENSION_ORDER), plus
- * 'writing' appended iff `includeWriting`.
+ * dimension (reading/listening/vocab/grammar, in CORE_DIMENSION_ORDER), plus
+ * 'writing' appended iff `includeWriting`. `hanja` (diagnostic-upgrade
+ * Phase A) never appears here — it is coverage-only and outside the
+ * ability/IRT surface (see CORE_DIMENSION_ORDER's doc in scoring.ts).
  */
 export async function getAbilityRollup(
   userId: number,
@@ -123,8 +136,8 @@ export async function getAbilityRollup(
   });
 
   const dimensions: AbilityDimension[] = includeWriting
-    ? [...DIMENSION_ORDER, 'writing']
-    : [...DIMENSION_ORDER];
+    ? [...CORE_DIMENSION_ORDER, 'writing']
+    : [...CORE_DIMENSION_ORDER];
 
   // One accumulator per requested dimension, in emission order. The running
   // sums live beside (not on) the public rollup shape; means finalize below.

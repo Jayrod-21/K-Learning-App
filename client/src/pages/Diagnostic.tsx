@@ -121,9 +121,11 @@ const CHOICE_MARKERS = ['①', '②', '③', '④'] as const;
 
 /**
  * Static intro descriptors — the Intro no longer pre-fetches a test bundle.
- * The live run is built server-side (4 each reading/listening/vocab/grammar,
- * 16 items, ~20 min adaptive); these are the human-readable section labels the
- * Intro card lists. Kept module-scope (immutable, never re-allocated).
+ * The live run is built server-side (4 each reading/listening/vocab/grammar/
+ * hanja, 20 items, ~20 min adaptive); these are the human-readable section
+ * labels the Intro card lists. Kept module-scope (immutable, never
+ * re-allocated). `hanja` (diagnostic-upgrade Phase A) is coverage-only — it
+ * still gets its own intro row like every other section.
  */
 const INTRO_SECTIONS: ReadonlyArray<{ id: string; label: string; kr: string }> =
   [
@@ -131,15 +133,17 @@ const INTRO_SECTIONS: ReadonlyArray<{ id: string; label: string; kr: string }> =
     { id: 'listening', label: 'Listening', kr: '듣기' },
     { id: 'vocab', label: 'Vocabulary', kr: '어휘' },
     { id: 'grammar', label: 'Grammar', kr: '문법' },
+    { id: 'hanja', label: 'Hanja', kr: '한자' },
   ];
 
 // These MUST mirror the server's test shape — `ITEMS_PER_DIMENSION` in
-// `server/src/routes/diagnostic.ts` (4 per dimension → 16-item schedule).
+// `server/src/routes/diagnostic.ts` (4 per dimension × 5 dimensions →
+// 20-item schedule, diagnostic-upgrade Phase A added `hanja` as the 5th).
 // The taking-screen progress bar counts to the server's total, so a stale
 // intro promise here is a user-visible contradiction (F-011 fixpass R3 B1).
 // Retune all three together when turning the server knob.
 const INTRO_TOTAL_MINS = 20;
-const INTRO_TOTAL_ITEMS = 16;
+const INTRO_TOTAL_ITEMS = 20;
 const INTRO_PER_SECTION = 4;
 
 /**
@@ -954,6 +958,8 @@ function sectionLabel(
       return { en: 'Vocabulary', kr: '어휘' };
     case 'grammar':
       return { en: 'Grammar', kr: '문법' };
+    case 'hanja':
+      return { en: 'Hanja', kr: '한자' };
     default: {
       // Exhaustiveness guard — a new section must update this switch.
       const _never: never = section;

@@ -355,12 +355,14 @@ describe('Diagnostic', () => {
     expect(container.querySelector('.km-diagnostic__display')).toBeNull();
   });
 
-  it('F-011: the intro advertises the real 16-item / 4-per-section test shape', () => {
-    // The server serves ITEMS_PER_DIMENSION = 4 → a 16-item schedule
-    // (server/src/routes/diagnostic.ts), and the taking-screen progress bar
-    // counts to the server's total. The intro's promise must match — the old
-    // "8 items / 2 items / 12 min" copy shipped one screen before a /16
-    // progress bar (fixpass R3 B1). This pins intro ↔ server-shape sync.
+  it('F-011: the intro advertises the real 20-item / 5-section test shape', () => {
+    // The server serves ITEMS_PER_DIMENSION = 4 across 5 dimensions
+    // (reading/listening/vocab/grammar/hanja — diagnostic-upgrade Phase A) →
+    // a 20-item schedule (server/src/routes/diagnostic.ts), and the
+    // taking-screen progress bar counts to the server's total. The intro's
+    // promise must match — the old "8 items / 2 items / 12 min" copy shipped
+    // one screen before the progress bar (fixpass R3 B1). This pins
+    // intro ↔ server-shape sync.
     hookState.snapshot = {
       data: EMPTY_SNAPSHOT,
       loading: false,
@@ -368,10 +370,10 @@ describe('Diagnostic', () => {
       isMock: true,
     };
     renderWithRouter();
-    // Eyebrow: "진단평가 · 20 min · 16 items".
-    expect(screen.getByText(/20 min · 16 items/)).toBeInTheDocument();
-    // Every one of the four section rows promises 4 items.
-    expect(screen.getAllByText('4 items')).toHaveLength(4);
+    // Eyebrow: "진단평가 · 20 min · 20 items".
+    expect(screen.getByText(/20 min · 20 items/)).toBeInTheDocument();
+    // Every one of the five section rows promises 4 items.
+    expect(screen.getAllByText('4 items')).toHaveLength(5);
     // The stale pre-F-011 shape must never come back.
     expect(screen.queryByText(/8 items/)).not.toBeInTheDocument();
     expect(screen.queryByText('2 items')).not.toBeInTheDocument();
@@ -389,16 +391,16 @@ describe('Diagnostic', () => {
 
     // INTRO_SECTIONS render both language segments via <Bilingual/> (the
     // baked "kr · en" span pair is gone).
-    for (const kr of ['읽기', '듣기', '어휘', '문법']) {
+    for (const kr of ['읽기', '듣기', '어휘', '문법', '한자']) {
       expect(screen.getByText(kr)).toBeInTheDocument();
     }
-    for (const en of ['Reading', 'Listening', 'Vocabulary', 'Grammar']) {
+    for (const en of ['Reading', 'Listening', 'Vocabulary', 'Grammar', 'Hanja']) {
       expect(screen.getByText(en)).toBeInTheDocument();
     }
     // The per-section count carries Korean too. The counts render compact
     // (one language visually), so each row holds the Korean twice: the
-    // visible primary + the sr-only bilingual reading → 4 rows × 2.
-    expect(screen.getAllByText('4문항')).toHaveLength(8);
+    // visible primary + the sr-only bilingual reading → 5 rows × 2.
+    expect(screen.getAllByText('4문항')).toHaveLength(10);
     // Verbage trim: the eyebrow no longer repeats the title's 진단평가 —
     // it appears exactly once, in the h1.
     expect(screen.getAllByText('진단평가')).toHaveLength(1);

@@ -4,7 +4,7 @@
  * Bar §"Testing": testcontainers again — the estimator's value is the wiring
  * (evidence fetch → recency weights → EAP → gate → user_progress sampling),
  * so only a real engine running the real migration chain proves: per-dim
- * emission in DIMENSION_ORDER, the nUsed/effN gate, the 180-day window, the
+ * emission in CORE_DIMENSION_ORDER, the nUsed/effN gate, the 180-day window, the
  * ≤1-row/dim/UTC-day sampled persist (+ DISTINCT ON read + JSONB
  * round-trip), the writing opt-in (estimated, never sampled), and tenant
  * scoping.
@@ -141,7 +141,7 @@ async function seedSufficientListening(userId: number): Promise<void> {
 }
 
 describe('estimateAbility — per-dimension wiring', () => {
-  it('emits DIMENSION_ORDER; a sufficient dimension carries θ/SE/band/score', async () => {
+  it('emits CORE_DIMENSION_ORDER; a sufficient dimension carries θ/SE/band/score', async () => {
     const userId = await seedUser('est-wiring@example.com');
     await seedSufficientListening(userId);
 
@@ -319,7 +319,7 @@ describe('estimateAbility — sampled persist', () => {
 
   it('insufficient dimensions and writing are never sampled', async () => {
     const userId = await seedUser('est-persist-skip@example.com');
-    // Sufficient WRITING evidence only — every DIMENSION_ORDER dim is
+    // Sufficient WRITING evidence only — every CORE_DIMENSION_ORDER dim is
     // insufficient, and writing (though estimated) is not in the metric set.
     for (let i = 0; i < 5; i += 1) {
       await seedWriting(userId, daysAgo(i + 1));

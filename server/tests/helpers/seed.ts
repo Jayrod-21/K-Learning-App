@@ -583,9 +583,14 @@ export async function seedHanjaCharacter(
 ): Promise<number> {
   const char = opts.char ?? '學';
   const { rows } = await pool.query<{ id: string }>(
+    // Idempotent on the natural key, exactly like the real hanja loader
+    // (migration 016: "loader upserts each character ON CONFLICT (char)").
+    // A diagnostic test may re-seed the pool (seedFullPool) across two runs
+    // in one test; without this a repeated char would 23505 on UNIQUE(char).
     `INSERT INTO hanja_characters (
         char, sound, gloss_kr, gloss_en, strokes, frequency, level, etymology)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (char) DO UPDATE SET char = EXCLUDED.char
      RETURNING id`,
     [
       char,
