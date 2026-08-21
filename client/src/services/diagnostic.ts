@@ -55,7 +55,7 @@
  * (start/answer/next/finish) is a local mutation flow that manages its own
  * `AbortController`s and threads the signal through.
  */
-import { api } from './api';
+import { api, GENERATION_TIMEOUT_MS } from './api';
 import type {
   DiagnosticAnswerResponse,
   DiagnosticHistoryResponse,
@@ -102,7 +102,9 @@ export async function startDiagnostic(
   return api.post<DiagnosticStartResponse>(
     '/diagnostic',
     {},
-    signal !== undefined ? { signal } : undefined,
+    // Serving item 1 can generate a Claude-authored item — allow the full
+    // generation window instead of the 10 s default (see GENERATION_TIMEOUT_MS).
+    { timeout: GENERATION_TIMEOUT_MS, ...(signal !== undefined ? { signal } : {}) },
   );
 }
 
@@ -124,7 +126,9 @@ export async function answerDiagnostic(
   return api.post<DiagnosticAnswerResponse>(
     `/diagnostic/${String(runId)}/answer`,
     body,
-    signal !== undefined ? { signal } : undefined,
+    // Writing-item answers are graded by a Claude call (Phase B) — allow the
+    // full generation window; MC answers still return near-instantly.
+    { timeout: GENERATION_TIMEOUT_MS, ...(signal !== undefined ? { signal } : {}) },
   );
 }
 
@@ -144,7 +148,9 @@ export async function nextDiagnostic(
   return api.post<DiagnosticNextResponse>(
     `/diagnostic/${String(runId)}/next`,
     {},
-    signal !== undefined ? { signal } : undefined,
+    // The expensive half: vocab/grammar/writing items are Claude-generated —
+    // allow the full generation window instead of the 10 s default.
+    { timeout: GENERATION_TIMEOUT_MS, ...(signal !== undefined ? { signal } : {}) },
   );
 }
 

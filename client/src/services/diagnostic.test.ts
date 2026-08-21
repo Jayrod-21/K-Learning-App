@@ -13,7 +13,7 @@ import {
   startDiagnostic,
   type FinishDiagnosticResponse,
 } from './diagnostic';
-import { api, ApiError } from './api';
+import { api, ApiError, GENERATION_TIMEOUT_MS } from './api';
 import type {
   DiagnosticAnswerResponse,
   DiagnosticHistoryResponse,
@@ -92,7 +92,7 @@ describe('startDiagnostic', () => {
 
     const res = await startDiagnostic();
 
-    expect(spy).toHaveBeenCalledWith('/diagnostic', {}, undefined);
+    expect(spy).toHaveBeenCalledWith('/diagnostic', {}, { timeout: GENERATION_TIMEOUT_MS });
     expect(res.runId).toBe(7);
     expect(res.item.responseId).toBe(11);
     expect(res.progress.total).toBe(8);
@@ -104,7 +104,10 @@ describe('startDiagnostic', () => {
 
     await startDiagnostic(ctrl.signal);
 
-    expect(spy).toHaveBeenCalledWith('/diagnostic', {}, { signal: ctrl.signal });
+    expect(spy).toHaveBeenCalledWith('/diagnostic', {}, {
+      timeout: GENERATION_TIMEOUT_MS,
+      signal: ctrl.signal,
+    });
   });
 
   it('rethrows ApiError on failure', async () => {
@@ -129,7 +132,7 @@ describe('answerDiagnostic', () => {
     expect(spy).toHaveBeenCalledWith(
       '/diagnostic/7/answer',
       { responseId: 11, picked: 'a', timeMs: 4200 },
-      undefined,
+      { timeout: GENERATION_TIMEOUT_MS },
     );
     expect(res.result.correct).toBe(true);
     expect(res.result.correctAnswer).toBe('a');
@@ -149,7 +152,7 @@ describe('answerDiagnostic', () => {
     expect(spy).toHaveBeenCalledWith(
       '/diagnostic/7/answer',
       { responseId: 18, picked: null },
-      undefined,
+      { timeout: GENERATION_TIMEOUT_MS },
     );
     expect(res.done).toBe(true);
   });
@@ -163,7 +166,7 @@ describe('answerDiagnostic', () => {
     expect(spy).toHaveBeenCalledWith(
       '/diagnostic/7/answer',
       { responseId: 11, picked: 'a' },
-      { signal: ctrl.signal },
+      { timeout: GENERATION_TIMEOUT_MS, signal: ctrl.signal },
     );
   });
 
@@ -184,7 +187,7 @@ describe('nextDiagnostic', () => {
 
     const res = await nextDiagnostic(7);
 
-    expect(spy).toHaveBeenCalledWith('/diagnostic/7/next', {}, undefined);
+    expect(spy).toHaveBeenCalledWith('/diagnostic/7/next', {}, { timeout: GENERATION_TIMEOUT_MS });
     expect(res.next?.responseId).toBe(12);
     expect(res.next?.ordinal).toBe(2);
     expect(res.progress).toEqual({ ordinal: 2, total: 8 });
@@ -209,6 +212,7 @@ describe('nextDiagnostic', () => {
     await nextDiagnostic(7, ctrl.signal);
 
     expect(spy).toHaveBeenCalledWith('/diagnostic/7/next', {}, {
+      timeout: GENERATION_TIMEOUT_MS,
       signal: ctrl.signal,
     });
   });
