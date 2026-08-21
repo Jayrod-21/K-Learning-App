@@ -32,8 +32,8 @@ import { Bilingual } from './Bilingual';
 import { Button } from './Button';
 import { Icon } from './Icon';
 import { IMAGES_FAILED_FALLBACK_COPY } from '../hooks/useStoryImages';
-import { buildStoryImageSrc } from '../services/ttmik';
-import type { StoryImage, StoryImagesEnvelope } from '../services/reading';
+import { displayableStoryImages } from '../lib/storyImages';
+import type { StoryImagesEnvelope } from '../services/reading';
 import './StoryIllustrations.css';
 
 /**
@@ -44,13 +44,22 @@ import './StoryIllustrations.css';
  * generic ordinal: the envelope's `prompt` is English generation
  * scaffolding, not user-facing copy, so it never reaches the DOM.
  * `width`/`height` reserve layout space before the lazy bytes arrive.
+ *
+ * Exported (not just used by the gallery below): the Story Reader's inline
+ * webtoon panels (pages/Reading.tsx) need the exact same
+ * src-already-allow-listed / generic-alt / lazy / reserved-dimensions /
+ * per-image-failure-absorbs posture, just under a different frame class —
+ * `className` is the only thing that differs between a gallery cell and an
+ * inline panel.
  */
-function StoryIllustration({
+export function StoryImageFigure({
+  className,
   src,
   imageNumber,
   width,
   height,
 }: {
+  className: string;
   src: string;
   imageNumber: number;
   width: number;
@@ -59,7 +68,7 @@ function StoryIllustration({
   const [failed, setFailed] = useState(false);
   if (failed) return null;
   return (
-    <figure className="km-reading__images-item">
+    <figure className={className}>
       <img
         src={src}
         alt={`Story illustration ${String(imageNumber)}`}
@@ -89,6 +98,15 @@ export interface StoryIllustrationsProps {
   requestError: string | null;
   /** `useStoryImages`'s `requestImages` — fires the on-demand POST. */
   onRequest: () => void;
+  /** Default `true` (the Listen-tab created-story card's posture,
+   *  unchanged): render the hero-plus-grid gallery once `images.status`
+   *  is `'done'`. The Story Reader passes `false` — it now interleaves
+   *  these same done images as inline webtoon panels between paragraphs
+   *  (see `lib/storyImages.ts`'s `displayableStoryImages`), so this
+   *  component should keep rendering the busy/request/failed states
+   *  verbatim but return `null` on `done` — otherwise every finished
+   *  illustration would render twice (once here, once inline). */
+  galleryWhenReady?: boolean;
 }
 
 /**
@@ -107,18 +125,15 @@ export function StoryIllustrations({
   requesting,
   requestError,
   onRequest,
+  galleryWhenReady = true,
 }: StoryIllustrationsProps): JSX.Element | null {
   // Every candidate resolves through the strict allow-list; a tampered or
   // off-origin blobUrl drops out here, so the gallery never touches a raw
-  // wire value. Defensive ordinal sort (the orderedSegments stance — the
-  // server already orders by image_number).
-  const displayableImages = useMemo(() => {
-    if (images === null || images.status !== 'done') return [];
-    return [...images.images]
-      .sort((a, b) => a.imageNumber - b.imageNumber)
-      .map((img) => ({ img, src: buildStoryImageSrc(img.blobUrl) }))
-      .filter((x): x is { img: StoryImage; src: string } => x.src !== null);
-  }, [images]);
+  // wire value.
+  const displayableImages = useMemo(
+    () => displayableStoryImages(images),
+    [images],
+  );
 
   if (images === null || images.imageGenConfigured === false) return null;
 
@@ -129,19 +144,26 @@ export function StoryIllustrations({
       // empty frame.
       return null;
     }
+    if (!galleryWhenReady) {
+      // The Story Reader owns these done images as inline webtoon panels
+      // instead (pages/Reading.tsx) — rendering the grid here too would
+      // duplicate every illustration.
+      return null;
+    }
     return (
       // Hero-plus-grid gallery: CSS promotes the first surviving figure to
       // a full-width hero, the rest share a two-up grid. Each figure owns
       // its load-failure fallback (absence, no broken-image glyph) — see
-      // StoryIllustration.
+      // StoryImageFigure.
       <div
         className="km-reading__images"
         role="group"
         aria-label={`Illustrations for ${storyTitle}`}
       >
         {displayableImages.map(({ img, src }) => (
-          <StoryIllustration
+          <StoryImageFigure
             key={`${String(storyId)}-${String(img.imageNumber)}`}
+            className="km-reading__images-item"
             src={src}
             imageNumber={img.imageNumber}
             width={img.width}

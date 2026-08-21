@@ -136,6 +136,7 @@
  * changing — every device consumed here already exists post-foundation.
  */
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -158,7 +159,10 @@ import { Pill } from '../components/Pill';
 import { Sheet } from '../components/Sheet';
 import { ShowMore } from '../components/ShowMore';
 import { StoryGenerator } from '../components/StoryGenerator';
-import { StoryIllustrations } from '../components/StoryIllustrations';
+import {
+  StoryIllustrations,
+  StoryImageFigure,
+} from '../components/StoryIllustrations';
 import { Tabs } from '../components/Tabs';
 import { Tapword } from '../components/Tapword';
 import { WordPopover } from '../components/WordPopover';
@@ -180,6 +184,8 @@ import { cn } from '../lib/cn';
 import { errorMessageFor } from '../lib/errorCopy';
 import { activeSegmentNumberAt } from '../lib/readAlong';
 import { navItem } from '../lib/nav';
+import { displayableStoryImages } from '../lib/storyImages';
+import { computePanelSlots } from '../lib/storyPanels';
 import { ApiError } from '../services/api';
 import {
   generateChapterQuestions,
@@ -2144,6 +2150,39 @@ function StoryReader({ storyId }: { storyId: number }): JSX.Element {
     [audio],
   );
 
+  // ── Webtoon-scroll interleave: done illustrations dropped between prose
+  // blocks at even narrative beats, instead of one gallery sitting above
+  // all the text. `displayableStoryImages` is the SAME allow-list-filtered,
+  // ordinal-sorted list `StoryIllustrations`'s own (now-suppressed, see
+  // `galleryWhenReady` below) done-state grid would have rendered — one
+  // source of truth for "which images are actually displayable" shared
+  // with the gallery component, so the two never drift. `computePanelSlots`
+  // is pure math (lib/storyPanels.ts, unit-tested there); it's run twice
+  // here because the paragraph and read-along bodies are different block
+  // counts (paragraphs vs. voiced sentences) needing their own placement.
+  //
+  // The `imageGenConfigured !== false` guard mirrors
+  // `StoryIllustrations`'s own dormant-deploy gate exactly: a `done`
+  // envelope from a deploy with no image key must still render NO
+  // illustration UI anywhere (absence, not a dead affordance) — without
+  // this guard the reader would happily interleave panels from a `done`
+  // envelope even while the gallery (and its dormancy check) is suppressed.
+  const displayableImages = useMemo(
+    () =>
+      images !== null && images.imageGenConfigured !== false
+        ? displayableStoryImages(images)
+        : [],
+    [images],
+  );
+  const paragraphPanelSlots = useMemo(
+    () => computePanelSlots(paragraphs.length, displayableImages.length),
+    [paragraphs.length, displayableImages.length],
+  );
+  const segmentPanelSlots = useMemo(
+    () => computePanelSlots(orderedSegments.length, displayableImages.length),
+    [orderedSegments.length, displayableImages.length],
+  );
+
   // Degrade gracefully: all-zero windows mean the provider returned no
   // usable timing — play audio, skip highlighting (and keep the plain
   // paragraph rendering, since segment lines exist only to be highlighted).
@@ -2442,7 +2481,15 @@ function StoryReader({ storyId }: { storyId: number }): JSX.Element {
           the feature visible, forward-compat (the F-210 audio-card gate,
           exactly). The component itself is spacing-neutral, so this wrapper
           supplies the reader's own 14px top rhythm (plain block flow,
-          unlike the Listen card's flex gap). */}
+          unlike the Listen card's flex gap).
+
+          `galleryWhenReady={false}` — the ONLY reader-specific override:
+          once the batch is `done`, the reader owns those illustrations as
+          inline webtoon panels below (interleaved into the prose) instead
+          of a gallery sitting above it, so this slot keeps rendering the
+          busy/request/failed states verbatim and simply renders nothing
+          once done (no double-render). The Listen-tab card doesn't pass
+          this prop, so its gallery is unchanged. */}
       <div className="km-reading__images-slot">
         <StoryIllustrations
           storyId={storyId}
@@ -2451,12 +2498,16 @@ function StoryReader({ storyId }: { storyId: number }): JSX.Element {
           requesting={requestingImages}
           requestError={imagesRequestError}
           onRequest={requestImages}
+          galleryWhenReady={false}
         />
       </div>
 
       {/* Same reading-surface treatment as the chapter reader's CityCard
           (device #1/#2) — one consistent "reading surface" identity across
-          both the uploaded-book and AI-story readers. */}
+          both the uploaded-book and AI-story readers. The `--story` modifier
+          also quiets this card's chrome (Reading.css) — thinner border,
+          lighter shadow, tighter padding — so the webtoon panels below read
+          as a picture book rather than a UI card stack. */}
       <CityCard
         tone="accent"
         rail
@@ -2468,40 +2519,81 @@ function StoryReader({ storyId }: { storyId: number }): JSX.Element {
             // window and the rendered line are the SAME unit (exact
             // alignment by construction) and tap-to-define + translate keep
             // working per line. Falls back to the paragraph rendering below
-            // whenever there's no audio or no usable timing.
-            orderedSegments.map((seg) => {
+            // whenever there's no audio or no usable timing. Illustrations
+            // interleave among the sentence lines by the SAME placement
+            // math as the paragraph branch below (`segmentPanelSlots`,
+            // computed off the sentence count rather than the paragraph
+            // count — a voiced story's read-along body is a different
+            // block count than its silent paragraph body).
+            orderedSegments.map((seg, i) => {
               const active = seg.segmentNumber === activeSegmentNumber;
               return (
-                <div
-                  key={seg.segmentNumber}
-                  ref={active ? activeLineRef : null}
-                  className={cn(
-                    'km-reading__readalong-line',
-                    active && 'km-reading__readalong-line--active',
-                  )}
-                  {...(active ? { 'aria-current': 'true' } : {})}
-                >
-                  <TranslatablePassage
-                    body={seg.body}
-                    ariaContext={`sentence ${String(seg.segmentNumber)}`}
-                    minedIds={minedIds}
-                    onTapWord={onTapWord}
-                    onTranslate={setTranslateText}
-                  />
-                </div>
+                <Fragment key={seg.segmentNumber}>
+                  <div
+                    ref={active ? activeLineRef : null}
+                    className={cn(
+                      'km-reading__readalong-line',
+                      active && 'km-reading__readalong-line--active',
+                    )}
+                    {...(active ? { 'aria-current': 'true' } : {})}
+                  >
+                    <TranslatablePassage
+                      body={seg.body}
+                      ariaContext={`sentence ${String(seg.segmentNumber)}`}
+                      minedIds={minedIds}
+                      onTapWord={onTapWord}
+                      onTranslate={setTranslateText}
+                    />
+                  </div>
+                  {(segmentPanelSlots[i] ?? []).map((k) => {
+                    const item = displayableImages[k];
+                    if (item === undefined) return null;
+                    return (
+                      <StoryImageFigure
+                        key={`panel-${String(storyId)}-${String(item.img.imageNumber)}`}
+                        className="km-reading__panel"
+                        src={item.src}
+                        imageNumber={item.img.imageNumber}
+                        width={item.img.width}
+                        height={item.img.height}
+                      />
+                    );
+                  })}
+                </Fragment>
               );
             })
           : paragraphs.map((block, i) => (
-              <TranslatablePassage
-                // Index keys are safe here: the list is derived, static per
-                // loaded story, and never reordered.
-                key={i}
-                body={block}
-                ariaContext={`paragraph ${String(i + 1)}`}
-                minedIds={minedIds}
-                onTapWord={onTapWord}
-                onTranslate={setTranslateText}
-              />
+              // Index keys are safe here: the list is derived, static per
+              // loaded story, and never reordered.
+              <Fragment key={i}>
+                <TranslatablePassage
+                  body={block}
+                  ariaContext={`paragraph ${String(i + 1)}`}
+                  minedIds={minedIds}
+                  onTapWord={onTapWord}
+                  onTranslate={setTranslateText}
+                />
+                {/* Webtoon panels at even narrative beats — see
+                    `computePanelSlots` (lib/storyPanels.ts): image `k` lands
+                    right after this paragraph whenever `paragraphPanelSlots`
+                    placed it here. `displayableImages` is the SAME
+                    allow-list-filtered list the (now-suppressed) gallery
+                    above would have rendered — never a raw wire value. */}
+                {(paragraphPanelSlots[i] ?? []).map((k) => {
+                  const item = displayableImages[k];
+                  if (item === undefined) return null;
+                  return (
+                    <StoryImageFigure
+                      key={`panel-${String(storyId)}-${String(item.img.imageNumber)}`}
+                      className="km-reading__panel"
+                      src={item.src}
+                      imageNumber={item.img.imageNumber}
+                      width={item.img.width}
+                      height={item.img.height}
+                    />
+                  );
+                })}
+              </Fragment>
             ))}
       </CityCard>
 
