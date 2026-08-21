@@ -111,8 +111,8 @@ describe('nextTheta (gradual step, diagnostic-upgrade Phase B)', () => {
     expect(nextTheta(1.2, false, 1)).toBe(THETA_MIN); // 1.2 − 0.7 = 0.5 → 1
     // A miss from low θ still floors in one step (1.5 − 0.7 = 0.8 → 1.0)…
     expect(nextTheta(1.5, false, 1)).toBe(THETA_MIN);
-    // …but the GENTLE step no longer floors a mid-band miss in one move: a
-    // wrong answer from L3 lands at L2 (2.2 − 0.7 = 1.5), not the floor — the
+    // …but the GENTLE step no longer floors a mid-scale miss in one move: a
+    // wrong answer from θ=2.2 (L2) lands at 1.5 — still L2, not the floor — the
     // gradual descent that mirrors the gradual climb.
     expect(nextTheta(2.2, false, 1)).toBeCloseTo(1.5);
   });
