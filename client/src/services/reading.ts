@@ -61,7 +61,7 @@
  *     the response is server-derived; this client never sends free-text
  *     "history" copy.
  */
-import { api, ApiError } from './api';
+import { api, ApiError, GENERATION_TIMEOUT_MS } from './api';
 import type {
   ReadingChapter,
   ReadingChapterSummary,
@@ -409,7 +409,9 @@ export async function generateStory(
       level: input.level,
       ...(input.topic !== undefined ? { topic: input.topic } : {}),
     },
-    signal !== undefined ? { signal } : undefined,
+    // Synchronous route: the server blocks until Claude authors the whole
+    // story (well past the 10 s default), so allow a full generation window.
+    { timeout: GENERATION_TIMEOUT_MS, ...(signal !== undefined ? { signal } : {}) },
   );
   return res.story;
 }
@@ -777,7 +779,9 @@ export async function translatePassage(
   const res = await api.post<TranslatePassageEnvelope>(
     '/reading/translate',
     { passage },
-    signal !== undefined ? { signal } : undefined,
+    // Synchronous Claude call — give it the full generation window so a slow
+    // (or cold-start) translation doesn't abort at the 10 s default.
+    { timeout: GENERATION_TIMEOUT_MS, ...(signal !== undefined ? { signal } : {}) },
   );
   return res.translation;
 }
@@ -846,7 +850,9 @@ export async function generateChapterQuestions(
   const res = await api.post<QuestionsEnvelope>(
     `/reading/chapters/${String(chapterId)}/questions/generate`,
     undefined,
-    signal !== undefined ? { signal } : undefined,
+    // Synchronous route: Claude authors the question set inline — allow the
+    // full generation window instead of the 10 s default.
+    { timeout: GENERATION_TIMEOUT_MS, ...(signal !== undefined ? { signal } : {}) },
   );
   return res.questions;
 }
