@@ -78,18 +78,23 @@ router.use(requireAuth);
 // ---------------------------------------------------------------------------
 
 /** Items served per dimension. 4 balances reliability against Claude cost
- *  (vocab+grammar are generated → 2*ITEMS_PER_DIMENSION Claude calls/run). */
+ *  (vocab+grammar are generated → 2*ITEMS_PER_DIMENSION Claude calls/run).
+ *  hanja is corpus-only (no Claude call, see `buildHanjaItem`) so it rides
+ *  the same uniform count for free — kept uniform across all five dimensions
+ *  rather than a per-dimension weight map (diagnostic-upgrade Phase A) both
+ *  for simplicity and because `scoring.ts`'s confidence-band math is written
+ *  against "the standard 4-item schedule". */
 const ITEMS_PER_DIMENSION = 4;
 
 /** Fixed, interleaved serve schedule: DIMENSION_ORDER repeated
- *  ITEMS_PER_DIMENSION times → reading,listening,vocab,grammar, reading,…
- *  Interleaving spreads the adaptivity across all four skills. */
+ *  ITEMS_PER_DIMENSION times → reading,listening,vocab,grammar,hanja,
+ *  reading,… Interleaving spreads the adaptivity across all five skills. */
 const SCHEDULE: readonly DiagnosticDimensionKey[] = Array.from(
   { length: ITEMS_PER_DIMENSION },
   () => DIMENSION_ORDER,
 ).flat();
 
-const TARGET_ITEM_COUNT = SCHEDULE.length; // 16
+const TARGET_ITEM_COUNT = SCHEDULE.length; // 20 (5 dimensions × 4)
 
 type ChoiceId = 'a' | 'b' | 'c' | 'd';
 const CHOICE_IDS: readonly ChoiceId[] = ['a', 'b', 'c', 'd'];
@@ -720,15 +725,172 @@ async function buildGeneratedItem(
   };
 }
 
+/** A hanja_characters row, as selected for a diagnostic hanja item. */
+interface HanjaRow {
+  readonly char: string;
+  readonly sound: string;
+  readonly gloss_en: string;
+}
+
+/** The two hanja_characters `level` values the live corpus actually
+ *  populates (migration 016: L2=89 chars, L3=768; the CHECK also allows
+ *  L4/L5 but the build has never populated them). */
+type HanjaCorpusLevel = 'L2' | 'L3';
+
 /**
- * Build the next ServerItem for `section` at the current θ, excluding topik ids
- * already served. Returns null when the section pool/seed is empty (the caller
- * serves fewer items and scores only answered dims).
+ * All hanja_characters rows at `level`, optionally excluding one char. The
+ * live corpus is small at both levels the diagnostic can draw from (L2: 89,
+ * L3: 768) so fetching the whole level and working in JS is simpler — and
+ * just as fast (ix_hanja_characters_level is indexed on `level`) — than a
+ * cleverer DISTINCT-ON query, and makes the "never fail on a thin distractor
+ * pool" guarantee in `buildHanjaItem` trivial to reason about.
+ */
+async function hanjaLevelPool(
+  level: HanjaCorpusLevel,
+  excludeChar?: string,
+): Promise<HanjaRow[]> {
+  const params: unknown[] = [level];
+  let sql = `SELECT char, sound, gloss_en FROM hanja_characters WHERE level = $1`;
+  if (excludeChar !== undefined) {
+    params.push(excludeChar);
+    sql += ` AND char <> $${params.length}`;
+  }
+  const { rows } = await query<HanjaRow>(sql, params);
+  return rows;
+}
+
+/**
+ * The hanja corpus level the CAT band prefers. The live corpus only has L2
+ * and L3 rows (migration 016 — L4/L5 are reserved by the CHECK but
+ * unpopulated), so every band maps onto one of the two; `buildHanjaItem`
+ * falls back to the other level if the preferred one's pool is ever empty
+ * (defensive — never expected against the live corpus).
+ */
+function preferredHanjaLevel(band: DiagnosticBand): HanjaCorpusLevel {
+  return band === 'L1' || band === 'L2' ? 'L2' : 'L3';
+}
+
+/**
+ * Build a hanja MC ServerItem: a random character at (or near) the CAT band,
+ * with 3 same-level distractors, as either a reading-MC ("음 of 學?" → 4
+ * `sound` choices) or a meaning-MC ("meaning of 學?" → 4 `gloss_en` choices)
+ * — the kind is picked at random per item for variety. `excludeChars` keeps
+ * one run from repeating a character across its (up to) 4 hanja slots.
+ * Returns null only when the corpus is genuinely too thin to build a
+ * 4-choice item — never expected live: L2 alone has 69 distinct sounds / 89
+ * distinct glosses, L3 has 297/768.
+ *
+ * COVERAGE-ONLY (diagnostic-upgrade Phase A): hanja is scored — it gets its
+ * own `dimensionStats` entry in the snapshot — but this item's `difficulty`
+ * is the CHARACTER'S REAL corpus level (L2→2, L3→3 via `proficiencyToNumber`),
+ * NOT the CAT `band` passed in. The band only steers WHICH level pool this
+ * item draws from (so a beginner sees L2 hanja, not L3); it never determines
+ * the recorded difficulty, and the caller never feeds this item's grade back
+ * into θ (see the `/answer` handler's `section !== 'hanja'` guard) — the L3
+ * ceiling of the hanja corpus must never drag an advanced learner's overall
+ * placement down.
+ */
+async function buildHanjaItem(
+  band: DiagnosticBand,
+  excludeChars: readonly string[],
+): Promise<ServerItem | null> {
+  const preferred = preferredHanjaLevel(band);
+  const fallback: HanjaCorpusLevel = preferred === 'L2' ? 'L3' : 'L2';
+
+  let level: HanjaCorpusLevel | null = null;
+  let answer: HanjaRow | null = null;
+  for (const candidateLevel of [preferred, fallback]) {
+    const pool = await hanjaLevelPool(candidateLevel);
+    if (pool.length === 0) continue;
+    const excludeSet = new Set(excludeChars);
+    const fresh = pool.filter((r) => !excludeSet.has(r.char));
+    // Prefer a char not yet served this run; if the run has somehow
+    // exhausted every distinct char at this level (never expected — 89+
+    // chars vs. at most 4 hanja slots/run), reuse from the full pool rather
+    // than fail the slot.
+    const candidates = fresh.length > 0 ? fresh : pool;
+    answer = candidates[Math.floor(Math.random() * candidates.length)]!;
+    level = candidateLevel;
+    break;
+  }
+  if (answer === null || level === null) return null;
+
+  const rest = await hanjaLevelPool(level, answer.char);
+  const kind: 'hanja-reading' | 'hanja-meaning' =
+    Math.random() < 0.5 ? 'hanja-reading' : 'hanja-meaning';
+  const field: 'sound' | 'gloss_en' = kind === 'hanja-reading' ? 'sound' : 'gloss_en';
+
+  // 3 distractors from the SAME level: distinct char AND distinct `field`
+  // value from the answer and each other, so no two choices ever read
+  // identically. Shuffle first so repeated draws aren't alphabetical.
+  const shuffled = [...rest].sort(() => Math.random() - 0.5);
+  const seenValues = new Set<string>([answer[field]]);
+  const distractors: HanjaRow[] = [];
+  for (const row of shuffled) {
+    if (distractors.length >= 3) break;
+    if (seenValues.has(row[field])) continue;
+    seenValues.add(row[field]);
+    distractors.push(row);
+  }
+  // Never fail on a pathologically thin distinct-value pool: top up with
+  // same-level rows regardless of value collisions rather than serve a
+  // <4-choice item. Not expected against the live corpus (see the function
+  // doc); a genuine shortfall below 3 total distractors returns null and the
+  // caller treats the ordinal as an empty pool, same as every other builder.
+  if (distractors.length < 3) {
+    for (const row of shuffled) {
+      if (distractors.length >= 3) break;
+      if (distractors.some((d) => d.char === row.char)) continue;
+      distractors.push(row);
+    }
+  }
+  if (distractors.length < 3) return null;
+
+  const choiceText = (row: HanjaRow): string =>
+    kind === 'hanja-reading' ? row.sound : row.gloss_en;
+  const { choices, correctAnswer } = shuffleGeneratedChoices(
+    [answer, ...distractors].map((row) => ({ kr: choiceText(row) })),
+    0,
+  );
+
+  const prompt =
+    kind === 'hanja-reading'
+      ? `What is the reading (음) of ${answer.char}?`
+      : `What does ${answer.char} mean?`;
+  const explain =
+    kind === 'hanja-reading'
+      ? `${answer.char} (${answer.gloss_en}) is read "${answer.sound}".`
+      : `${answer.char} is read "${answer.sound}" and means "${answer.gloss_en}".`;
+
+  return {
+    section: 'hanja',
+    // Reuses 'generated' rather than adding a 'corpus' source_kind value —
+    // avoids widening ck_diagnostic_responses_source_kind on top of the
+    // section CHECK (smaller migration surface). `section` (not source_kind)
+    // is what distinguishes a hanja response from a vocab/grammar one; see
+    // `servedHanjaChars` below.
+    sourceKind: 'generated',
+    sourceRef: answer.char,
+    difficulty: proficiencyToNumber(level),
+    kind,
+    level,
+    prompt,
+    choices,
+    correctAnswer,
+    explain,
+  };
+}
+
+/**
+ * Build the next ServerItem for `section` at the current θ, excluding topik
+ * ids / hanja chars already served. Returns null when the section pool/seed
+ * is empty (the caller serves fewer items and scores only answered dims).
  */
 async function buildItemForSection(
   section: DiagnosticDimensionKey,
   theta: number,
   excludeTopikIds: readonly string[],
+  excludeHanjaChars: readonly string[],
   correlationId: string | undefined,
   userId: number,
 ): Promise<ServerItem | null> {
@@ -739,6 +901,9 @@ async function buildItemForSection(
     const row = await pickTopikRow(section, band, excludeTopikIds);
     if (row === null) return null;
     return buildTopikItem(section, row, band);
+  }
+  if (section === 'hanja') {
+    return buildHanjaItem(band, excludeHanjaChars);
   }
   return buildGeneratedItem(section, theta, correlationId, userId);
 }
@@ -836,6 +1001,19 @@ async function servedTopikIds(runId: number): Promise<string[]> {
   return rows.map((r) => r.source_ref);
 }
 
+/** hanja chars already served in this run (to avoid repeats). Scoped by
+ *  `section = 'hanja'` rather than `source_kind` — hanja reuses
+ *  source_kind='generated' (shared with vocab/grammar; see `buildHanjaItem`),
+ *  so section is the discriminator here, mirroring `servedTopikIds`. */
+async function servedHanjaChars(runId: number): Promise<string[]> {
+  const { rows } = await query<{ source_ref: string }>(
+    `SELECT source_ref FROM diagnostic_responses
+      WHERE run_id = $1 AND section = 'hanja' AND source_ref IS NOT NULL`,
+    [runId],
+  );
+  return rows.map((r) => r.source_ref);
+}
+
 /**
  * Serve items for ordinals [fromOrdinal..target], advancing through the
  * SCHEDULE, until one is successfully served (returns it) or the run is
@@ -853,8 +1031,16 @@ async function serveNextItem(
 ): Promise<{ responseId: number; ordinal: number; item: ServerItem } | null> {
   for (let ordinal = fromOrdinal; ordinal <= TARGET_ITEM_COUNT; ordinal += 1) {
     const section = SCHEDULE[ordinal - 1]!;
-    const exclude = await servedTopikIds(runId);
-    const item = await buildItemForSection(section, theta, exclude, correlationId, userId);
+    const excludeTopik = await servedTopikIds(runId);
+    const excludeHanja = await servedHanjaChars(runId);
+    const item = await buildItemForSection(
+      section,
+      theta,
+      excludeTopik,
+      excludeHanja,
+      correlationId,
+      userId,
+    );
     if (item === null) {
       // Empty/short pool — skip this ordinal. Scoring already tolerates a
       // dimension that received < ITEMS_PER_DIMENSION items (and omits one
@@ -902,6 +1088,7 @@ const DIMENSION_LABELS: Record<DiagnosticDimensionKey, { label: string; kr: stri
   listening: { label: 'Listening', kr: '듣기' },
   vocab: { label: 'Vocabulary', kr: '어휘' },
   grammar: { label: 'Grammar', kr: '문법' },
+  hanja: { label: 'Hanja', kr: '한자' },
 };
 
 /** Reference lines for the snapshot chart, lowest-first. F-002 fixpass SF-1:
@@ -1009,10 +1196,19 @@ function buildSnapshotDTO(
 ): SnapshotDTO {
   const dimensions: SnapshotDimensionDTO[] = [];
   for (const key of DIMENSION_ORDER) {
-    const est = estimates[key];
+    const stat = stats[key];
+    // The snapshot table's estimate columns (reading_estimate/listening_
+    // estimate/…) exist only for the pre-v1.3.0 four dimensions — `hanja`
+    // (diagnostic-upgrade Phase A) has NO dedicated column, so its estimate
+    // lives ONLY in evidence.dimensionStats (see DimensionStat below). Prefer
+    // the stat's estimate for every dimension when present — it is
+    // bit-identical to the fixed-column value for reading/listening/vocab/
+    // grammar, both computed from the same `scored` array within the same
+    // /finish call — and fall back to `estimates[key]` (the fixed columns)
+    // only for legacy rows (pre-v1.1.0) that predate dimensionStats entirely.
+    const est = stat !== undefined ? stat.estimate : estimates[key];
     if (est === undefined || est === null) continue;
     const score = estimateToScore(est);
-    const stat = stats[key];
     const scoreLow = stat !== undefined ? Math.min(stat.scoreLow, score) : score;
     const scoreHigh = stat !== undefined ? Math.max(stat.scoreHigh, score) : score;
     const labels = DIMENSION_LABELS[key];
@@ -1168,17 +1364,32 @@ router.post(
         // Grade server-side. A skip (picked null) is is_correct=false.
         const isCorrect = body.picked !== null && body.picked === current.correct_answer;
 
-        // CAT step number = (answers already recorded) + 1, counted UNDER THE
-        // LOCK so a racing request can't inflate it (S4).
-        const { rows: answeredCountRows } = await client.query<{ n: string }>(
-          `SELECT count(*)::text AS n FROM diagnostic_responses
-            WHERE run_id = $1 AND answered_at IS NOT NULL`,
-          [params.runId],
-        );
-        const answerNumber = Number(answeredCountRows[0]!.n) + 1;
-        const priorTheta =
-          locked.ability_estimate !== null ? Number(locked.ability_estimate) : SEED_THETA;
-        const updatedTheta = nextTheta(priorTheta, isCorrect, answerNumber);
+        // COVERAGE-ONLY (diagnostic-upgrade Phase A): a hanja answer is
+        // graded and recorded exactly like any other item, but it must NEVER
+        // bump the run's global θ ladder — the hanja corpus caps at L3 (no
+        // L4/L5 rows; see `buildHanjaItem`), so letting it participate would
+        // drag an advanced learner's overall placement toward that ceiling.
+        // It is therefore ALSO excluded from the θ-step ordinal (the
+        // `answerNumber` that drives `stepForAnswer`'s decay): the count
+        // below is of non-hanja answers only, so interleaving 4 hanja items
+        // through the run never dilutes the other dimensions' staircase —
+        // core-skill step N is always "the Nth core-skill answer", regardless
+        // of how many hanja items were answered alongside it.
+        const isHanja = current.section === 'hanja';
+        let updatedTheta: number | null = null;
+        if (!isHanja) {
+          // CAT step number = (non-hanja answers already recorded) + 1,
+          // counted UNDER THE LOCK so a racing request can't inflate it (S4).
+          const { rows: answeredCountRows } = await client.query<{ n: string }>(
+            `SELECT count(*)::text AS n FROM diagnostic_responses
+              WHERE run_id = $1 AND answered_at IS NOT NULL AND section <> 'hanja'`,
+            [params.runId],
+          );
+          const answerNumber = Number(answeredCountRows[0]!.n) + 1;
+          const priorTheta =
+            locked.ability_estimate !== null ? Number(locked.ability_estimate) : SEED_THETA;
+          updatedTheta = nextTheta(priorTheta, isCorrect, answerNumber);
+        }
 
         // Single-shot transition. If a concurrent request already answered this
         // item, rowCount is 0 — abort with 409 and DO NOT bump θ or serve next.
@@ -1191,12 +1402,21 @@ router.post(
         if (upd.rowCount !== 1) {
           throw new ConflictError('responseId does not match the current item');
         }
-        await client.query(
-          `UPDATE diagnostic_runs
-              SET ability_estimate = $2, version = version + 1
-            WHERE id = $1`,
-          [params.runId, thetaToNumeric(updatedTheta)],
-        );
+        if (updatedTheta !== null) {
+          await client.query(
+            `UPDATE diagnostic_runs
+                SET ability_estimate = $2, version = version + 1
+              WHERE id = $1`,
+            [params.runId, thetaToNumeric(updatedTheta)],
+          );
+        } else {
+          // Hanja: still bump the run's optimistic-concurrency counter (a
+          // real state change happened) without touching ability_estimate.
+          await client.query(
+            `UPDATE diagnostic_runs SET version = version + 1 WHERE id = $1`,
+            [params.runId],
+          );
+        }
 
         return {
           isCorrect,
@@ -1502,9 +1722,18 @@ router.post(
       // which is the real evidence the contract asks for — not a one-element
       // array of the final value. The final element equals `ability_estimate`
       // (modulo the 2-dp rounding the column stores) by construction.
+      //
+      // Hanja rows mirror the live /answer handler EXACTLY (coverage-only):
+      // they never advance `runningTheta` and never consume a step ordinal —
+      // `coreAnswerNumber` counts non-hanja answers only, so a hanja row's
+      // trajectory entry simply repeats the θ from the answer before it.
       let runningTheta = SEED_THETA;
-      const thetaTrajectory = respRows.map((r, idx) => {
-        runningTheta = nextTheta(runningTheta, r.is_correct === true, idx + 1);
+      let coreAnswerNumber = 0;
+      const thetaTrajectory = respRows.map((r) => {
+        if (r.section !== 'hanja') {
+          coreAnswerNumber += 1;
+          runningTheta = nextTheta(runningTheta, r.is_correct === true, coreAnswerNumber);
+        }
         return thetaToNumeric(runningTheta);
       });
 

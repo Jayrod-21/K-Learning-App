@@ -20,9 +20,12 @@ export type { ProficiencyLevel } from '../claude/index.js';
 
 /**
  * The five ability dimensions evidence can score. The first four are the
- * diagnostic's DIMENSION_ORDER (services/diagnostic/scoring.ts); 'writing'
- * is evidence-only — sparse and expensive to produce, so read APIs exclude
- * it unless asked (includeWriting).
+ * diagnostic's CORE_DIMENSION_ORDER (services/diagnostic/scoring.ts — the
+ * strict subset of the diagnostic's own DIMENSION_ORDER that has IRT
+ * calibration; `hanja`, added in diagnostic-upgrade Phase A, is
+ * diagnostic-only and deliberately excluded, see that constant's doc);
+ * 'writing' is evidence-only — sparse and expensive to produce, so read APIs
+ * exclude it unless asked (includeWriting).
  */
 export type AbilityDimension = 'reading' | 'listening' | 'vocab' | 'grammar' | 'writing';
 

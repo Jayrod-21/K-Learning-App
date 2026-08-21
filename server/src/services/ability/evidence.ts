@@ -17,7 +17,7 @@
  */
 
 import { query } from '../../db/pool.js';
-import { DIMENSION_ORDER } from '../diagnostic/scoring.js';
+import { CORE_DIMENSION_ORDER } from '../diagnostic/scoring.js';
 import { EVIDENCE_SOURCES, type AbilityDimension, type EvidenceSource } from './anchors.js';
 import {
   normalizeRow,
@@ -109,8 +109,10 @@ export async function getAbilityEvidence(
 
 /**
  * Per-dimension rollup over a user's evidence: one entry per diagnostic
- * dimension (reading/listening/vocab/grammar, in DIMENSION_ORDER), plus
- * 'writing' appended iff `includeWriting`.
+ * dimension (reading/listening/vocab/grammar, in CORE_DIMENSION_ORDER), plus
+ * 'writing' appended iff `includeWriting`. `hanja` (diagnostic-upgrade
+ * Phase A) never appears here — it is coverage-only and outside the
+ * ability/IRT surface (see CORE_DIMENSION_ORDER's doc in scoring.ts).
  */
 export async function getAbilityRollup(
   userId: number,
@@ -123,8 +125,8 @@ export async function getAbilityRollup(
   });
 
   const dimensions: AbilityDimension[] = includeWriting
-    ? [...DIMENSION_ORDER, 'writing']
-    : [...DIMENSION_ORDER];
+    ? [...CORE_DIMENSION_ORDER, 'writing']
+    : [...CORE_DIMENSION_ORDER];
 
   // One accumulator per requested dimension, in emission order. The running
   // sums live beside (not on) the public rollup shape; means finalize below.

@@ -7,6 +7,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  CORE_DIMENSION_ORDER,
+  DIMENSION_ORDER,
   RUBRIC_VERSION,
   dimensionResult,
   estimateForDimension,
@@ -29,8 +31,22 @@ describe('RUBRIC_VERSION', () => {
   it('matches the diagnostic_snapshots semver CHECK', () => {
     expect(RUBRIC_VERSION).toMatch(/^v\d+\.\d+\.\d+$/);
   });
-  it('is bumped to v1.2.0 for the F-002 L1/L2 ladder + low score anchors', () => {
-    expect(RUBRIC_VERSION).toBe('v1.2.0');
+  it('is bumped to v1.3.0 for the diagnostic-upgrade Phase A hanja dimension', () => {
+    expect(RUBRIC_VERSION).toBe('v1.3.0');
+  });
+});
+
+describe('DIMENSION_ORDER / CORE_DIMENSION_ORDER (diagnostic-upgrade Phase A)', () => {
+  it('DIMENSION_ORDER gained hanja as its 5th, trailing member', () => {
+    expect(DIMENSION_ORDER).toEqual(['reading', 'listening', 'vocab', 'grammar', 'hanja']);
+  });
+  it('CORE_DIMENSION_ORDER stays the original 4 — the F-212 ability/IRT surface', () => {
+    // services/ability/{evidence,estimate,recommend}.ts import THIS, not
+    // DIMENSION_ORDER — hanja has no IRT calibration and must never reach
+    // the ability estimator via this constant (see its doc in scoring.ts).
+    expect(CORE_DIMENSION_ORDER).toEqual(['reading', 'listening', 'vocab', 'grammar']);
+    expect(CORE_DIMENSION_ORDER).toEqual(DIMENSION_ORDER.slice(0, 4));
+    expect(CORE_DIMENSION_ORDER).not.toContain('hanja');
   });
 });
 

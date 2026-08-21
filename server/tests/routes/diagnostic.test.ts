@@ -31,6 +31,7 @@ import {
   seedVocabEntry,
   seedKgiuEntry,
   seedDiagnosticSnapshot,
+  seedHanjaCharacter,
   type RegisteredAgent,
 } from '../helpers/seed.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
@@ -57,16 +58,28 @@ beforeEach(async () => {
   );
   // topik_items / topik_tests / vocab_entries / kgiu_entries: clear per-test so
   // each scenario controls exactly what is selectable. corpus_sources is left
-  // alone (idempotent seeding).
+  // alone (idempotent seeding). hanja_characters is normally shared reference
+  // data NOT cleared by a generic beforeEach (see seedHanjaCharacter's own
+  // doc) — but THIS file already locally overrides that posture for
+  // topik/vocab/kgiu, so hanja_characters joins the same local per-test-clear
+  // list (diagnostic-upgrade Phase A): otherwise a test that does not seed
+  // its own hanja rows would inherit leftover rows from whichever earlier
+  // test in this file last called `seedFullPool`, making the diagnostic's
+  // hanja dimension (and the 8-vs-12 `source_kind='generated'` row counts a
+  // few tests below assert) depend on test execution order.
   await pg.pool.query(`TRUNCATE TABLE topik_items, topik_tests CASCADE`);
   await pg.pool.query(`DELETE FROM vocab_entries`);
   await pg.pool.query(`DELETE FROM kgiu_entries`);
+  await pg.pool.query(`TRUNCATE TABLE hanja_characters CASCADE`);
   resetLimiters();
 });
 
-/** Seed a corpus rich enough to serve a full 16-item diagnostic
- *  (ITEMS_PER_DIMENSION = 4 → 4 reading + 4 listening topik rows needed;
- *  one spare each for slack against the already-served exclusion). */
+/** Seed a corpus rich enough to serve a full 20-item diagnostic
+ *  (ITEMS_PER_DIMENSION = 4 × 5 dimensions — reading/listening/vocab/
+ *  grammar/hanja, diagnostic-upgrade Phase A added hanja as the 5th; 4
+ *  reading + 4 listening topik rows needed, one spare each for slack against
+ *  the already-served exclusion; hanja needs >=4 distinct chars per level so
+ *  a 4-item hanja slate never repeats a character within one run). */
 async function seedFullPool(): Promise<void> {
   // 5 reading + 5 listening at L4 (answer index 1 → choice 'a').
   for (let i = 0; i < 5; i += 1) {
@@ -78,6 +91,27 @@ async function seedFullPool(): Promise<void> {
   await seedVocabEntry(pg.pool, { proficiency: 'L3', korean: '낱말' });
   await seedKgiuEntry(pg.pool, { proficiency: 'L4', pattern: '-는 바람에' });
   await seedKgiuEntry(pg.pool, { proficiency: 'L3', pattern: '-기 마련이다' });
+  // hanja: 6 distinct L2 + 6 distinct L3 characters (distinct char/sound/
+  // gloss_en each) — comfortably above the 4 needed to build a 4-choice MC
+  // item (1 answer + 3 distinct-valued distractors) at either level.
+  const l2Chars: ReadonlyArray<{ char: string; sound: string; glossEn: string }> = [
+    { char: '學', sound: '학', glossEn: 'learn' },
+    { char: '校', sound: '교', glossEn: 'school' },
+    { char: '生', sound: '생', glossEn: 'life' },
+    { char: '大', sound: '대', glossEn: 'big' },
+    { char: '國', sound: '국', glossEn: 'country' },
+    { char: '人', sound: '인', glossEn: 'person' },
+  ];
+  const l3Chars: ReadonlyArray<{ char: string; sound: string; glossEn: string }> = [
+    { char: '水', sound: '수', glossEn: 'water' },
+    { char: '火', sound: '화', glossEn: 'fire' },
+    { char: '木', sound: '목', glossEn: 'tree' },
+    { char: '金', sound: '금', glossEn: 'gold' },
+    { char: '土', sound: '토', glossEn: 'earth' },
+    { char: '山', sound: '산', glossEn: 'mountain' },
+  ];
+  for (const c of l2Chars) await seedHanjaCharacter(pg.pool, { ...c, level: 'L2' });
+  for (const c of l3Chars) await seedHanjaCharacter(pg.pool, { ...c, level: 'L3' });
 }
 
 /**
@@ -143,7 +177,7 @@ describe('POST /diagnostic — start', () => {
     const res = await agent.post('/diagnostic').send({});
     expect(res.status).toBe(201);
     expect(typeof res.body.runId).toBe('number');
-    expect(res.body.progress).toEqual({ ordinal: 1, total: 16 });
+    expect(res.body.progress).toEqual({ ordinal: 1, total: 20 });
 
     const item = res.body.item;
     expect(item.ordinal).toBe(1);
@@ -323,13 +357,13 @@ describe('POST /diagnostic/:runId/answer — grading (reveal only, B-006)', () =
     // item is served by the separate /next call.
     expect(res.body).not.toHaveProperty('next');
     expect(res.body.done).toBe(false);
-    expect(res.body.progress).toEqual({ ordinal: 1, total: 16 });
+    expect(res.body.progress).toEqual({ ordinal: 1, total: 20 });
 
     const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
     expect(nxt.status).toBe(200);
     expect(nxt.body.next).not.toBeNull();
     expect(nxt.body.next.section).toBe('listening'); // schedule[1]
-    expect(nxt.body.progress).toEqual({ ordinal: 2, total: 16 });
+    expect(nxt.body.progress).toEqual({ ordinal: 2, total: 20 });
     // The next item is still answer-stripped.
     expect(nxt.body.next).not.toHaveProperty('correctAnswer');
     expect(nxt.body.next).not.toHaveProperty('correct_answer');
@@ -453,13 +487,13 @@ describe('POST /diagnostic/:runId/answer — concurrent double-answer (B1)', () 
     expect(served.status).toBe(200);
     expect(served.body.next).not.toBeNull();
 
-    // θ after one correct answer at SEED_THETA (4.0), step n=1 (1.0) → 5.0.
+    // θ after one correct answer at SEED_THETA (2.0), step n=1 (1.5) → 3.5.
     const thetaAfterFirst = await pg.pool.query<{ ability_estimate: string }>(
       `SELECT ability_estimate::text AS ability_estimate
          FROM diagnostic_runs WHERE id = $1`,
       [runId],
     );
-    expect(Number(thetaAfterFirst.rows[0]?.ability_estimate)).toBeCloseTo(5.0);
+    expect(Number(thetaAfterFirst.rows[0]?.ability_estimate)).toBeCloseTo(3.5);
 
     // Count in-flight (unanswered) responses: exactly one — item #2.
     const inflightBefore = await pg.pool.query<{ n: string }>(
@@ -484,7 +518,7 @@ describe('POST /diagnostic/:runId/answer — concurrent double-answer (B1)', () 
          FROM diagnostic_runs WHERE id = $1`,
       [runId],
     );
-    expect(Number(thetaAfterReplay.rows[0]?.ability_estimate)).toBeCloseTo(5.0);
+    expect(Number(thetaAfterReplay.rows[0]?.ability_estimate)).toBeCloseTo(3.5);
 
     // Still exactly one item in flight — the replay served no second item.
     const inflightAfter = await pg.pool.query<{ n: string }>(
@@ -682,10 +716,10 @@ describe('answer/next decoupling (B-006)', () => {
       const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
       current = nxt.body.next;
     }
-    // The full 16-slot schedule was servable, so the final grade says done and
+    // The full 20-slot schedule was servable, so the final grade says done and
     // points progress at the last ordinal.
     expect(lastAnswer?.done).toBe(true);
-    expect(lastAnswer?.progress).toEqual({ ordinal: 16, total: 16 });
+    expect(lastAnswer?.progress).toEqual({ ordinal: 20, total: 20 });
   });
 });
 
@@ -791,7 +825,7 @@ describe('full run → finish → latest', () => {
     return { runId, snapshot: fin.body.snapshot };
   }
 
-  it('produces a 4-dimension snapshot (writing omitted) and is idempotent', async () => {
+  it('produces a 5-dimension snapshot (writing omitted, hanja coverage-only) and is idempotent', async () => {
     await seedFullPool();
     const { agent, userId } = await registerUser(t.app, pg.pool);
     const { runId, snapshot } = await runToFinish(agent, 'a');
@@ -803,7 +837,8 @@ describe('full run → finish → latest', () => {
       scoreHigh: number;
     }>;
     const keys = dims.map((d) => d.key).sort();
-    expect(keys).toEqual(['grammar', 'listening', 'reading', 'vocab']);
+    // diagnostic-upgrade Phase A: hanja joins the 4 original dims.
+    expect(keys).toEqual(['grammar', 'hanja', 'listening', 'reading', 'vocab']);
     // No writing dimension (deferred to Pass 8).
     expect(keys).not.toContain('writing');
     for (const d of dims) {
@@ -857,10 +892,10 @@ describe('full run → finish → latest', () => {
       `SELECT rubric_version, evidence FROM diagnostic_snapshots WHERE user_id = $1`,
       [userId],
     );
-    expect(snapRow.rows[0]?.rubric_version).toBe('v1.2.0');
+    expect(snapRow.rows[0]?.rubric_version).toBe('v1.3.0');
     const stats = snapRow.rows[0]?.evidence.dimensionStats;
     expect(stats).toBeDefined();
-    expect(Object.keys(stats!).sort()).toEqual(['grammar', 'listening', 'reading', 'vocab']);
+    expect(Object.keys(stats!).sort()).toEqual(['grammar', 'hanja', 'listening', 'reading', 'vocab']);
     expect(stats!['reading']).toEqual({
       n: 4,
       correct: 4,
@@ -905,10 +940,20 @@ describe('full run → finish → latest', () => {
     );
     expect(snapCount.rows[0]?.n).toBe('1');
 
-    // /latest now returns the populated snapshot.
+    // /latest now returns the populated snapshot — including hanja, which
+    // has NO dedicated diagnostic_snapshots column (unlike reading/listening/
+    // vocab/grammar): buildSnapshotDTO must source its estimate from
+    // evidence.dimensionStats alone, and this proves that round-trip.
     const latest = await agent.get('/diagnostic/latest');
     expect(latest.status).toBe(200);
-    expect((latest.body.dimensions as unknown[]).length).toBe(4);
+    expect((latest.body.dimensions as unknown[]).length).toBe(5);
+    expect((latest.body.dimensions as Array<{ key: string }>).map((d) => d.key).sort()).toEqual([
+      'grammar',
+      'hanja',
+      'listening',
+      'reading',
+      'vocab',
+    ]);
   });
 
   it('an all-wrong run scores every dimension lower than an all-correct run', async () => {
@@ -1018,8 +1063,8 @@ describe('empty pool handling', () => {
     expect(['vocab', 'grammar']).toContain(start.body.item.section);
 
     // Answer through to finish, fetching each following item via /next. The
-    // empty reading/listening pools end the run early: /next returns null
-    // before the full 8-slot schedule is used.
+    // empty reading/listening/hanja pools end the run early: /next returns
+    // null before the full 20-slot schedule is used.
     let current: { responseId: number } | null = start.body.item;
     const runId = start.body.runId;
     while (current !== null) {
@@ -1245,9 +1290,15 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
     // which keeps the trajectory deterministic even for generated items,
     // whose correct choice is shuffled to a random position ('b' would be
     // right ~25% of the time).
-    // θ staircase, all wrong: 4.0 → 3.0 → 2.1 → 1.3 → 1.0 (clamped) → stays.
-    // So served bands run L4, L3, L2, L1, L1, … — a beginner gets real L1/L2
-    // items instead of the old θ-floor at 2.0 / 'basic'.
+    // θ staircase, all wrong (diagnostic-upgrade Phase A start-easy ramp):
+    // seed 2.0, step1 = 1.5 → 2.0 − 1.5 = 0.5 → clamped to 1.0 (THETA_MIN) —
+    // a struggling learner now floors after a SINGLE wrong answer (the lower
+    // seed + steeper early step reach both ends of the scale fast; see
+    // cat.test.ts's reachability tests). So served bands run L2, L1, L1, … —
+    // a beginner gets real L1/L2 items instead of the old θ-floor at 2.0 /
+    // 'basic'. Hanja items (schedule ordinals 5/10/15/20) interleave too but
+    // are COVERAGE-ONLY — graded and scored, but excluded from this θ
+    // ladder, so they never move it off the floor (verified below).
     const start = await agent.post('/diagnostic').send({});
     expect(start.status).toBe(201);
     const runId = start.body.runId;
@@ -1279,21 +1330,35 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
     // into its prompt) — proving targetLevelForTheta no longer floors at L3.
     expect(servedPrompts.some((p) => p.includes('(L1)'))).toBe(true);
 
-    // θ descended to the new 1.0 floor (pre-F-002 it froze at 2.00).
+    // θ descended to the new 1.0 floor (pre-F-002 it froze at 2.00) — a
+    // SINGLE wrong answer under the new seed/step, and every hanja answer in
+    // between never nudged it (coverage-only: /answer skips nextTheta for
+    // section='hanja').
     const run = await pg.pool.query<{ ability_estimate: string }>(
       `SELECT ability_estimate::text AS ability_estimate FROM diagnostic_runs WHERE id = $1`,
       [runId],
     );
     expect(run.rows[0]?.ability_estimate).toBe('1.00');
 
-    // Finish: the generated dims were served almost entirely at L1 difficulty
-    // (vocab difficulties 2,1,1,1 → estimate clamps at 1), so their score is
-    // the new 1→10 low anchor — anchored, not extrapolated.
+    // Finish: the generated dims were served ENTIRELY at L1 difficulty (θ
+    // floored before the first vocab/grammar ordinal was even served: 1,1,1,1
+    // each → estimate clamps at 1), so their score is the new 1→10 low
+    // anchor — anchored, not extrapolated.
     const fin = await agent.post(`/diagnostic/${runId}/finish`).send({});
     expect(fin.status).toBe(200);
     const dims = fin.body.snapshot.dimensions as Array<{ key: string; score: number }>;
     expect(dims.find((d) => d.key === 'vocab')?.score).toBe(10);
     expect(dims.find((d) => d.key === 'grammar')?.score).toBe(10);
+
+    // Hanja still produced its OWN dimensionStats/snapshot entry (coverage —
+    // it was answered, just never fed the θ ladder above). Served at L2 the
+    // whole run (band L1 → preferredHanjaLevel L2) and all-wrong (skip), so
+    // its estimate/score sit at the same kind of floor as vocab/grammar —
+    // this is what "coverage-only" delivers: a real read-out, decoupled θ.
+    const hanja = dims.find((d) => d.key === 'hanja');
+    expect(hanja).toBeDefined();
+    expect(hanja!.score).toBeGreaterThanOrEqual(0);
+    expect(hanja!.score).toBeLessThanOrEqual(100);
   });
 
   it('pickTopikRow prefers TOPIK I items for L1/L2 bands and falls back to any when the pool runs short', async () => {
@@ -1316,12 +1381,17 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
     const { agent } = await registerUser(t.app, pg.pool);
 
     // All-skip run (a skip is deterministically incorrect): ordinal 1
-    // (reading) serves at band L4 → the proficiency attempt only matches the
-    // four TOPIK II rows, so the TOPIK I item survives to ordinal 5, where
-    // θ = 1.00 → band L1 → the TOPIK I-targeted attempt matches EXACTLY that
-    // row (deterministic despite ORDER BY random()). Ordinals 9/13 (reading,
-    // still L1) find the TOPIK I pool exhausted by the already-served
-    // exclusion and must fall back to "any".
+    // (reading) serves at SEED_THETA=2.0 → band L2 (diagnostic-upgrade Phase
+    // A start-easy ramp — L2 was L4 before) → L1/L2 bands skip the
+    // proficiency-targeted attempt entirely and go straight to the TOPIK-I
+    // paper preference, which matches EXACTLY the one untagged TOPIK I row
+    // (deterministic despite ORDER BY random()) — so ordinal 1 itself is the
+    // TOPIK I item this time, not a later slot. θ floors to 1.00 after that
+    // very first (wrong) answer, so every later reading slot (ordinals 6,
+    // 11, 16 — the schedule is now 5-wide: reading/listening/vocab/grammar/
+    // hanja) serves at L1 too, but the TOPIK-I-targeted attempt is empty by
+    // then (the one TOPIK I row was already excluded) and falls back to
+    // "any", which is the 4-row TOPIK II pool.
     const start = await agent.post('/diagnostic').send({});
     expect(start.status).toBe(201);
     const runId = start.body.runId;
@@ -1354,14 +1424,18 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
       [runId],
     );
     // All four reading slots were served (the fallback kept the run whole).
-    expect(served.rows.map((r) => r.ordinal)).toEqual([1, 5, 9, 13]);
-    // Ordinal 5 — the first L1-band reading slot — is THE TOPIK I item.
-    const atOrd5 = served.rows.find((r) => r.ordinal === 5);
-    expect(atOrd5?.source_ref).toBe(String(topik1Id));
-    expect(atOrd5?.topik_level).toBe('TOPIK I');
-    // Ordinals 9/13: TOPIK I exhausted → band→any fallback served TOPIK II.
-    expect(served.rows.find((r) => r.ordinal === 9)?.topik_level).toBe('TOPIK II');
-    expect(served.rows.find((r) => r.ordinal === 13)?.topik_level).toBe('TOPIK II');
+    // 5-wide schedule (reading/listening/vocab/grammar/hanja): reading lands
+    // on ordinals 1, 6, 11, 16.
+    expect(served.rows.map((r) => r.ordinal)).toEqual([1, 6, 11, 16]);
+    // Ordinal 1 — served at the seed's L2 band — is THE TOPIK I item.
+    const atOrd1 = served.rows.find((r) => r.ordinal === 1);
+    expect(atOrd1?.source_ref).toBe(String(topik1Id));
+    expect(atOrd1?.topik_level).toBe('TOPIK I');
+    // Ordinals 6/11/16: TOPIK I exhausted after ordinal 1 → band→any
+    // fallback served TOPIK II for the rest of the run.
+    expect(served.rows.find((r) => r.ordinal === 6)?.topik_level).toBe('TOPIK II');
+    expect(served.rows.find((r) => r.ordinal === 11)?.topik_level).toBe('TOPIK II');
+    expect(served.rows.find((r) => r.ordinal === 16)?.topik_level).toBe('TOPIK II');
   });
 
   it('L1/L2 vocab/grammar items seed from basic-tagged content, not a random any-level row (fixpass B-1)', async () => {
@@ -1383,8 +1457,14 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
     }
     const { agent } = await registerUser(t.app, pg.pool);
 
-    // All-skip staircase: vocab slots (ordinals 3,7,11,15) serve at bands
-    // L2,L1,L1,L1; grammar slots (4,8,12,16) at L1×4 — ALL beginner-band.
+    // All-skip staircase (diagnostic-upgrade Phase A ramp: seed 2.0, step1
+    // 1.5 → floors to θ=1.0/L1 after the very first wrong answer): vocab
+    // slots (5-wide schedule ordinals 3,8,13,18) and grammar slots (4,9,14,
+    // 19) all serve at band L1 — ALL beginner-band, all four items each.
+    // hanja_characters is unseeded here, so ordinals 5/10/15/20 (hanja) are
+    // silently skipped — the `source_kind='generated'` query below stays
+    // vocab+grammar only (8 rows), unaffected by hanja sharing that
+    // source_kind (see seedFullPool's beforeEach-truncate note above).
     const runId = await runAllSkip(agent);
 
     const seeds = await pg.pool.query<{ section: string; source_ref: string; difficulty: string }>(
@@ -1459,17 +1539,38 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
   });
 
   it('pickTopikRow prefers TOPIK II items for L3+ bands and falls back to any when TOPIK II runs short (fixpass SF-2)', async () => {
-    // Reading pool, ALL proficiency-untagged (the real corpus shape): ONE
-    // TOPIK II item + nine TOPIK I items. Ordinal 1 serves at band L4
-    // (SEED_THETA) — the paper-targeted attempt matches exactly the TOPIK II
-    // row (deterministic despite ORDER BY random()); without the symmetric
-    // preference the "any" pool picked uniformly (1/10 chance of TOPIK II).
-    const topik2Id = await seedTopikItem(pg.pool, {
-      section: 'reading',
-      topikLevel: 'TOPIK II',
-      proficiency: null,
-      answer: 1,
-    });
+    // Reading pool, ALL proficiency-untagged (the real corpus shape): TWO
+    // TOPIK II items + nine TOPIK I items — thin enough that TOPIK II runs
+    // dry before the run's 4 reading slots are served, exercising the
+    // any-fallback in the SAME test as the preference itself.
+    //
+    // Ordinal 1 is unavoidably served at SEED_THETA=2.0 → band L2
+    // (diagnostic-upgrade Phase A start-easy ramp — this was L4 before the
+    // retune), which prefers TOPIK I, not TOPIK II — that slot is covered by
+    // the L1/L2 test above, not here. Instead this test drives reading +
+    // listening CORRECT (deterministic — every seeded row uses answer:1 →
+    // choice 'a') and vocab + grammar WRONG (skip — their generated choice
+    // order is shuffled server-side, so picking a fixed id is never
+    // deterministically correct), which climbs θ out of L2 into L3+
+    // territory by the run's 2nd reading slot and keeps it there for the
+    // 3rd/4th too (walked exactly in cat.test.ts-style math in the PR
+    // description; not re-pinned ordinal-by-ordinal here since the new
+    // steeper step makes that fragile to restate — the OBSERVABLE property
+    // this test pins is paper selection, not the θ trajectory itself).
+    const topik2Ids = [
+      await seedTopikItem(pg.pool, {
+        section: 'reading',
+        topikLevel: 'TOPIK II',
+        proficiency: null,
+        answer: 1,
+      }),
+      await seedTopikItem(pg.pool, {
+        section: 'reading',
+        topikLevel: 'TOPIK II',
+        proficiency: null,
+        answer: 1,
+      }),
+    ];
     for (let i = 0; i < 9; i += 1) {
       await seedTopikItem(pg.pool, {
         section: 'reading',
@@ -1485,7 +1586,24 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
     await seedKgiuEntry(pg.pool, { proficiency: 'L4', pattern: '-는 바람에' });
     const { agent } = await registerUser(t.app, pg.pool);
 
-    const runId = await runAllSkip(agent);
+    const start = await agent.post('/diagnostic').send({});
+    expect(start.status).toBe(201);
+    const runId = start.body.runId;
+    let current: { responseId: number; section: string } | null = start.body.item;
+    while (current !== null) {
+      const picked = current.section === 'reading' || current.section === 'listening' ? 'a' : null;
+      const ans = await agent
+        .post(`/diagnostic/${runId}/answer`)
+        .send({ responseId: current.responseId, picked });
+      expect(ans.status).toBe(200);
+      if (ans.body.done === true) {
+        current = null;
+        continue;
+      }
+      const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
+      expect(nxt.status).toBe(200);
+      current = nxt.body.next;
+    }
 
     const served = await pg.pool.query<{
       ordinal: number;
@@ -1500,20 +1618,33 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
         ORDER BY r.ordinal`,
       [runId],
     );
-    expect(served.rows.map((r) => r.ordinal)).toEqual([1, 5, 9, 13]);
-    // Ordinal 1 — the L4-band slot — is THE TOPIK II item, not a random draw
-    // from a 90%-TOPIK I pool.
-    const atOrd1 = served.rows.find((r) => r.ordinal === 1);
-    expect(atOrd1?.source_ref).toBe(String(topik2Id));
-    expect(atOrd1?.topik_level).toBe('TOPIK II');
-    // Later reading slots (θ at the 1.0 floor → band L1) prefer TOPIK I.
-    expect(served.rows.find((r) => r.ordinal === 5)?.topik_level).toBe('TOPIK I');
+    // All four reading slots served (5-wide schedule: reading lands on
+    // ordinals 1, 6, 11, 16).
+    expect(served.rows).toHaveLength(4);
+    expect(served.rows.map((r) => r.ordinal)).toEqual([1, 6, 11, 16]);
+
+    const laterRows = served.rows.filter((r) => r.ordinal !== 1);
+    const topikIIRefs = new Set(topik2Ids.map(String));
+    const laterTopikII = laterRows.filter((r) => topikIIRefs.has(r.source_ref));
+    const laterTopikI = laterRows.filter((r) => !topikIIRefs.has(r.source_ref));
+    // Both TOPIK II rows were consumed by later (L3+-band) slots — the
+    // preference worked, not a random 2-in-11 coincidence.
+    expect(laterTopikII).toHaveLength(2);
+    // The pool being only 2-deep forced at least one later slot to fall back
+    // to TOPIK I (the any-fallback).
+    expect(laterTopikI.length).toBeGreaterThanOrEqual(1);
+    for (const row of laterTopikI) {
+      expect(row.topik_level).toBe('TOPIK I');
+    }
   });
 
   it('an L3+ band with NO TOPIK II items still serves (paper preference falls back to any) (fixpass SF-2)', async () => {
-    // Only TOPIK I, untagged — both targeted attempts at band L4 are empty;
-    // the final "any" attempt must keep the run whole.
-    for (let i = 0; i < 2; i += 1) {
+    // Reading: ONLY TOPIK I, untagged — the paper-preference attempt for an
+    // L3+ band matches ZERO rows here (no TOPIK II item exists at all in
+    // this pool, unlike the sibling test above which merely runs a thin
+    // TOPIK II pool dry); the final "any" attempt must still keep the run
+    // whole.
+    for (let i = 0; i < 4; i += 1) {
       await seedTopikItem(pg.pool, {
         section: 'reading',
         topikLevel: 'TOPIK I',
@@ -1521,26 +1652,60 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
         answer: 1,
       });
     }
+    for (let i = 0; i < 4; i += 1) {
+      await seedTopikItem(pg.pool, { section: 'listening', proficiency: null, answer: 1 });
+    }
+    await seedVocabEntry(pg.pool, { proficiency: 'L4', korean: '단어' });
+    await seedKgiuEntry(pg.pool, { proficiency: 'L4', pattern: '-는 바람에' });
     const { agent } = await registerUser(t.app, pg.pool);
 
+    // Ordinal 1 is unavoidably served at the seed's L2 band, which prefers
+    // TOPIK I directly (no fallback needed — not what this test is about;
+    // see the L1/L2 test above). Correct reading + listening answers
+    // (deterministic — every row here uses answer:1 → choice 'a') climb θ
+    // into L3+ by the run's 2nd reading slot (ordinal 6, the same
+    // trajectory the sibling "prefers TOPIK II" test walks through), so
+    // THAT slot is the one that actually exercises the "TOPIK II attempt
+    // matches nothing → falls to any" branch.
     const start = await agent.post('/diagnostic').send({});
     expect(start.status).toBe(201);
-    expect(start.body.item.section).toBe('reading');
-    const served = await pg.pool.query<{ topik_level: string }>(
-      `SELECT t.topik_level
+    const runId = start.body.runId;
+    let current: { responseId: number; section: string; ordinal: number } | null = start.body.item;
+    while (current !== null) {
+      const picked = current.section === 'reading' || current.section === 'listening' ? 'a' : null;
+      const ans = await agent
+        .post(`/diagnostic/${runId}/answer`)
+        .send({ responseId: current.responseId, picked });
+      expect(ans.status).toBe(200);
+      if (ans.body.done === true || current.ordinal >= 6) {
+        current = null;
+        continue;
+      }
+      const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
+      expect(nxt.status).toBe(200);
+      current = nxt.body.next;
+    }
+
+    const served = await pg.pool.query<{ ordinal: number; topik_level: string }>(
+      `SELECT r.ordinal, t.topik_level
          FROM diagnostic_responses r
          JOIN topik_items i ON i.id::text = r.source_ref
          JOIN topik_tests t ON t.id = i.topik_test_id
-        WHERE r.run_id = $1 AND r.ordinal = 1`,
-      [start.body.runId],
+        WHERE r.run_id = $1 AND r.section = 'reading'
+        ORDER BY r.ordinal`,
+      [runId],
     );
-    expect(served.rows[0]?.topik_level).toBe('TOPIK I');
+    expect(served.rows.map((r) => r.ordinal)).toEqual([1, 6]);
+    // Ordinal 6 — served at an L3+ band (θ climbed via the correct reading/
+    // listening answers) with zero TOPIK II rows in the pool — still served,
+    // via the any-fallback, never starved.
+    expect(served.rows[1]?.topik_level).toBe('TOPIK I');
   });
 
   it('an old v1.1.0 snapshot still loads after the RUBRIC_VERSION bump (band intact, no throw)', async () => {
     // A snapshot written by the F-011 (v1.1.0) rubric, exactly as /finish
     // persisted it then: estimate columns + evidence.dimensionStats. History
-    // reads are version-agnostic — bumping RUBRIC_VERSION to v1.2.0 must not
+    // reads are version-agnostic — bumping RUBRIC_VERSION to v1.3.0 must not
     // strand old rows.
     const { agent, userId } = await registerUser(t.app, pg.pool);
     const snapId = await seedDiagnosticSnapshot(pg.pool, userId, { reading: 4.75, vocab: 4 });
@@ -1581,6 +1746,147 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
     const hist = await agent.get('/diagnostic/history');
     expect(hist.status).toBe(200);
     expect((hist.body.snapshots as unknown[]).length).toBe(1);
+  });
+});
+
+describe('hanja — coverage-only dimension (diagnostic-upgrade Phase A)', () => {
+  /** Seed just enough for a run that reaches the hanja ordinal: reading/
+   *  listening pools (topik) + vocab/grammar seeds (Claude stub) + a small
+   *  distinct-valued L2 hanja pool (>=4 distinct char/sound/gloss_en rows —
+   *  1 answer + 3 distractors). */
+  async function seedForHanja(): Promise<void> {
+    for (let i = 0; i < 5; i += 1) {
+      await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4', answer: 1 });
+      await seedTopikItem(pg.pool, { section: 'listening', proficiency: 'L4', answer: 1 });
+    }
+    await seedVocabEntry(pg.pool, { proficiency: 'L4', korean: '단어' });
+    await seedKgiuEntry(pg.pool, { proficiency: 'L4', pattern: '-는 바람에' });
+    const l2Chars: ReadonlyArray<{ char: string; sound: string; glossEn: string }> = [
+      { char: '學', sound: '학', glossEn: 'learn' },
+      { char: '校', sound: '교', glossEn: 'school' },
+      { char: '生', sound: '생', glossEn: 'life' },
+      { char: '大', sound: '대', glossEn: 'big' },
+      { char: '國', sound: '국', glossEn: 'country' },
+    ];
+    for (const c of l2Chars) await seedHanjaCharacter(pg.pool, { ...c, level: 'L2' });
+  }
+
+  /** Drive a run with all-skip answers up to (not including) ordinal
+   *  `target`, returning the still-unanswered item AT that ordinal. */
+  async function serveToOrdinal(
+    agent: RegisteredAgent['agent'],
+    target: number,
+  ): Promise<{
+    runId: number;
+    item: {
+      responseId: number;
+      ordinal: number;
+      section: string;
+      kind: string;
+      choices: Array<{ id: string; kr: string; en: string }>;
+    };
+  }> {
+    const start = await agent.post('/diagnostic').send({});
+    expect(start.status).toBe(201);
+    const runId = start.body.runId as number;
+    let current = start.body.item;
+    while (current.ordinal < target) {
+      const ans = await agent
+        .post(`/diagnostic/${runId}/answer`)
+        .send({ responseId: current.responseId, picked: null });
+      expect(ans.status).toBe(200);
+      const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
+      expect(nxt.status).toBe(200);
+      current = nxt.body.next;
+    }
+    return { runId, item: current };
+  }
+
+  it('serves a well-formed 4-choice MC item at the hanja ordinal — the section CHECK accepts it', async () => {
+    await seedForHanja();
+    const { agent } = await registerUser(t.app, pg.pool);
+    // 5-wide schedule (reading/listening/vocab/grammar/hanja): ordinal 5 is
+    // the run's first hanja slot.
+    const { item } = await serveToOrdinal(agent, 5);
+
+    expect(item.section).toBe('hanja');
+    expect(['hanja-reading', 'hanja-meaning']).toContain(item.kind);
+    expect(item.choices).toHaveLength(4);
+    expect(item.choices.map((c) => c.id).sort()).toEqual(['a', 'b', 'c', 'd']);
+    // Distractors are distinct-valued — no two choices read identically.
+    const texts = item.choices.map((c) => c.kr);
+    expect(new Set(texts).size).toBe(4);
+    // Answer-stripped like every other item — the security property holds
+    // for hanja too.
+    expect(item).not.toHaveProperty('correctAnswer');
+    expect(item).not.toHaveProperty('explain');
+    for (const c of item.choices) {
+      expect(c).not.toHaveProperty('correct');
+    }
+  });
+
+  it("a hanja answer does NOT bump θ (coverage-only) but DOES record the character's real level and produce a dimensionStats entry", async () => {
+    await seedForHanja();
+    const { agent } = await registerUser(t.app, pg.pool);
+    const { runId, item } = await serveToOrdinal(agent, 5);
+
+    const before = await pg.pool.query<{ ability_estimate: string | null }>(
+      `SELECT ability_estimate::text AS ability_estimate FROM diagnostic_runs WHERE id = $1`,
+      [runId],
+    );
+    const thetaBefore = before.rows[0]?.ability_estimate;
+
+    const ans = await agent
+      .post(`/diagnostic/${runId}/answer`)
+      .send({ responseId: item.responseId, picked: 'a' });
+    expect(ans.status).toBe(200);
+
+    const after = await pg.pool.query<{ ability_estimate: string | null }>(
+      `SELECT ability_estimate::text AS ability_estimate FROM diagnostic_runs WHERE id = $1`,
+      [runId],
+    );
+    // θ is UNCHANGED by the hanja answer, whether it was graded correct or
+    // wrong — coverage-only excludes hanja from the global ladder entirely.
+    expect(after.rows[0]?.ability_estimate).toBe(thetaBefore);
+
+    // The served item's persisted difficulty is the CHARACTER'S real corpus
+    // level (2, for L2 — seedForHanja seeds L2 chars only), NOT derived from
+    // the CAT band at serve time (which was L1 by ordinal 5, after 4 wrong
+    // core answers floored θ — see the F-002 describe block above for the
+    // exact staircase).
+    const stored = await pg.pool.query<{ difficulty: string; section: string }>(
+      `SELECT difficulty::text AS difficulty, section::text AS section
+         FROM diagnostic_responses WHERE id = $1`,
+      [item.responseId],
+    );
+    expect(stored.rows[0]?.section).toBe('hanja');
+    expect(Number(stored.rows[0]?.difficulty)).toBe(2);
+
+    // Finish the run (skip everything remaining) and confirm hanja still
+    // gets its own dimensionStats entry in the snapshot — coverage-only
+    // means "excluded from θ", never "excluded from the read-out".
+    const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
+    expect(nxt.status).toBe(200);
+    let current: { responseId: number } | null = nxt.body.next;
+    while (current !== null) {
+      const a = await agent
+        .post(`/diagnostic/${runId}/answer`)
+        .send({ responseId: current.responseId, picked: null });
+      expect(a.status).toBe(200);
+      if (a.body.done === true) {
+        current = null;
+        continue;
+      }
+      const n = await agent.post(`/diagnostic/${runId}/next`).send({});
+      current = n.body.next;
+    }
+    const fin = await agent.post(`/diagnostic/${runId}/finish`).send({});
+    expect(fin.status).toBe(200);
+    const dims = fin.body.snapshot.dimensions as Array<{ key: string; score: number }>;
+    const hanja = dims.find((d) => d.key === 'hanja');
+    expect(hanja).toBeDefined();
+    expect(hanja!.score).toBeGreaterThanOrEqual(0);
+    expect(hanja!.score).toBeLessThanOrEqual(100);
   });
 });
 
@@ -1707,9 +2013,10 @@ describe('F-119/F-206 — real listening audio on the diagnostic', () => {
   });
 
   it('a TOPIK I listening item resolves the level-1 stream path', async () => {
-    // Only a TOPIK I candidate exists — band L4 prefers TOPIK II but its
-    // targeted attempts come up empty and the final "any" attempt serves
-    // this one deterministically (the sole row in the pool).
+    // Only a TOPIK I candidate exists. Ordinal 2 (listening) serves after a
+    // wrong ordinal-1 answer has floored θ to 1.0/L1 (diagnostic-upgrade
+    // Phase A ramp), so the TOPIK-I-paper-targeted attempt matches this row
+    // directly — deterministic either way (it is the sole row in the pool).
     await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4', answer: 1 });
     await seedTopikItem(pg.pool, {
       section: 'listening',

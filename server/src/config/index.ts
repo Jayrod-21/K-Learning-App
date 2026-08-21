@@ -392,7 +392,13 @@ const EnvSchema = z.object({
   // Rate limits (per window per IP)
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
   RATE_LIMIT_CHEAP_MAX: z.coerce.number().int().positive().default(120),
-  RATE_LIMIT_EXPENSIVE_MAX: z.coerce.number().int().positive().default(20),
+  // 30 (was 20): the diagnostic serves 20 items/run, each of which costs one
+  // expensive-bucket call (POST /diagnostic start + a /diagnostic/:id/next per
+  // subsequent item — diagnostic-upgrade Phase A grew the run 16→20). A 20-call
+  // run left ZERO headroom under a 20 cap, so any client retry or refresh mid-run
+  // 429'd. 30 covers a full run plus retries without loosening abuse protection
+  // meaningfully.
+  RATE_LIMIT_EXPENSIVE_MAX: z.coerce.number().int().positive().default(30),
   RATE_LIMIT_AUTH_MAX: z.coerce.number().int().positive().default(10),
   // Audio streaming: one listening session fires many Range requests (each seek
   // = several partials), so audio gets its OWN, higher, per-user bucket rather

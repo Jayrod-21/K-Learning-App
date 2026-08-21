@@ -183,10 +183,10 @@ describe('rankRecommendations — Stage A winner', () => {
     expect(recommendation?.reasonCode).toBe('exploration');
   });
 
-  it('two SUFFICIENT dimensions with exactly equal Stage-A scores resolve by DIMENSION_ORDER (reading < listening < vocab < grammar)', () => {
+  it('two SUFFICIENT dimensions with exactly equal Stage-A scores resolve by CORE_DIMENSION_ORDER (reading < listening < vocab < grammar)', () => {
     // Identical θ / se / dueCount on all four → every Stage-A score is
     // exactly equal (deficit 0 against a shared θ_ref, same uncertainty), so
-    // the ONLY thing ordering them is the deterministic DIMENSION_ORDER
+    // the ONLY thing ordering them is the deterministic CORE_DIMENSION_ORDER
     // tie-break — no md5 involvement at Stage A.
     const { recommendation, alternatives } = rank({
       dimensions: [

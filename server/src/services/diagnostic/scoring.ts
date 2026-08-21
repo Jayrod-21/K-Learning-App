@@ -21,12 +21,41 @@
  *  low anchors (1→10, 2→25) so L1/L2 scores are anchored, not extrapolated.
  *  (The anchor VALUES coincide with the old extrapolation, but estimates in
  *  [1, 2.5) now occur in real runs; F-010 history must compare like
- *  versions.) */
-export const RUBRIC_VERSION = 'v1.2.0';
+ *  versions.)
+ *
+ *  v1.3.0 (diagnostic-upgrade Phase A): `hanja` joins DIMENSION_ORDER as a
+ *  COVERAGE-ONLY dimension — it is scored (estimate/score/band) exactly like
+ *  the other four, but its responses never bump the run's global θ ladder
+ *  (see `routes/diagnostic.ts`'s `/answer` handler) because the hanja corpus
+ *  caps out at L3 (no L4/L5 rows) and letting it participate in θ would drag
+ *  an advanced learner's overall placement toward that ceiling. No formula
+ *  here changed — the bump is purely additive (a 5th key), so old snapshots
+ *  (no `hanja` estimate) still compare cleanly against new ones on every
+ *  OTHER dimension; only cross-version hanja comparisons are meaningless
+ *  (the dimension didn't exist before v1.3.0). */
+export const RUBRIC_VERSION = 'v1.3.0';
 
-/** The four diagnostic dimensions, in the fixed display order. */
-export const DIMENSION_ORDER = ['reading', 'listening', 'vocab', 'grammar'] as const;
+/** The five diagnostic dimensions, in the fixed display order. `hanja` is
+ *  coverage-only (see the v1.3.0 rubric note above) — it is scored the same
+ *  way as the other four but excluded from the global θ ladder. */
+export const DIMENSION_ORDER = ['reading', 'listening', 'vocab', 'grammar', 'hanja'] as const;
 export type DiagnosticDimensionKey = (typeof DIMENSION_ORDER)[number];
+
+/**
+ * The FOUR "ability" dimensions — the strict subset of DIMENSION_ORDER the
+ * F-212 ability/IRT layer (`services/ability/*`) scores. `hanja` is
+ * DELIBERATELY excluded: it has no IRT calibration/anchors (services/
+ * ability/anchors.ts's `AbilityDimension` union is hand-written and does NOT
+ * include it), and F-212's `ability_evidence` view (migration 084, leg 6)
+ * happens to pass `diagnostic_responses.section` through as raw text — so an
+ * unfiltered 'hanja' row is queryable there, but nothing in `services/
+ * ability/*` is built to interpret it as a 6th ability dimension. `services/
+ * ability/evidence.ts`, `estimate.ts` and `recommend.ts` import THIS
+ * constant, never `DIMENSION_ORDER`, for exactly that reason — importing
+ * DIMENSION_ORDER there would both fail to typecheck against
+ * `AbilityDimension` and silently feed a dimension the estimator was never
+ * designed to calibrate. */
+export const CORE_DIMENSION_ORDER = ['reading', 'listening', 'vocab', 'grammar'] as const;
 
 /** One graded response, reduced to the fields scoring needs. */
 export interface ScoredResponse {

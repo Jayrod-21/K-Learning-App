@@ -2,7 +2,7 @@
  * Continuous ability estimation (F-212 Phase 2) — the I/O layer around the
  * pure anchored-IRT math in irt.ts.
  *
- * Per dimension (DIMENSION_ORDER, + 'writing' iff opted-in): fetch the user's
+ * Per dimension (CORE_DIMENSION_ORDER, + 'writing' iff opted-in): fetch the user's
  * evidence inside the hard window via `getAbilityEvidence`, weight it by
  * recency, run the pure EAP over the PLACED (b ≠ null) items, apply the
  * min-evidence gate, and map θ̂ to band/score through the SAME locked helpers
@@ -19,7 +19,7 @@
  * session user (middleware getUserId), never a client-supplied id, and both
  * the evidence read and the user_progress writes are WHERE user_id-scoped.
  *
- * Sampled persist: each successful (non-insufficient) DIMENSION_ORDER
+ * Sampled persist: each successful (non-insufficient) CORE_DIMENSION_ORDER
  * estimate appends ONE `user_progress` row per dimension AT MOST once per UTC
  * day (metric `ability_theta_<dimension>`), matching routes/progress.ts's
  * append-only insert + DISTINCT ON current-value read. Writing is estimated
@@ -39,7 +39,7 @@ import {
   type DiagnosticBand,
 } from '../diagnostic/cat.js';
 import {
-  DIMENSION_ORDER,
+  CORE_DIMENSION_ORDER,
   RUBRIC_VERSION,
   estimateToScore,
 } from '../diagnostic/scoring.js';
@@ -60,7 +60,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** metric_type prefix for the sampled persist. `ability_theta_<dimension>`
  *  satisfies the user_progress `^[a-z][a-z0-9_]{0,63}$` CHECK for every
- *  DIMENSION_ORDER dimension. */
+ *  CORE_DIMENSION_ORDER dimension. */
 const METRIC_PREFIX = 'ability_theta_';
 
 /** One dimension's continuous ability estimate (the wire + persist shape). */
@@ -103,7 +103,9 @@ export interface EstimateOptions {
 
 /**
  * Estimate the user's ability per dimension. Always returns one entry per
- * DIMENSION_ORDER dimension (in order), + 'writing' appended iff opted-in.
+ * CORE_DIMENSION_ORDER dimension (in order), + 'writing' appended iff
+ * opted-in. `hanja` (diagnostic-upgrade Phase A) never appears here — see
+ * CORE_DIMENSION_ORDER's doc in scoring.ts.
  */
 export async function estimateAbility(
   userId: number,
@@ -113,7 +115,9 @@ export async function estimateAbility(
   const now = opts.now ?? new Date();
   const since = new Date(now.getTime() - config.windowDays * DAY_MS);
   const dimensions: AbilityDimension[] =
-    opts.includeWriting === true ? [...DIMENSION_ORDER, 'writing'] : [...DIMENSION_ORDER];
+    opts.includeWriting === true
+      ? [...CORE_DIMENSION_ORDER, 'writing']
+      : [...CORE_DIMENSION_ORDER];
 
   const estimates: AbilityEstimate[] = [];
   for (const dimension of dimensions) {
@@ -124,7 +128,7 @@ export async function estimateAbility(
     if (
       opts.persist !== false &&
       !estimate.insufficient &&
-      (DIMENSION_ORDER as readonly string[]).includes(dimension)
+      (CORE_DIMENSION_ORDER as readonly string[]).includes(dimension)
     ) {
       await persistDailySample(userId, estimate, now);
     }

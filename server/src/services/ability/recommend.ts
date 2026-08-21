@@ -21,7 +21,7 @@
  *       to an absolute target. dueCount is only ever nonzero for vocab /
  *       grammar (the FSRS-backed dimensions); due-load is a WEIGHTED
  *       competition term, never a hard override.
- *     Ties break by DIMENSION_ORDER (a total order over the four dimensions,
+ *     Ties break by CORE_DIMENSION_ORDER (a total order over the four dimensions,
  *     so the tie-break is fully deterministic per (user, day) already — the
  *     md5 seed is only ever consulted at Stage B, where item keys can tie).
  *
@@ -54,7 +54,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { DIMENSION_ORDER, ESTIMATE_SPREAD } from '../diagnostic/scoring.js';
+import { CORE_DIMENSION_ORDER, ESTIMATE_SPREAD } from '../diagnostic/scoring.js';
 import { DEFAULT_ESTIMATOR_CONFIG } from './irt.js';
 import type { AbilityDimension } from './anchors.js';
 
@@ -191,7 +191,7 @@ export interface RankInput {
    *  Seoul plan date (the same boundary its SQL selection hashes pin). */
   userKey: string;
   dayKey: string;
-  /** One signal per recommendable dimension (DIMENSION_ORDER order). */
+  /** One signal per recommendable dimension (CORE_DIMENSION_ORDER order). */
   dimensions: readonly DimensionSignal[];
   /** Per-dimension candidate items; a missing/empty list means the dimension
    *  has nothing to offer and is skipped in ranking. */
@@ -355,9 +355,9 @@ export function composeReason(
   }
 }
 
-/** Index in DIMENSION_ORDER — the deterministic Stage-A tie-break. */
+/** Index in CORE_DIMENSION_ORDER — the deterministic Stage-A tie-break. */
 function dimensionOrderIndex(dimension: RecommendDimension): number {
-  return (DIMENSION_ORDER as readonly string[]).indexOf(dimension);
+  return (CORE_DIMENSION_ORDER as readonly string[]).indexOf(dimension);
 }
 
 /**
