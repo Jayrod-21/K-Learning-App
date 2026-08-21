@@ -48,4 +48,17 @@ describe('computePanelSlots', () => {
     expect(flat).toEqual([...flat].sort((a, b) => a - b));
     expect(flat).toEqual([0, 1, 2]);
   });
+
+  it('P===N (4 blocks, 4 images): one image per block, in block order', () => {
+    // image 0 → round(1*4/5) = round(0.8)  = 1 → slot 0
+    // image 1 → round(2*4/5) = round(1.6)  = 2 → slot 1
+    // image 2 → round(3*4/5) = round(2.4)  = 2 → slot 1
+    // image 3 → round(4*4/5) = round(3.2)  = 3 → slot 2
+    const slots = computePanelSlots(4, 4);
+    expect(slots).toEqual([[0], [1, 2], [3], []]);
+    // Every image appears exactly once across the slots.
+    const flat = slots.flat();
+    expect(flat).toEqual([...flat].sort((a, b) => a - b));
+    expect(flat).toEqual([0, 1, 2, 3]);
+  });
 });

@@ -84,10 +84,6 @@
 .km-reading__reader-card {
   width: 100%;
 }
-.km-reading__reader-card--story {
-  margin-top: 14px;
-}
-
 .km-reading__passage-tools {
   display: flex;
   justify-content: flex-end;
@@ -429,10 +425,10 @@
  * "less like a UI card" move this redesign makes (see this page's own doc
  * comment / Reading.tsx's StoryReader): tighter padding than CityCard's
  * default 20px so the illustration panels above read as pages bound into a
- * book, not tiles bolted onto a widget. Equal-specificity override of
+ * book, not tiles bolted onto a widget, plus the story card's own spacing
+ * from the block above it. `padding` is an equal-specificity override of
  * CityCard.css's own `.km-citycard` rule — Reading.css's import always
- * lands after CityCard's in the bundle (the established precedent this
- * class's pre-existing `margin-top` rule already relied on). */
+ * lands after CityCard's in the bundle. */
 .km-reading__reader-card--story {
   margin-top: 14px;
   padding: 16px;
