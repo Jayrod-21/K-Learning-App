@@ -236,6 +236,25 @@ const instance: AxiosInstance = axios.create({
 });
 
 /**
+ * Timeout (ms) for synchronous endpoints that block the response on a FULL
+ * Claude authoring pass — story generation, passage translation, and
+ * comprehension-question generation. These routes hold the connection open
+ * until the model finishes (typically 15–60 s), which far exceeds the 10 s
+ * default above; without a per-call override the client aborts mid-generation
+ * and shows a misleading "request timed out" even though the server usually
+ * completes and persists the result. Callers pass `{ timeout:
+ * GENERATION_TIMEOUT_MS }`.
+ *
+ * Upstream ceilings to keep in mind: the load balancer's nginx
+ * `proxy_read_timeout` is set ABOVE this (210 s) so the client is the first to
+ * give up; requests reaching the origin through Cloudflare (the public domain)
+ * are additionally capped at Cloudflare's ~100 s edge limit regardless of this
+ * value — real generations finish well within that, but a pathological >100 s
+ * generation would need an async enqueue-and-poll flow (as images/audio use).
+ */
+export const GENERATION_TIMEOUT_MS = 200_000;
+
+/**
  * Thin wrapper that strips axios internals from call sites and always raises
  * `ApiError` on failure. Returns the JSON body directly.
  */

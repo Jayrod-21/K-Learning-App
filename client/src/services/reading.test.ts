@@ -16,6 +16,8 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  generateChapterQuestions,
+  generateStory,
   getGeneratedStory,
   getReadingPosition,
   getStoryAudio,
@@ -25,6 +27,7 @@ import {
   requestStoryAudio,
   requestStoryExperience,
   requestStoryImages,
+  translatePassage,
 } from './reading';
 import type {
   GeneratedStoryLibrary,
@@ -32,10 +35,49 @@ import type {
   StoryExperienceResult,
   StoryImagesEnvelope,
 } from './reading';
-import { api, ApiError } from './api';
+import { api, ApiError, GENERATION_TIMEOUT_MS } from './api';
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe('synchronous Claude generation calls pass the long timeout', () => {
+  // Regression: these routes block the response until Claude finishes authoring
+  // (15-60 s), well past the 10 s axios default. Without the per-call timeout
+  // the client aborts mid-generation and shows a misleading "request timed out"
+  // even though the server usually completes. Each must pass GENERATION_TIMEOUT_MS.
+  it('generateStory sends timeout: GENERATION_TIMEOUT_MS', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({
+      story: { id: 1, title: 't', level: 'L1', prompt: null, createdAt: 'x', bodyKo: '가' },
+    });
+    await generateStory({ level: 'L1' });
+    expect(spy).toHaveBeenCalledWith(
+      '/reading/generate',
+      { level: 'L1' },
+      expect.objectContaining({ timeout: GENERATION_TIMEOUT_MS }),
+    );
+    expect(GENERATION_TIMEOUT_MS).toBe(200_000);
+  });
+
+  it('translatePassage sends timeout: GENERATION_TIMEOUT_MS', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({ translation: 'hi' });
+    await translatePassage('안녕');
+    expect(spy).toHaveBeenCalledWith(
+      '/reading/translate',
+      { passage: '안녕' },
+      expect.objectContaining({ timeout: GENERATION_TIMEOUT_MS }),
+    );
+  });
+
+  it('generateChapterQuestions sends timeout: GENERATION_TIMEOUT_MS', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({ questions: [] });
+    await generateChapterQuestions(7);
+    expect(spy).toHaveBeenCalledWith(
+      '/reading/chapters/7/questions/generate',
+      undefined,
+      expect.objectContaining({ timeout: GENERATION_TIMEOUT_MS }),
+    );
+  });
 });
 
 const DONE_AUDIO: StoryAudio = {
