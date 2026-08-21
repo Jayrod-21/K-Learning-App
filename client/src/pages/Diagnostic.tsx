@@ -470,6 +470,12 @@ function TakingBlock({
   // the CURRENT item (fix-pass 2 FIX B) — reset whenever a new item is
   // served, so the cap applies per-item, not per-run.
   const writingClaimRetryRef = useRef(0);
+  // Latest `gradeAnswer` closure, so the writing-claim retry timeout can
+  // re-invoke grading without `gradeAnswer` referencing itself before its own
+  // declaration (a TDZ self-reference). Kept current by the effect just below
+  // its definition; calling through the ref also uses the freshest closure
+  // (current runId/item) at the moment the delayed retry actually fires.
+  const gradeAnswerRef = useRef<(choice: string | null) => void>(() => {});
 
   // Fresh AbortController for a new network step; aborts any prior in-flight.
   const beginCall = useCallback((): AbortController => {
@@ -607,7 +613,7 @@ function TakingBlock({
               setErrorMsg(null);
               window.setTimeout(() => {
                 if (ctrl.signal.aborted) return;
-                gradeAnswer(choice);
+                gradeAnswerRef.current(choice);
               }, WRITING_CLAIM_RETRY_DELAY_MS);
               return;
             }
@@ -633,6 +639,13 @@ function TakingBlock({
     },
     [runId, item, inFlight, reveal, beginCall, prefetchNext, onAlreadyRecorded, toast],
   );
+
+  // Keep the retry ref pointing at the latest `gradeAnswer` so a deferred
+  // writing-claim retry (fired via `gradeAnswerRef.current`) always runs the
+  // current closure rather than a stale one.
+  useEffect(() => {
+    gradeAnswerRef.current = gradeAnswer;
+  }, [gradeAnswer]);
 
   // Submit the currently-picked choice.
   const submit = useCallback((): void => {

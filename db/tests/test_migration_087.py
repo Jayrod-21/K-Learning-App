@@ -213,7 +213,12 @@ def test_087_section_check_still_rejects_unknown_value(env, dsn: str, full_dir) 
         run_id = _seed_run(conn, user_id)
 
         with pytest.raises(errors.CheckViolation):
-            _insert_response(conn, run_id, 1, "writing")  # not yet a served dimension
+            # A value that is not a valid section under ANY migration — must stay
+            # rejected across later widenings of ck_diagnostic_responses_section.
+            # (Do NOT use a real future dimension here: 088 added 'writing', which
+            # would silently make this assertion pass. See test_migration_088 for
+            # the 'writing'-is-now-accepted coverage.)
+            _insert_response(conn, run_id, 1, "not_a_section")
 
 
 def test_087_source_kind_check_untouched(env, dsn: str, full_dir) -> None:
