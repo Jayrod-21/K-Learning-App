@@ -7,12 +7,18 @@
 /* Hero-plus-grid gallery: the first surviving figure spans the full width
  * (the "cover" scene), the rest share a two-up grid. Using :first-of-type
  * rather than a hero class means a hidden/failed first image promotes the
- * next one automatically — the layout never shows a hole. */
+ * next one automatically — the layout never shows a hole.
+ *
+ * Deliberately spacing-neutral: this component has two call sites with two
+ * different spacing needs (the reader's plain block flow vs. the Listen
+ * card's flex `gap`), so each caller supplies its own top spacing rather
+ * than this shared root baking one in — see Reading.tsx's
+ * `km-reading__images-slot` wrapper and Ttmik.tsx's `.km-ttmik__created`
+ * flex gap. */
 .km-reading__images {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 10px;
-  margin-top: 14px;
 }
 
 .km-reading__images-item {
@@ -34,7 +40,7 @@
 }
 
 .km-reading__images-busy {
-  margin: 14px 0 0;
+  margin: 0;
   font-size: 0.84375rem;
   color: var(--paper-dim);
 }
@@ -49,7 +55,6 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
-  margin-top: 14px;
 }
 
 /* Mirror the shared .km-btn:disabled paint while the request is in flight —

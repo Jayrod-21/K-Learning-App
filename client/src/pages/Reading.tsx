@@ -2440,15 +2440,19 @@ function StoryReader({ storyId }: { storyId: number }): JSX.Element {
           (`imageGenConfigured: false` — no image key): absence, not a dead
           affordance. Only an explicit `false` hides — a missing flag keeps
           the feature visible, forward-compat (the F-210 audio-card gate,
-          exactly). */}
-      <StoryIllustrations
-        storyId={storyId}
-        storyTitle={story.title}
-        images={images}
-        requesting={requestingImages}
-        requestError={imagesRequestError}
-        onRequest={requestImages}
-      />
+          exactly). The component itself is spacing-neutral, so this wrapper
+          supplies the reader's own 14px top rhythm (plain block flow,
+          unlike the Listen card's flex gap). */}
+      <div className="km-reading__images-slot">
+        <StoryIllustrations
+          storyId={storyId}
+          storyTitle={story.title}
+          images={images}
+          requesting={requestingImages}
+          requestError={imagesRequestError}
+          onRequest={requestImages}
+        />
+      </div>
 
       {/* Same reading-surface treatment as the chapter reader's CityCard
           (device #1/#2) — one consistent "reading surface" identity across

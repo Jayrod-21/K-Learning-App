@@ -342,3 +342,21 @@
  * moved to `components/StoryIllustrations.css`, colocated with the shared
  * gallery component the Listen-tab created-story card now also renders
  * (Listen-tab illustration-visibility work). Selectors are unchanged. */
+
+/* The gallery component is spacing-neutral (two call sites, two different
+ * spacing needs — see StoryIllustrations.css). Here the gallery sits in
+ * plain block flow as a sibling of the audio CityCard above it, so this
+ * wrapper restores the same 14px rhythm the component used to bake in
+ * itself, keeping the reader pixel-identical to before the extraction.
+ *
+ * The margin is placed on the wrapper's rendered CHILD (whichever of the
+ * gallery's three root classes actually mounts), not on the wrapper `div`
+ * itself: `StoryIllustrations` renders `null` while the mount hydrate is in
+ * flight or on a dormant deploy, and an empty wrapper carries no margin of
+ * its own, so it contributes nothing to the layout in that case — exactly
+ * as when nothing rendered at all pre-extraction. */
+.km-reading__images-slot > .km-reading__images,
+.km-reading__images-slot > .km-reading__images-busy,
+.km-reading__images-slot > .km-reading__images-request {
+  margin-top: 14px;
+}
