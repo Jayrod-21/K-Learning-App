@@ -375,7 +375,8 @@ export function buildTestApp(opts: BuildOptions): TestApp {
   process.env.SESSION_IDLE_TIMEOUT_DAYS = '7';
   process.env.RATE_LIMIT_WINDOW_MS = '60000';
   process.env.RATE_LIMIT_CHEAP_MAX = '120';
-  process.env.RATE_LIMIT_EXPENSIVE_MAX = '30';
+  process.env.RATE_LIMIT_EXPENSIVE_MAX = '20';
+  process.env.RATE_LIMIT_DIAGNOSTIC_MAX = '30';
   process.env.RATE_LIMIT_AUTH_MAX = '5';
   process.env.LOG_LEVEL = 'silent';
   // Pass Login: provision the fixed test AES key (so TOTP secrets encrypt/decrypt

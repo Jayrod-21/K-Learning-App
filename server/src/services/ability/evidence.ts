@@ -78,9 +78,20 @@ export async function getAbilityEvidence(
   if (q.dimension !== undefined) {
     params.push(q.dimension);
     where.push(`dimension = $${params.length}`);
-  } else if (q.includeWriting !== true) {
-    // Default: the 4 diagnostic dimensions only (see module note).
-    where.push(`dimension <> 'writing'`);
+  } else {
+    // Default (no explicit dimension): an EXPLICIT allow-list of
+    // CORE_DIMENSION_ORDER (+ 'writing' iff includeWriting), not a negative
+    // filter. The `ability_evidence` view (migration 084, leg 6) passes
+    // `diagnostic_responses.section` through as raw text, so a diagnostic
+    // 'hanja' row (diagnostic-upgrade Phase A) is queryable there — a
+    // `dimension <> 'writing'` filter would let it through by omission. An
+    // allow-list excludes hanja (and any future non-core dimension) BY
+    // CONSTRUCTION, matching CORE_DIMENSION_ORDER's own doc in scoring.ts.
+    const allowed: string[] = q.includeWriting === true
+      ? [...CORE_DIMENSION_ORDER, 'writing']
+      : [...CORE_DIMENSION_ORDER];
+    params.push(allowed);
+    where.push(`dimension = ANY($${params.length})`);
   }
 
   if (q.since !== undefined) {

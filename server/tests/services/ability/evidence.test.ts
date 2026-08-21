@@ -84,6 +84,27 @@ async function seedDiagnostic(userId: number, answeredAt: string): Promise<void>
   );
 }
 
+/** An answered diagnostic HANJA item (diagnostic-upgrade Phase A,
+ *  migration 087) — coverage-only, must never surface as an ability
+ *  dimension (see CORE_DIMENSION_ORDER's doc in scoring.ts). */
+async function seedHanjaDiagnostic(userId: number, answeredAt: string): Promise<void> {
+  const { rows } = await pg.pool.query<{ id: string }>(
+    `INSERT INTO diagnostic_runs (user_id) VALUES ($1) RETURNING id`,
+    [userId],
+  );
+  await pg.pool.query(
+    // source_kind='generated' (not 'hanja') — hanja reuses the 'generated'
+    // source_kind (shared with vocab/grammar); section='hanja' is the sole
+    // discriminator (see routes/diagnostic.ts's buildHanjaItem note).
+    `INSERT INTO diagnostic_responses
+        (run_id, ordinal, section, source_kind, source_ref, difficulty,
+         kind, item_payload, correct_answer, picked, is_correct, answered_at)
+     VALUES ($1, 1, 'hanja', 'generated', 'f212-hanja-ref', 2.00, 'reading-mc',
+             '{"prompt":"한자를 고르세요"}'::jsonb, 'a', 'a', TRUE, $2)`,
+    [rows[0]!.id, answeredAt],
+  );
+}
+
 describe('getAbilityEvidence', () => {
   it('returns only the requesting user’s rows (tenant isolation)', async () => {
     const alice = await seedUser('ability-alice@example.com');
@@ -293,5 +314,40 @@ describe('getAbilityRollup', () => {
     expect(writing.nTotal).toBe(1);
     expect(writing.meanOutcome).toBeCloseTo(0.84);
     expect(writing.meanDifficulty).toBe(5.0);
+  });
+
+  it('NEVER includes hanja — excluded by an explicit allow-list, not an accidental Map miss', async () => {
+    // `ability_evidence` (migration 084, leg 6) passes diagnostic_responses
+    // .section through as raw text, so a hanja diagnostic answer (087) is
+    // queryable in the view as dimension='hanja'. getAbilityRollup's SQL
+    // must exclude it BY CONSTRUCTION (an explicit allow-list over
+    // CORE_DIMENSION_ORDER), not merely happen to drop it — this pins that.
+    const userId = await seedUser('rollup-hanja@example.com');
+    await seedDiagnostic(userId, '2026-08-01T09:00:00Z'); // listening, b=3.5
+    await seedHanjaDiagnostic(userId, '2026-08-02T09:00:00Z'); // hanja, b=2.0
+
+    const rollup = await getAbilityRollup(userId);
+
+    // No 'hanja' entry at all — the rollup shape is exactly the 4 core dims.
+    expect(rollup.map((entry) => entry.dimension)).toEqual([
+      'reading',
+      'listening',
+      'vocab',
+      'grammar',
+    ]);
+
+    // And the hanja row didn't leak into any other dimension's counters
+    // (e.g. a broken filter that let it through and mis-bucketed it).
+    const listening = rollup.find((entry) => entry.dimension === 'listening')!;
+    expect(listening.nTotal).toBe(1);
+    expect(listening.meanDifficulty).toBe(3.5); // not diluted by the hanja b=2.0 row
+    const totalAcrossDims = rollup.reduce((sum, entry) => sum + entry.nTotal, 0);
+    expect(totalAcrossDims).toBe(1); // only the listening row counted anywhere
+
+    // Also pin it at the getAbilityEvidence layer: even includeWriting must
+    // not admit hanja (the allow-list is CORE_DIMENSION_ORDER (+ writing),
+    // never the full DIMENSION_ORDER).
+    const withWritingRows = await getAbilityEvidence(userId, { includeWriting: true });
+    expect(withWritingRows.map((row) => row.dimension)).not.toContain('hanja');
   });
 });

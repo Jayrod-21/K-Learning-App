@@ -28,13 +28,15 @@
  *     the /answer response, after the user has committed a pick. This is the
  *     answer-tampering defense and THE security property of this pass.
  *   - Out-of-order / double answers are rejected 409 (replay defense).
- *   - Item generation (vocab/grammar via Claude) is behind expensiveLimiter on
- *     the routes that can generate (/diagnostic, /:runId/next) and bounded to
- *     ≤ 2*ITEMS_PER_DIMENSION (8) calls per run by the fixed 16-item, 4-each
- *     schedule plus /next's re-serve-pending idempotency. Grading (/answer)
- *     never calls Claude, so
- *     it sits behind cheapLimiter — a limiter 429 can no longer withhold a
- *     reveal the user already earned.
+ *   - Item generation (vocab/grammar via Claude) is behind diagnosticLimiter on
+ *     the routes that can generate (/diagnostic, /:runId/next) — the diagnostic
+ *     run's OWN rate-limit bucket (middleware/rateLimits.ts), sized for a full
+ *     run's route-entry count rather than sharing the app-wide expensiveLimiter
+ *     bucket with every other paid-upstream route. Genuine Claude calls are
+ *     bounded to ≤ 2*ITEMS_PER_DIMENSION (8) per run by the fixed 20-item,
+ *     4-each schedule plus /next's re-serve-pending idempotency. Grading
+ *     (/answer) never calls Claude, so it sits behind cheapLimiter — a limiter
+ *     429 can no longer withhold a reveal the user already earned.
  *
  * Reading/listening items come from the real topik_items pool (no Claude);
  * vocab/grammar items are authored by the Claude proxy from a corpus seed.
@@ -42,7 +44,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { getUserId, requireAuth } from '../middleware/auth.js';
-import { cheapLimiter, expensiveLimiter } from '../middleware/rateLimits.js';
+import { cheapLimiter, diagnosticLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateParams } from '../middleware/validate.js';
 import { query, withTransaction } from '../db/pool.js';
 import { ConflictError, NotFoundError, UpstreamError, mapClaudeError } from '../middleware/errors.js';
@@ -838,6 +840,15 @@ async function buildHanjaItem(
   // doc); a genuine shortfall below 3 total distractors returns null and the
   // caller treats the ordinal as an empty pool, same as every other builder.
   if (distractors.length < 3) {
+    // Corpus regression visibility: this path means the level's pool had
+    // fewer than 3 distinct-VALUE distractors, so two choices below may
+    // share display text — never triggerable against the live corpus (see
+    // the function doc), so a live hit means the corpus shrank underneath
+    // this run and should be investigated, not silently served.
+    getLogger().warn(
+      { level, char: answer.char, kind },
+      'diagnostic: hanja distractor pool thin on distinct values — topping up with possible value collisions',
+    );
     for (const row of shuffled) {
       if (distractors.length >= 3) break;
       if (distractors.some((d) => d.char === row.char)) continue;
@@ -1250,9 +1261,11 @@ const AnswerBodySchema = z.object({
 
 /**
  * POST /diagnostic — start a run and serve item #1.
- * expensiveLimiter: may trigger a Claude generation for the first item.
+ * diagnosticLimiter: may trigger a Claude generation for the first item; the
+ * diagnostic run's own bucket, not the shared expensiveLimiter (see the
+ * top-of-file SECURITY note).
  */
-router.post('/', expensiveLimiter(), validateBody(EmptyBodySchema), async (req, res, next) => {
+router.post('/', diagnosticLimiter(), validateBody(EmptyBodySchema), async (req, res, next) => {
   try {
     const userId = getUserId(req);
     const theta = SEED_THETA;
@@ -1520,8 +1533,10 @@ function isUniqueViolation(err: unknown): boolean {
  *
  * This is the (possibly) EXPENSIVE half of the answer→next split (B-006):
  * vocab/grammar ordinals generate via Claude, so this route sits behind
- * expensiveLimiter, and the client calls it during the reveal dwell so the
- * latency overlaps reading the explanation instead of blocking the reveal.
+ * diagnosticLimiter (the diagnostic run's own bucket, not the shared
+ * expensiveLimiter — see the top-of-file SECURITY note), and the client
+ * calls it during the reveal dwell so the latency overlaps reading the
+ * explanation instead of blocking the reveal.
  *
  * Contract:
  *   - An unanswered item is already pending → re-serve it (idempotent; no new
@@ -1539,7 +1554,7 @@ function isUniqueViolation(err: unknown): boolean {
  */
 router.post(
   '/:runId/next',
-  expensiveLimiter(),
+  diagnosticLimiter(),
   validateParams(RunParamsSchema),
   validateBody(EmptyBodySchema),
   async (req, res, next) => {

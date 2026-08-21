@@ -1,15 +1,25 @@
 /**
  * Rate limiting.
  *
- * Three buckets:
- *   - auth:       per-IP, low ceiling (login/register brute force)
- *   - cheap:      per-IP, generous ceiling (define, health, list endpoints)
- *   - expensive:  per-user when authenticated, otherwise per-IP, low ceiling
- *                 (enrich, grade-writing, lemmatize — all upstream calls)
+ * Buckets:
+ *   - auth:        per-IP, low ceiling (login/register brute force)
+ *   - cheap:       per-IP, generous ceiling (define, health, list endpoints)
+ *   - expensive:   per-user when authenticated, otherwise per-IP, low ceiling
+ *                  (enrich, grade-writing, lemmatize — all upstream calls)
+ *   - diagnostic:  per-user when authenticated, otherwise per-IP, own ceiling
+ *                  (POST /diagnostic + /diagnostic/:id/next) — split out from
+ *                  `expensive` (diagnostic-upgrade Phase A fix-pass, R2 SF-1)
+ *                  because a single 20-item run makes ~20 route-entry hits on
+ *                  this bucket even though most of those hits are cheap DB
+ *                  reads (reading/listening/hanja items never call Claude —
+ *                  only vocab/grammar generation does), and sizing the SHARED
+ *                  expensive bucket to that run length would loosen abuse
+ *                  protection for every OTHER paid-upstream route (writing
+ *                  gen, conversation, TTS, OCR, image-gen) that shares it.
  *
- * Bar §"Security": separate buckets for cheap vs expensive, per-IP AND per-user
- * (the expensive bucket keys on `req.user.id` when present so a logged-in user
- * gets a fair share even from behind NAT).
+ * Bar §"Security": separate buckets for cheap vs expensive vs diagnostic,
+ * per-IP AND per-user (each keys on `req.user.id` when present so a logged-in
+ * user gets a fair share even from behind NAT).
  */
 import rateLimit, { type RateLimitRequestHandler } from 'express-rate-limit';
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
@@ -59,6 +69,7 @@ function rateLimitedHandler(code: string, message: string, windowMs: number) {
 // lazily on first request and swappable via resetLimiters().
 let _cheap: RateLimitRequestHandler | null = null;
 let _expensive: RateLimitRequestHandler | null = null;
+let _diagnostic: RateLimitRequestHandler | null = null;
 let _auth: RateLimitRequestHandler | null = null;
 let _media: RateLimitRequestHandler | null = null;
 
@@ -91,6 +102,24 @@ function buildExpensive(): RateLimitRequestHandler {
     // B-016 / F-UP-004: a 429 from an expensive route (grade-writing, lemmatize,
     // enrich, diagnostic gen) carries a precise retry_after that the client's
     // ApiError.retryAfter / Writing "try again in N s" branch consumes.
+    handler: rateLimitedHandler(
+      'rate_limited',
+      'too many requests',
+      cfg.RATE_LIMIT_WINDOW_MS,
+    ),
+  });
+}
+
+function buildDiagnostic(): RateLimitRequestHandler {
+  const cfg = loadConfig();
+  return rateLimit({
+    windowMs: cfg.RATE_LIMIT_WINDOW_MS,
+    max: cfg.RATE_LIMIT_DIAGNOSTIC_MAX,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    validate: { trustProxy: false, xForwardedForHeader: false, creationStack: false },
+    keyGenerator: userOrIpKey,
+    // B-016 / F-UP-004: same precise-retry_after 429 shape as expensiveLimiter.
     handler: rateLimitedHandler(
       'rate_limited',
       'too many requests',
@@ -162,6 +191,9 @@ function ensureCheap(): RateLimitRequestHandler {
 function ensureExpensive(): RateLimitRequestHandler {
   return (_expensive ??= buildExpensive());
 }
+function ensureDiagnostic(): RateLimitRequestHandler {
+  return (_diagnostic ??= buildDiagnostic());
+}
 function ensureAuth(): RateLimitRequestHandler {
   return (_auth ??= buildAuth());
 }
@@ -182,6 +214,12 @@ export function expensiveLimiter(): RequestHandler {
   return (req: Request, res: Response, next: NextFunction) => ensureExpensive()(req, res, next);
 }
 
+/** Own per-user bucket for the diagnostic run (config RATE_LIMIT_DIAGNOSTIC_MAX)
+ *  — see the module doc for why this is split from expensiveLimiter. */
+export function diagnosticLimiter(): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction) => ensureDiagnostic()(req, res, next);
+}
+
 export function authLimiter(): RequestHandler {
   return (req: Request, res: Response, next: NextFunction) => ensureAuth()(req, res, next);
 }
@@ -195,6 +233,7 @@ export function mediaLimiter(): RequestHandler {
 export function resetLimiters(): void {
   _cheap = null;
   _expensive = null;
+  _diagnostic = null;
   _auth = null;
   _media = null;
 }
