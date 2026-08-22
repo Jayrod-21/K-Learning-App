@@ -148,103 +148,51 @@ export const WEIGHTS: Record<DiagnosticDimensionKey, number> = {
   writing: 2,
 };
 
-/** The four dimensions that round-robin as the run's core spine — each now
- *  carries its OWN θ ladder (diagnostic-upgrade Phase C). `hanja` and
- *  `writing` are woven into this spine separately by `buildSchedule` below,
- *  not round-robinned alongside it (hanja has a different weight; writing
- *  must land in the later half). */
-const CORE_LEVELED_DIMENSIONS: readonly DiagnosticDimensionKey[] = [
+/**
+ * The fixed CATEGORY order the schedule blocks in (diagnostic-polish FIX 2).
+ * `reading`/`listening`/`vocab`/`grammar` come first (any order among these
+ * four is equally valid — evidence-gathering, no cold/warm asymmetry between
+ * them), `hanja` after (coverage-only, no ladder, order-irrelevant), and
+ * `writing` LAST — a writing item is Claude-graded (the single most
+ * expensive per-item reveal latency in the run) and must never be item #1
+ * while every dimension's θ is still cold-started; ending last trivially
+ * satisfies that constraint.
+ */
+const SCHEDULE_BLOCK_ORDER: readonly DiagnosticDimensionKey[] = [
   'reading',
   'listening',
   'vocab',
   'grammar',
+  'hanja',
+  'writing',
 ];
-const CORE_ROUNDS = 6; // WEIGHTS value shared by every core-leveled dimension.
 
 /**
- * Build the fixed, deterministic 30-item serve schedule (diagnostic-upgrade
- * Phase C). No randomness — the exact same array is produced on every
- * process start, so ordinal→section is a stable contract tests can pin.
+ * Build the fixed, deterministic 30-item serve schedule as CONTIGUOUS
+ * per-category blocks (diagnostic-polish FIX 2 — replaces the original
+ * round-robin interleave). No randomness — the exact same array is produced
+ * on every process start, so ordinal→section is a stable contract tests can
+ * pin.
  *
- * Construction, in three passes:
- *
- *   1. CORE round-robin: `CORE_ROUNDS` (6) laps of
- *      `[reading, listening, vocab, grammar]` → 24 slots, evenly spread by
- *      construction (this is the exact pre-Phase-C algorithm, just with
- *      CORE_ROUNDS bumped 4 → 6 to match the new WEIGHTS).
- *   2. hanja's `WEIGHTS.hanja` (4) slots are WOVEN into that 24-slot core
- *      sequence at evenly spaced checkpoints (~ every 6 core items) rather
- *      than clumped at either end — coverage-only, so WHERE it lands only
- *      matters for pacing/variety, never for θ (hanja never touches any
- *      ladder). The checkpoint math is computed off `core.length`/
- *      `hanjaCount` generally, not hardcoded to 24/4, so a future WEIGHTS
- *      retune keeps producing an even spread instead of silently clumping.
- *   3. writing's `WEIGHTS.writing` (2) slots are woven into the LATER HALF
- *      of the resulting 28-slot sequence, at two evenly spaced MIDPOINT
- *      checkpoints (not the half's boundary) — so both writing items land
- *      after most of the run's core/hanja evidence has already served (θ
- *      has had room to move, the reason writing must never be item #1), are
- *      never adjacent to each other, and (the midpoint choice) the second
- *      one is never the run's literal last item either — a writing item is
- *      Claude-graded and the single most expensive per-item reveal latency
- *      in the run; ending the whole diagnostic on one is a worse UX beat
- *      than ending on a fast MC grade.
+ * Each dimension in `SCHEDULE_BLOCK_ORDER` contributes exactly
+ * `WEIGHTS[dim]` consecutive slots, back to back — the learner answers all
+ * of one category before moving to the next, rather than context-switching
+ * every 1–2 questions. Per-category adaptive ladders (diagnostic-upgrade
+ * Phase C) are ORDER-AGNOSTIC — each leveled dimension cold-starts at
+ * SEED_THETA on its OWN first answer (`serveNextItem`'s
+ * `dimensionEstimates[section] ?? SEED_THETA`), regardless of where in the
+ * schedule that first answer lands — so blocking the schedule this way
+ * changes NOTHING about how any dimension is scored, only the ORDER items
+ * are served in.
  *
  * Produces exactly (per the WEIGHTS above): 6 reading, 6 listening, 6 vocab,
  * 6 grammar, 4 hanja, 2 writing = 30 slots, in this fixed order:
- *   reading, listening, vocab, grammar, reading, listening, hanja, vocab,
- *   grammar, reading, listening, vocab, grammar, hanja, reading, listening,
- *   vocab, grammar, writing, reading, listening, hanja, vocab, grammar,
- *   reading, listening, writing, vocab, grammar, hanja
+ *   reading×6, listening×6, vocab×6, grammar×6, hanja×4, writing×2.
  */
 function buildSchedule(): DiagnosticDimensionKey[] {
-  const core: DiagnosticDimensionKey[] = Array.from(
-    { length: CORE_ROUNDS },
-    () => CORE_LEVELED_DIMENSIONS,
-  ).flat();
-
-  const hanjaCount = WEIGHTS.hanja;
-  const withHanja: DiagnosticDimensionKey[] = [];
-  let hanjaInserted = 0;
-  for (let i = 0; i < core.length; i += 1) {
-    withHanja.push(core[i]!);
-    const nextCheckpoint = Math.round((core.length * (hanjaInserted + 1)) / hanjaCount);
-    if (hanjaInserted < hanjaCount && i + 1 === nextCheckpoint) {
-      withHanja.push('hanja');
-      hanjaInserted += 1;
-    }
-  }
-  // Defensive: a future WEIGHTS change could round every checkpoint below
-  // core.length before hanjaCount is exhausted — append any remainder so the
-  // schedule always carries exactly WEIGHTS.hanja hanja slots.
-  while (hanjaInserted < hanjaCount) {
-    withHanja.push('hanja');
-    hanjaInserted += 1;
-  }
-
-  const writingCount = WEIGHTS.writing;
-  const laterHalfStart = Math.ceil(withHanja.length / 2);
-  const laterSpan = withHanja.length - laterHalfStart;
-  const result: DiagnosticDimensionKey[] = [];
-  let writingInserted = 0;
-  for (let i = 0; i < withHanja.length; i += 1) {
-    result.push(withHanja[i]!);
-    if (i + 1 <= laterHalfStart) continue; // never interleave writing into the first half
-    const posInLaterHalf = i + 1 - laterHalfStart;
-    // Midpoint-of-share checkpoint (not the share's boundary) — see the
-    // function doc for why this keeps the last writing slot off the run's
-    // literal final item.
-    const nextCheckpoint = Math.round((laterSpan * (writingInserted + 0.5)) / writingCount);
-    if (writingInserted < writingCount && posInLaterHalf === nextCheckpoint) {
-      result.push('writing');
-      writingInserted += 1;
-    }
-  }
-  while (writingInserted < writingCount) {
-    result.push('writing');
-    writingInserted += 1;
-  }
-  return result;
+  return SCHEDULE_BLOCK_ORDER.flatMap((dim) =>
+    Array<DiagnosticDimensionKey>(WEIGHTS[dim]).fill(dim),
+  );
 }
 
 export const SCHEDULE: readonly DiagnosticDimensionKey[] = buildSchedule();
