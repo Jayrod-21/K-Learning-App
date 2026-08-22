@@ -120,7 +120,7 @@ applies every migration in `Repository/db/migrations/`, and then walks each
 loader against a small fixture.
 
 ```
-cd Repository/tools/ingest
+cd tools/ingest
 pytest tests/test_load_*.py
 ```
 

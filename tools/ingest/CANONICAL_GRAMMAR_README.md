@@ -139,10 +139,10 @@ entries, and decide:
 
 ```bash
 # Unit (fast, no DB needed):
-pytest Repository/tools/ingest/tests/test_canonical_grammar_normalizer.py -v
+pytest tools/ingest/tests/test_canonical_grammar_normalizer.py -v
 
 # Integration (testcontainers + Docker required):
-pytest Repository/tools/ingest/tests/test_canonical_grammar_db.py -v
+pytest tools/ingest/tests/test_canonical_grammar_db.py -v
 ```
 
 ## Operational notes

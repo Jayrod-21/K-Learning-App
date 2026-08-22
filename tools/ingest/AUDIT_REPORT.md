@@ -157,7 +157,7 @@ mistakes are a high-probability OCR failure mode.
 ### Run the vision-OCR pass when an operator has network + key
 ```bash
 export ANTHROPIC_API_KEY=...
-cd Repository/tools/ingest
+cd tools/ingest
 python audit_darakwon.py sample --seed 20260528 --rate 0.05
 python audit_darakwon.py compare \
     --manifest audit_artifacts/sample_manifest.json

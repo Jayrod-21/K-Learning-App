@@ -10,7 +10,7 @@
 #
 # DATA arrives by USB, CODE ships in the km-loader image.
 #   1. On a machine with the repo, copy the corpus JSON to a USB dir:
-#        cp Repository/tools/ingest/output/*.json /media/usb/corpora/
+#        cp tools/ingest/output/*.json /media/usb/corpora/
 #   2. On the server, plug in the USB (say it mounts at /media/usb/corpora) and:
 #        export DEPLOY_TAG=<the deployed release tag>     # e.g. the Build.BuildId
 #        bash Deploy/load-corpora.sh /media/usb/corpora

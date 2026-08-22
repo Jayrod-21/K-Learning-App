@@ -9,28 +9,28 @@
 > from. The project-root `TESTS.md` is a thin pointer to this file —
 > when the server lane gets its own test suites, they will be added
 > here (the resolver walks upward, so the file's position in
-> `Repository/client/` is still discoverable from any subdirectory).
+> `client/` is still discoverable from any subdirectory).
 
 ## Suites
 
 - name: client-lint
-  cmd: cd "Repository/client" && npm run lint
+  cmd: cd "client" && npm run lint
   must_pass: true
 
 - name: client-build
-  cmd: cd "Repository/client" && npm run build
+  cmd: cd "client" && npm run build
   must_pass: true
 
 - name: client-unit
-  cmd: cd "Repository/client" && npm test
+  cmd: cd "client" && npm test
   must_pass: true
 
 - name: server-typecheck
-  cmd: cd "Repository/server" && npx tsc --noEmit
+  cmd: cd "server" && npx tsc --noEmit
   must_pass: false
 
 - name: server-tests
-  cmd: cd "Repository/server" && npm test --silent --if-present
+  cmd: cd "server" && npm test --silent --if-present
   must_pass: false
 
 ## Pass criteria
@@ -48,7 +48,6 @@
   failure flunks the suite.
 - `/testcheck --only client-lint,client-build` is the fast loop while
   iterating on a Pass.
-- All `cmd` lines run from the project root (`/root/Jared/9b. Korean
-  Master -- OVERNIGHT/`). The `cd "Repository/client"` prefix keeps
-  the commands portable when the resolver invokes them from anywhere
-  under the project tree.
+- All `cmd` lines run from the project root. The `cd "client"` /
+  `cd "server"` prefix keeps the commands portable when the resolver
+  invokes them from anywhere under the project tree.

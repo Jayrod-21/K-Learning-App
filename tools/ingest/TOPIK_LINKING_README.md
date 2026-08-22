@@ -159,7 +159,7 @@ A typical pattern:
 ## How to test
 
 ```bash
-# From Repository/tools/ingest:
+# From tools/ingest:
 pytest tests/test_link_topik_dependencies.py -v
 ```
 

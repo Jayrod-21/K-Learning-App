@@ -8,7 +8,7 @@
 # check-active-env.sh, bg-health.sh, cleanup.sh, rebuild-environment.sh) and by
 # the Azure pipeline. Do not rename a function without updating every caller.
 #
-# Architecture (locked, see PASS_DEPLOY_CONTRACT.md):
+# Architecture (locked, see Deploy/README.md):
 #   * Blue/green on ONE host. ONE SHARED Postgres (km-db) that BOTH colors point
 #     to. A "switch" is therefore a pure nginx flip — no data is copied.
 #   * Compose projects are SEPARATE and share volumes + networks:

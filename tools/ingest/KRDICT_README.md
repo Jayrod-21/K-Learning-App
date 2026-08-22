@@ -195,7 +195,7 @@ that's expected (a known-bad upstream entry) or a parser bug to file.
 ## Running tests
 
 ```bash
-cd Repository/tools/ingest
+cd tools/ingest
 python -m pytest tests/test_krdict_parser.py -v
 python -m pytest tests/test_krdict_loader.py -v
 ```
