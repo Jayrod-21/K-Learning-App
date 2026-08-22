@@ -48,7 +48,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Logger } from 'pino';
 import { z } from 'zod';
-import { loadConfig } from '../config/index.js';
+import { isRunnerActiveColor, loadConfig } from '../config/index.js';
 import { query, withTransaction } from '../db/pool.js';
 import { AppError } from '../middleware/errors.js';
 import { getMp3Concat } from './audioConcat.js';
@@ -395,6 +395,14 @@ export async function runStoryAudioTick(log: Logger): Promise<StoryAudioTickResu
   if (reaped.rowCount > 0) {
     log.warn({ reaped: reaped.rowCount }, 'storyAudio: reaped stale running job(s)');
   }
+
+  // Blue/green gate (audit §7.2 / Phase 1.3): the reap above is time-based
+  // and benign to run in every color, but claim+process below must run in
+  // only the color nginx is actively routing to — otherwise the idle color
+  // silently processes live jobs with the PREVIOUS release's code. See
+  // config/index.ts's `isRunnerActiveColor` doc for the mechanism and why it
+  // fails open outside a blue/green deployment.
+  if (!cfg.STORY_RUNNERS_ENABLED || !isRunnerActiveColor(cfg)) return 'idle';
 
   // 2. Claim (its own short tx — the synthesis must NOT run inside one). The
   //    join can't miss: the job CASCADEs with its story (081), so a claimed

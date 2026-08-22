@@ -16,8 +16,12 @@
  *
  * Pure unit tests: no DB, no app — just the Zod schema via loadConfig().
  */
+import os from 'node:os';
+import path from 'node:path';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  isRunnerActiveColor,
   loadConfig,
   resetConfig,
   TEST_TOTP_SECRET_ENC_KEY,
@@ -50,6 +54,9 @@ const TOUCHED_KEYS = [
   'ELEVENLABS_API_KEY',
   'ELEVENLABS_VOICE_ID',
   'STORY_TTS_DAILY_CAP',
+  'STORY_RUNNERS_ENABLED',
+  'DEPLOY_COLOR',
+  'ACTIVE_COLOR_FILE',
 ] as const;
 
 let savedEnv: Record<string, string | undefined>;
@@ -82,6 +89,7 @@ describe('strict boolean env flags (envBool) — the compose files pass STRINGS'
     { key: 'REGISTRATION_ENABLED', defaultValue: true },
     { key: 'MFA_REQUIRED', defaultValue: true },
     { key: 'EMAIL_VERIFICATION_REQUIRED', defaultValue: true },
+    { key: 'STORY_RUNNERS_ENABLED', defaultValue: true },
   ];
 
   for (const { key, defaultValue } of FLAGS) {
@@ -227,5 +235,72 @@ describe('story TTS config (F-210) — dormant-deploy posture', () => {
     expect(() => parse()).toThrow(/Invalid configuration/);
     process.env.STORY_TTS_DAILY_CAP = 'unlimited';
     expect(() => parse()).toThrow(/Invalid configuration/);
+  });
+});
+
+describe('isRunnerActiveColor (Phase 1.3 — blue/green story-runner gating)', () => {
+  // A promotion (azure-switch-production.sh) is a pure nginx reload with no
+  // container restart, so "which color is active" cannot live on the cached
+  // Config — it must be read fresh from ACTIVE_COLOR_FILE on every call. Real
+  // temp files (not mocked fs) so the test exercises the actual read path.
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(path.join(os.tmpdir(), 'km-active-color-test-'));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('DEPLOY_COLOR unset (local dev / tests / non-blue-green) → always active, file never read', () => {
+    // A path that does not exist would throw if it were ever read.
+    expect(
+      isRunnerActiveColor({
+        DEPLOY_COLOR: undefined,
+        ACTIVE_COLOR_FILE: path.join(tmpDir, 'does-not-exist'),
+      }),
+    ).toBe(true);
+  });
+
+  it('file names THIS color → active', () => {
+    const file = path.join(tmpDir, 'active-color');
+    writeFileSync(file, 'blue\n');
+    expect(
+      isRunnerActiveColor({ DEPLOY_COLOR: 'blue', ACTIVE_COLOR_FILE: file }),
+    ).toBe(true);
+  });
+
+  it('file names the OTHER color → not active', () => {
+    const file = path.join(tmpDir, 'active-color');
+    writeFileSync(file, 'green\n');
+    expect(
+      isRunnerActiveColor({ DEPLOY_COLOR: 'blue', ACTIVE_COLOR_FILE: file }),
+    ).toBe(false);
+  });
+
+  it('file content is trimmed (a trailing newline never causes a false mismatch)', () => {
+    const file = path.join(tmpDir, 'active-color');
+    writeFileSync(file, 'green\n\n');
+    expect(
+      isRunnerActiveColor({ DEPLOY_COLOR: 'green', ACTIVE_COLOR_FILE: file }),
+    ).toBe(true);
+  });
+
+  it('missing file (DEPLOY_COLOR set but the mount is absent/unreadable) fails OPEN — never stalls both colors', () => {
+    expect(
+      isRunnerActiveColor({
+        DEPLOY_COLOR: 'blue',
+        ACTIVE_COLOR_FILE: path.join(tmpDir, 'does-not-exist'),
+      }),
+    ).toBe(true);
+  });
+
+  it('empty file content fails OPEN (cold-box window before the first switch)', () => {
+    const file = path.join(tmpDir, 'active-color');
+    writeFileSync(file, '');
+    expect(
+      isRunnerActiveColor({ DEPLOY_COLOR: 'blue', ACTIVE_COLOR_FILE: file }),
+    ).toBe(true);
   });
 });

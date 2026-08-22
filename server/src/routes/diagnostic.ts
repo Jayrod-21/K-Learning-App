@@ -381,13 +381,16 @@ function paperForBand(band: DiagnosticBand): TopikPaper {
  *     ~776 answerable beginner items ARE the beginner pool), L3/L4/L5+ →
  *     TOPIK II — otherwise advanced users draw ~40% beginner TOPIK I items
  *     from the "any" pool (F-002 fixpass SF-2).
- *   - L3/L4/L5+ additionally try the row's `proficiency` enum first; the live
- *     corpus has NULL proficiency everywhere, so in production that attempt
- *     falls through to the paper-only attempt. L1/L2 skip it entirely — no
- *     topik_items rows are proficiency-tagged L1/L2 (migration 039 adds the
- *     enum values with no backfill).
- *   - The final attempt is unfiltered ("any"), so an exhausted paper never
- *     starves the run.
+ *   - The first attempt targets that paper; the final attempt is unfiltered
+ *     ("any"), so an exhausted paper never starves the run. No predicate here
+ *     is scoped by `proficiency` — a third, `proficiency`-scoped attempt used
+ *     to run before the paper-scoped one, but it was removed because
+ *     `topik_items.proficiency` is 100% NULL across the live pool (items only
+ *     ever carry a TOPIK I/II paper, never an L1-L5+ band) and could never
+ *     match; see the removal comment inside `pickTopikRow` for detail. The
+ *     column itself (`i.proficiency`) is still SELECTed below and feeds the
+ *     difficulty fallback (`proficiencyToNumber`) when a row happens to
+ *     carry a value.
  *
  * Answerable-item guard mirrors topik.ts ANSWERABLE_ITEM_SQL: >= 2 options,
  * non-null answer, AND not a picture-choice item whose options are bare
@@ -443,17 +446,20 @@ async function pickTopikRow(
   excludeIds: readonly string[],
 ): Promise<TopikRow | null> {
   // Attempts, most→least targeted; each excludes already-served ids.
+  //
+  // A `proficiency`-scoped attempt tier used to run first here, but
+  // `topik_items.proficiency` is 100% NULL across the live pool (items only
+  // ever carry a TOPIK I/II paper, never an L1-L5+ band), so `i.proficiency =
+  // $n::proficiency_level` can never match and that tier only ever burned a
+  // query before falling through to the paper-scoped attempt below. Removed
+  // rather than left as dead weight — see the paper/band fallback for the
+  // selection that actually serves.
   const paper = paperForBand(band);
-  const bandProficiency = band === 'L1' || band === 'L2' ? null : band;
   const attempts: ReadonlyArray<{
-    readonly proficiency: string | null;
     readonly topikLevel: string | null;
   }> = [
-    ...(bandProficiency !== null
-      ? [{ proficiency: bandProficiency, topikLevel: paper }]
-      : []),
-    { proficiency: null, topikLevel: paper },
-    { proficiency: null, topikLevel: null },
+    { topikLevel: paper },
+    { topikLevel: null },
   ];
   for (const attempt of attempts) {
     const params: unknown[] = [section];
@@ -488,10 +494,6 @@ async function pickTopikRow(
       sql += ` AND i.audio_start_ms IS NOT NULL
                AND i.audio_end_ms IS NOT NULL
                AND t.audio_path IS NOT NULL`;
-    }
-    if (attempt.proficiency !== null) {
-      params.push(attempt.proficiency);
-      sql += ` AND i.proficiency = $${params.length}::proficiency_level`;
     }
     if (attempt.topikLevel !== null) {
       params.push(attempt.topikLevel);

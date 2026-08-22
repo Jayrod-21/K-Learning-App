@@ -6,6 +6,17 @@
 !.env.example
 # The live nginx.conf that update_nginx_config swaps in (per-host mutable state).
 nginx.conf
+# The live active-color signal that write_active_color_file swaps in (per-host
+# mutable state — Phase 1.3 story-runner gating). It lives INSIDE
+# active-color.d/ (the bind-mount SOURCE for both colors' containers — a
+# directory, not the file itself, so a host-side atomic rename is actually
+# observed by an already-running container; see docker-compose.{blue,green}.yml).
+# The active-color.d/ DIRECTORY is committed (active-color.d/.gitkeep) so the
+# mount source always exists on a fresh checkout; only the mutable value file
+# inside it is ignored. The old bare top-level path is also ignored in case a
+# pre-migration host still has one lying around.
+active-color
+active-color.d/active-color
 # Saved Docker image tarballs (pipeline artifacts loaded on the agent).
 *.tar
 # Backups live in the km_backups volume / BACKUP_DIR, not in git.

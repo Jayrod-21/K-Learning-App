@@ -23,3 +23,13 @@ PyMuPDF==1.28.0
 anthropic==0.116.0
 testcontainers[postgres]>=4,<5
 pytest>=8,<10
+# faster-whisper: NOT collection-critical (tools/ingest/topik_audio/transcribe.py
+# imports it LAZILY, inside _get_model — importing the module, and collecting
+# its tests, never requires it; tests monkeypatch sys.modules['faster_whisper']
+# instead). Declared here anyway (audit §7.4) so it is visible to pip-audit/
+# Dependabot: the collection-only exemption made a genuinely-needed runtime dep
+# of `python -m tools.ingest.topik_audio` invisible everywhere, not just to
+# pytest. Pinned to match tools/audio_stt/requirements.txt's version — the two
+# trees share the whisper_transcribe.resolve_device helper and should stay on
+# one faster-whisper version.
+faster-whisper==1.1.1

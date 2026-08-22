@@ -109,6 +109,11 @@ main() {
 
     # --- Step 5: prod is healthy on the new color — NOW record it -------------
     save_env_var ACTIVE_ENVIRONMENT "$inactive"
+    # Phase 1.3: keep the bind-mounted active-color signal in sync so the
+    # newly-promoted color's story-runner ticks start claiming jobs (and the
+    # newly-demoted color's stop) on their very next poll — no restart of
+    # either container required.
+    write_active_color_file "$inactive"
 
     log_info "=== switch-to-production DONE — new active color is ${inactive} (prod healthy on ${PROD_PORT}). ==="
     # Machine-readable result on stdout: the new active color.
