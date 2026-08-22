@@ -1242,14 +1242,29 @@ describe('per-category cold start (fix-pass S1): a late-served weak dimension fl
     expect(start.status).toBe(201);
     const runId = start.body.runId;
 
-    // reading/listening/vocab all-correct ('a'); grammar all-wrong (skip —
-    // ALWAYS graded incorrect regardless of the stub's shuffled/fixed answer
-    // position, see `runAllSkip`'s doc comment above); hanja/writing skipped
-    // (irrelevant to this test, and skips never crash any section).
+    // reading/listening all-correct ('a' — topik-seeded with answer: 1, so
+    // 'a' is genuinely always correct); vocab all-correct too, but vocab is
+    // a GENERATED item whose correct-letter position is shuffled per item
+    // (`shuffleGeneratedChoices`), so a fixed 'a' pick is only ~25% correct —
+    // echo the stored correct_answer instead, the same pattern used by
+    // `pickTopikRow`'s test above. grammar all-wrong (skip — ALWAYS graded
+    // incorrect regardless of the stub's shuffled/fixed answer position, see
+    // `runAllSkip`'s doc comment above); hanja/writing skipped (irrelevant to
+    // this test, and skips never crash any section).
     let current: { responseId: number; section: string } | null = start.body.item;
     while (current !== null) {
-      const picked = current.section === 'reading' || current.section === 'listening' ||
-        current.section === 'vocab' ? 'a' : null;
+      let picked: string | null;
+      if (current.section === 'reading' || current.section === 'listening') {
+        picked = 'a';
+      } else if (current.section === 'vocab') {
+        const correct = await pg.pool.query<{ correct_answer: string }>(
+          `SELECT correct_answer FROM diagnostic_responses WHERE id = $1`,
+          [current.responseId],
+        );
+        picked = correct.rows[0]!.correct_answer;
+      } else {
+        picked = null;
+      }
       const ans = await agent
         .post(`/diagnostic/${runId}/answer`)
         .send({ responseId: current.responseId, picked });
