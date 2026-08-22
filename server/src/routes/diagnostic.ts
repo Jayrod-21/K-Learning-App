@@ -101,9 +101,10 @@ import {
 import {
   DIMENSION_ORDER,
   RUBRIC_VERSION,
+  dimensionResult,
+  dimensionResultForEstimate,
+  estimateForDimension,
   estimateToScore,
-  estimatesByDimension,
-  resultsByDimension,
   type DiagnosticDimensionKey,
   type ScoredResponse,
 } from '../services/diagnostic/scoring.js';
@@ -118,56 +119,131 @@ router.use(requireAuth);
 // ---------------------------------------------------------------------------
 
 /**
- * Items served per dimension (diagnostic-upgrade Phase B: a per-dimension
- * WEIGHTS map, replacing the old uniform `ITEMS_PER_DIMENSION = 4`). Five
- * dimensions keep the original 4: reading/listening/vocab/grammar cost one
- * Claude generation call each (topik-sourced reading/listening cost none),
- * hanja costs none (corpus-only, see `buildHanjaItem`). `writing` is
- * deliberately WEIGHTED DOWN to 2 — each writing item costs TWO Claude calls
- * (one `generateGrammarDrill` at serve time, one `scoreGrammarDrill` at grade
- * time) versus one for vocab/grammar, so 4 would roughly double the run's
- * total Claude spend for one dimension. 2 is enough signal to move θ a
- * couple of steps without that cost (the user's locked "Claude-graded short
- * response" ask never specified a count; 2 was chosen as the cheap end of
- * "more than one, not four").
+ * Items served per dimension (diagnostic-upgrade Phase C: PER-CATEGORY
+ * adaptive ladders — see `services/diagnostic/cat.ts` module doc and
+ * migration 089). Bumped from the Phase B weights
+ * (`reading/listening/vocab/grammar/hanja` = 4, `writing` = 2) to
+ * `reading/listening/vocab/grammar` = 6 each: once each of those four
+ * dimensions gets its OWN θ ladder (rather than sharing one global ladder),
+ * it needs enough of ITS OWN answers to genuinely diverge from the others —
+ * 4 items barely lets a 2-step staircase move; 6 gives a weak dimension real
+ * room to climb down from its warm-started θ while a strong dimension climbs
+ * up, which is the entire point of this build (see the divergence test in
+ * routes/diagnostic.test.ts). `hanja` stays at 4 (coverage-only, no ladder,
+ * unaffected by this change) and `writing` stays at 2 (still two Claude
+ * calls per item — see the original Phase B cost note below, unchanged).
  */
 const WEIGHTS: Record<DiagnosticDimensionKey, number> = {
-  reading: 4,
-  listening: 4,
-  vocab: 4,
-  grammar: 4,
+  reading: 6,
+  listening: 6,
+  vocab: 6,
+  grammar: 6,
   hanja: 4,
   writing: 2,
 };
 
-/**
- * Fixed serve schedule. The five WEIGHTS=4 dimensions round-robin-interleave
- * across 4 full rounds — EXACTLY the pre-Phase-B schedule (reading,
- * listening, vocab, grammar, hanja, reading, …, 20 slots) — then writing's 2
- * slots are appended at the very end (ordinals 21, 22).
- *
- * Why appended, not interleaved mid-run: the locked design only requires
- * writing's two items not BOTH land at the very start ("a strong writing
- * signal needs the θ to have moved") — it does not mandate even spacing.
- * Appending both after the full core round-robin (a) trivially satisfies
- * that constraint (θ has had the MAXIMUM possible evidence — 20 answers —
- * behind it by the time either writing item serves, which is strictly
- * BETTER signal quality than a mid-run placement, not just adequate), and
- * (b) leaves every existing reading/listening/vocab/grammar/hanja ordinal
- * (1, 6, 11, 16, …) byte-for-byte unchanged, so the CAT interleave the other
- * five dimensions rely on — and every test asserting on it — is undisturbed
- * by this change.
- */
-const CORE_ROUND_ROBIN_DIMENSIONS: readonly DiagnosticDimensionKey[] = DIMENSION_ORDER.filter(
-  (d) => d !== 'writing',
-);
-const CORE_ROUNDS = 4; // WEIGHTS value shared by every core-round-robin dimension.
-const SCHEDULE: readonly DiagnosticDimensionKey[] = [
-  ...Array.from({ length: CORE_ROUNDS }, () => CORE_ROUND_ROBIN_DIMENSIONS).flat(),
-  ...(Array.from({ length: WEIGHTS.writing }, () => 'writing') as DiagnosticDimensionKey[]),
+/** The four dimensions that round-robin as the run's core spine — each now
+ *  carries its OWN θ ladder (diagnostic-upgrade Phase C). `hanja` and
+ *  `writing` are woven into this spine separately by `buildSchedule` below,
+ *  not round-robinned alongside it (hanja has a different weight; writing
+ *  must land in the later half). */
+const CORE_LEVELED_DIMENSIONS: readonly DiagnosticDimensionKey[] = [
+  'reading',
+  'listening',
+  'vocab',
+  'grammar',
 ];
+const CORE_ROUNDS = 6; // WEIGHTS value shared by every core-leveled dimension.
 
-const TARGET_ITEM_COUNT = SCHEDULE.length; // 22 (4×5 core dims + 2 writing)
+/**
+ * Build the fixed, deterministic 30-item serve schedule (diagnostic-upgrade
+ * Phase C). No randomness — the exact same array is produced on every
+ * process start, so ordinal→section is a stable contract tests can pin.
+ *
+ * Construction, in three passes:
+ *
+ *   1. CORE round-robin: `CORE_ROUNDS` (6) laps of
+ *      `[reading, listening, vocab, grammar]` → 24 slots, evenly spread by
+ *      construction (this is the exact pre-Phase-C algorithm, just with
+ *      CORE_ROUNDS bumped 4 → 6 to match the new WEIGHTS).
+ *   2. hanja's `WEIGHTS.hanja` (4) slots are WOVEN into that 24-slot core
+ *      sequence at evenly spaced checkpoints (~ every 6 core items) rather
+ *      than clumped at either end — coverage-only, so WHERE it lands only
+ *      matters for pacing/variety, never for θ (hanja never touches any
+ *      ladder). The checkpoint math is computed off `core.length`/
+ *      `hanjaCount` generally, not hardcoded to 24/4, so a future WEIGHTS
+ *      retune keeps producing an even spread instead of silently clumping.
+ *   3. writing's `WEIGHTS.writing` (2) slots are woven into the LATER HALF
+ *      of the resulting 28-slot sequence, at two evenly spaced MIDPOINT
+ *      checkpoints (not the half's boundary) — so both writing items land
+ *      after most of the run's core/hanja evidence has already served (θ
+ *      has had room to move, the reason writing must never be item #1), are
+ *      never adjacent to each other, and (the midpoint choice) the second
+ *      one is never the run's literal last item either — a writing item is
+ *      Claude-graded and the single most expensive per-item reveal latency
+ *      in the run; ending the whole diagnostic on one is a worse UX beat
+ *      than ending on a fast MC grade.
+ *
+ * Produces exactly (per the WEIGHTS above): 6 reading, 6 listening, 6 vocab,
+ * 6 grammar, 4 hanja, 2 writing = 30 slots, in this fixed order:
+ *   reading, listening, vocab, grammar, reading, listening, hanja, vocab,
+ *   grammar, reading, listening, vocab, grammar, hanja, reading, listening,
+ *   vocab, grammar, writing, reading, listening, hanja, vocab, grammar,
+ *   reading, listening, writing, vocab, grammar, hanja
+ */
+function buildSchedule(): DiagnosticDimensionKey[] {
+  const core: DiagnosticDimensionKey[] = Array.from(
+    { length: CORE_ROUNDS },
+    () => CORE_LEVELED_DIMENSIONS,
+  ).flat();
+
+  const hanjaCount = WEIGHTS.hanja;
+  const withHanja: DiagnosticDimensionKey[] = [];
+  let hanjaInserted = 0;
+  for (let i = 0; i < core.length; i += 1) {
+    withHanja.push(core[i]!);
+    const nextCheckpoint = Math.round((core.length * (hanjaInserted + 1)) / hanjaCount);
+    if (hanjaInserted < hanjaCount && i + 1 === nextCheckpoint) {
+      withHanja.push('hanja');
+      hanjaInserted += 1;
+    }
+  }
+  // Defensive: a future WEIGHTS change could round every checkpoint below
+  // core.length before hanjaCount is exhausted — append any remainder so the
+  // schedule always carries exactly WEIGHTS.hanja hanja slots.
+  while (hanjaInserted < hanjaCount) {
+    withHanja.push('hanja');
+    hanjaInserted += 1;
+  }
+
+  const writingCount = WEIGHTS.writing;
+  const laterHalfStart = Math.ceil(withHanja.length / 2);
+  const laterSpan = withHanja.length - laterHalfStart;
+  const result: DiagnosticDimensionKey[] = [];
+  let writingInserted = 0;
+  for (let i = 0; i < withHanja.length; i += 1) {
+    result.push(withHanja[i]!);
+    if (i + 1 <= laterHalfStart) continue; // never interleave writing into the first half
+    const posInLaterHalf = i + 1 - laterHalfStart;
+    // Midpoint-of-share checkpoint (not the share's boundary) — see the
+    // function doc for why this keeps the last writing slot off the run's
+    // literal final item.
+    const nextCheckpoint = Math.round((laterSpan * (writingInserted + 0.5)) / writingCount);
+    if (writingInserted < writingCount && posInLaterHalf === nextCheckpoint) {
+      result.push('writing');
+      writingInserted += 1;
+    }
+  }
+  while (writingInserted < writingCount) {
+    result.push('writing');
+    writingInserted += 1;
+  }
+  return result;
+}
+
+const SCHEDULE: readonly DiagnosticDimensionKey[] = buildSchedule();
+
+const TARGET_ITEM_COUNT = SCHEDULE.length; // 30 (6×4 core dims + 4 hanja + 2 writing)
 
 type ChoiceId = 'a' | 'b' | 'c' | 'd';
 const CHOICE_IDS: readonly ChoiceId[] = ['a', 'b', 'c', 'd'];
@@ -1136,8 +1212,42 @@ interface RunRow {
   user_id: string;
   status: string;
   ability_estimate: string | null;
+  /** Per-dimension adaptive θ serving cache (migration 089, diagnostic-
+   *  upgrade Phase C) — the pg driver parses this JSONB column to a plain JS
+   *  value automatically; typed `unknown` here because it is server-authored
+   *  but never schema-guaranteed at the TS layer — see
+   *  `parseDimensionEstimates`. */
+  dimension_estimates: unknown;
   target_item_count: number;
   snapshot_id: string | null;
+}
+
+/** A per-run, per-dimension adaptive θ cache (`diagnostic_runs.
+ *  dimension_estimates`, migration 089). NEVER carries a `hanja` key —
+ *  hanja stays coverage-only, served/scored off the global θ (see
+ *  `serveNextItem`/the `/answer` handler's `isHanja` branch). */
+type DimensionEstimates = Partial<Record<DiagnosticDimensionKey, number>>;
+
+/**
+ * Defensively coerce a `dimension_estimates` JSONB read into a typed map.
+ * The column is server-authored only (never client input) and CHECK-pinned
+ * to `jsonb_typeof(...) = 'object'` at the DB layer, so in production this is
+ * always a clean pass-through — but this reader must never throw on a
+ * malformed/legacy value (mirrors `dimensionStatsFromEvidence`'s posture on
+ * `evidence` — degrade, never crash). `hanja` is dropped even if present
+ * (defensive only; the write path never puts it there) since hanja has no
+ * ladder to warm-start or step.
+ */
+function parseDimensionEstimates(raw: unknown): DimensionEstimates {
+  const out: DimensionEstimates = {};
+  if (typeof raw !== 'object' || raw === null) return out;
+  const obj = raw as Record<string, unknown>;
+  for (const key of DIMENSION_ORDER) {
+    if (key === 'hanja') continue; // hanja never carries a ladder entry
+    const v = obj[key];
+    if (typeof v === 'number' && Number.isFinite(v)) out[key] = v;
+  }
+  return out;
 }
 
 interface ResponseRow {
@@ -1158,7 +1268,8 @@ interface ResponseRow {
 async function loadUserRun(runId: number, userId: number): Promise<RunRow> {
   const { rows } = await query<RunRow>(
     `SELECT id::text AS id, user_id::text AS user_id, status,
-            ability_estimate, target_item_count, snapshot_id::text AS snapshot_id
+            ability_estimate, dimension_estimates, target_item_count,
+            snapshot_id::text AS snapshot_id
        FROM diagnostic_runs
       WHERE id = $1 AND user_id = $2`,
     [runId, userId],
@@ -1253,21 +1364,33 @@ async function servedHanjaChars(runId: number): Promise<string[]> {
  *
  * Skips ordinals whose section pool is empty: we record nothing for them and
  * move on, so the run can serve fewer items without ever 500-ing.
+ *
+ * PER-CATEGORY θ (diagnostic-upgrade Phase C): `globalTheta` is the run's
+ * overall θ (`ability_estimate ?? SEED_THETA`, already resolved by the
+ * caller). Each ordinal's item is built at ITS OWN section's θ:
+ * `dimensionEstimates[section] ?? globalTheta` — a warm start from the
+ * overall θ the first time a dimension is served, then that dimension's own
+ * ladder thereafter. `hanja` is the one exception: it has no ladder entry
+ * (never a key in `dimensionEstimates`) and is always served at
+ * `globalTheta`, exactly as before this change.
  */
 async function serveNextItem(
   runId: number,
   fromOrdinal: number,
-  theta: number,
+  globalTheta: number,
+  dimensionEstimates: DimensionEstimates,
   correlationId: string | undefined,
   userId: number,
 ): Promise<{ responseId: number; ordinal: number; item: ServerItem } | null> {
   for (let ordinal = fromOrdinal; ordinal <= TARGET_ITEM_COUNT; ordinal += 1) {
     const section = SCHEDULE[ordinal - 1]!;
+    const sectionTheta =
+      section === 'hanja' ? globalTheta : (dimensionEstimates[section] ?? globalTheta);
     const excludeTopik = await servedTopikIds(runId);
     const excludeHanja = await servedHanjaChars(runId);
     const item = await buildItemForSection(
       section,
-      theta,
+      sectionTheta,
       excludeTopik,
       excludeHanja,
       correlationId,
@@ -1366,6 +1489,19 @@ interface DimensionStat {
   readonly score: number;
   readonly scoreLow: number;
   readonly scoreHigh: number;
+  /**
+   * The section's final per-category adaptive θ (0–6), diagnostic-upgrade
+   * Phase C / rubric v1.5.0. Present for the FIVE LEVELED dimensions
+   * (reading/listening/vocab/grammar/writing) — equal to `estimate` for
+   * those (the ladder θ IS the estimate now; see `dimensionResultForEstimate`
+   * in `routes/diagnostic.ts`'s finish handler), carried as an explicit
+   * field for audit/evidence clarity rather than forcing a reader to assume
+   * `estimate` means "ladder θ". Absent for `hanja` (coverage-only, no
+   * ladder) and for every pre-v1.5.0 snapshot — OPTIONAL, and deliberately
+   * NOT part of `DIMENSION_STAT_FIELDS`'s validity requirement, so an old
+   * snapshot missing it still loads cleanly (degrade, never crash).
+   */
+  readonly theta?: number;
 }
 
 const DIMENSION_STAT_FIELDS = [
@@ -1402,6 +1538,7 @@ function dimensionStatsFromEvidence(
       return typeof v === 'number' && Number.isFinite(v);
     });
     if (!valid) continue; // malformed entry — degrade this dimension to no band
+    const theta = stat['theta'];
     out[key] = {
       n: stat['n'] as number,
       correct: stat['correct'] as number,
@@ -1409,6 +1546,7 @@ function dimensionStatsFromEvidence(
       score: stat['score'] as number,
       scoreLow: stat['scoreLow'] as number,
       scoreHigh: stat['scoreHigh'] as number,
+      ...(typeof theta === 'number' && Number.isFinite(theta) ? { theta } : {}),
     };
   }
   return out;
@@ -1515,7 +1653,9 @@ router.post('/', diagnosticLimiter(), validateBody(EmptyBodySchema), async (req,
     );
     const runId = Number(rows[0]!.id);
 
-    const served = await serveNextItem(runId, 1, theta, req.correlationId, userId);
+    // A brand-new run has no dimension_estimates yet (default '{}') — item #1
+    // warm-starts at SEED_THETA for its section exactly as it always has.
+    const served = await serveNextItem(runId, 1, theta, {}, req.correlationId, userId);
     if (served === null) {
       // No section pool could produce even one item. Rather than a dead run,
       // surface a clear error — the corpora are required reference data.
@@ -1836,8 +1976,9 @@ router.post(
         const { rows: lockRows } = await client.query<{
           status: string;
           ability_estimate: string | null;
+          dimension_estimates: unknown;
         }>(
-          `SELECT status, ability_estimate
+          `SELECT status, ability_estimate, dimension_estimates
              FROM diagnostic_runs
             WHERE id = $1
             FOR UPDATE`,
@@ -1902,6 +2043,12 @@ router.post(
         // exactly like reading/listening/vocab/grammar always have.
         const isHanja = current.section === 'hanja';
         let updatedTheta: number | null = null;
+        // PER-CATEGORY ladder step (diagnostic-upgrade Phase C): the
+        // section's own θ, stepped ALONGSIDE the global θ below on every
+        // non-hanja answer. `sectionTheta` is the value WRITTEN into
+        // `dimension_estimates[current.section]`; `null` only for hanja
+        // (which never gets an entry).
+        let sectionTheta: number | null = null;
         if (!isHanja) {
           // CAT step number = (non-hanja answers already recorded) + 1,
           // counted UNDER THE LOCK so a racing request can't inflate it (S4).
@@ -1914,6 +2061,28 @@ router.post(
           const priorTheta =
             locked.ability_estimate !== null ? Number(locked.ability_estimate) : SEED_THETA;
           updatedTheta = nextTheta(priorTheta, isCorrect, answerNumber);
+
+          // perSectionAnswerNumber = (this SECTION's prior non-hanja answers)
+          // + 1 — its OWN count, independent of the global counter above, so
+          // each dimension's ladder decays on its OWN evidence (a weak
+          // dimension's staircase stays steep even after the run has moved
+          // on to other dimensions many times). `section <> 'hanja'` mirrors
+          // the global counter's guard for symmetry, though `current.section`
+          // is already known non-hanja here (the `isHanja` branch above).
+          const { rows: sectionCountRows } = await client.query<{ n: string }>(
+            `SELECT count(*)::text AS n FROM diagnostic_responses
+              WHERE run_id = $1 AND answered_at IS NOT NULL
+                AND section = $2 AND section <> 'hanja'`,
+            [params.runId, current.section],
+          );
+          const perSectionAnswerNumber = Number(sectionCountRows[0]!.n) + 1;
+          // Warm start: this section's cached θ if it has one, else the SAME
+          // prior GLOBAL θ the global step above just used (not the
+          // already-updated one) — a dimension's first-ever answer starts
+          // exactly where the run's overall placement currently sits.
+          const dimensionEstimates = parseDimensionEstimates(locked.dimension_estimates);
+          const priorSectionTheta = dimensionEstimates[current.section] ?? priorTheta;
+          sectionTheta = nextTheta(priorSectionTheta, isCorrect, perSectionAnswerNumber);
         }
 
         // Single-shot transition. If a concurrent request already answered this
@@ -1952,12 +2121,20 @@ router.post(
             ],
           );
         }
-        if (updatedTheta !== null) {
+        if (updatedTheta !== null && sectionTheta !== null) {
+          // `current.section` is a DiagnosticDimensionKey drawn from a
+          // server-validated column (CHECK-pinned, never client input), so
+          // interpolating it into the jsonb_set path literal here is safe —
+          // mirrors the existing '{toursSeen}'/'{clozeEnabled}' literal-path
+          // convention in settings.ts; the value itself is fully parameterized.
+          const dimPath = `{${current.section}}`;
           await client.query(
             `UPDATE diagnostic_runs
-                SET ability_estimate = $2, version = version + 1
+                SET ability_estimate = $2,
+                    dimension_estimates = jsonb_set(dimension_estimates, '${dimPath}', to_jsonb($3::numeric)),
+                    version = version + 1
               WHERE id = $1`,
-            [params.runId, thetaToNumeric(updatedTheta)],
+            [params.runId, thetaToNumeric(updatedTheta), thetaToNumeric(sectionTheta)],
           );
         } else {
           // Hanja: still bump the run's optimistic-concurrency counter (a
@@ -2152,10 +2329,15 @@ router.post(
 
       // θ as persisted by the last /answer (2-dp NUMERIC, same rounding the
       // /finish trajectory reconstruction assumes). The CAT update itself
-      // happened in /answer; this route only READS the estimate to pick the
-      // next item's band — scoring/θ logic is untouched by the B-006 split.
+      // happened in /answer; this route only READS the estimate(s) to pick
+      // the next item's band — scoring/θ logic is untouched by the B-006
+      // split. `dimensionEstimates` is the per-category ladder cache
+      // (diagnostic-upgrade Phase C); `serveNextItem` resolves the next
+      // ordinal's OWN section θ from it, warm-starting from `theta` (the
+      // overall θ) for a dimension not yet in the cache.
       const theta =
         run.ability_estimate !== null ? Number(run.ability_estimate) : SEED_THETA;
+      const dimensionEstimates = parseDimensionEstimates(run.dimension_estimates);
 
       let served: Awaited<ReturnType<typeof serveNextItem>>;
       try {
@@ -2163,6 +2345,7 @@ router.post(
           params.runId,
           nextOrdinal,
           theta,
+          dimensionEstimates,
           req.correlationId,
           userId,
         );
@@ -2259,20 +2442,60 @@ router.post(
         difficulty: Number(r.difficulty),
         isCorrect: r.is_correct === true,
       }));
-      const estimates = estimatesByDimension(scored);
 
-      // Per-dimension band stats (F-011). The snapshot table's estimate
-      // columns can't reproduce the confidence band on read (it needs n and
-      // the correct-count), so the full stats ride in the `evidence` JSONB —
-      // `dimensionStatsFromEvidence` reads them back for /latest, /history and
-      // the idempotent re-finish. Dimensions that received zero items are
-      // omitted, mirroring the estimate columns.
-      const results = resultsByDimension(scored);
+      // Per-category ladder cache (diagnostic-upgrade Phase C / migration
+      // 089) — the run's final per-dimension θ, keyed the same way it was
+      // stepped in /answer.
+      const dimensionEstimates = parseDimensionEstimates(run.dimension_estimates);
+
+      // Per-dimension band stats (F-011), re-sourced for rubric v1.5.0: a
+      // LEVELED dimension's point estimate is now that section's FINAL
+      // adaptive θ (the per-category ladder readout in
+      // `dimension_estimates`) — the real evidence a per-category ladder
+      // produces — rather than the old mean-difficulty+p heuristic.
+      // `dimensionResultForEstimate` keeps the SAME Agresti-Coull band math
+      // as before, centered on that θ instead of a derived value. `hanja` is
+      // UNCHANGED (coverage-only, no ladder): still scored via
+      // `estimateForDimension`/`dimensionResult` exactly as pre-v1.5.0. The
+      // snapshot table's estimate columns can't reproduce the confidence
+      // band on read (it needs n and the correct-count), so the full stats
+      // ride in the `evidence` JSONB — `dimensionStatsFromEvidence` reads
+      // them back for /latest, /history and the idempotent re-finish.
+      // Dimensions that received zero items are omitted, mirroring the
+      // estimate columns.
       const dimensionStats: Partial<Record<DiagnosticDimensionKey, DimensionStat>> = {};
       for (const dim of DIMENSION_ORDER) {
-        const result = results[dim];
-        if (result === null) continue;
-        const correct = scored.filter((r) => r.section === dim && r.isCorrect).length;
+        const responses = scored.filter((r) => r.section === dim);
+        if (responses.length === 0) continue;
+        const correct = responses.filter((r) => r.isCorrect).length;
+
+        if (dim === 'hanja') {
+          const result = dimensionResult(responses);
+          if (result === null) continue; // unreachable (responses.length > 0), defensive
+          dimensionStats[dim] = {
+            n: result.n,
+            correct,
+            estimate: result.estimate,
+            score: result.score,
+            scoreLow: result.scoreLow,
+            scoreHigh: result.scoreHigh,
+          };
+          continue;
+        }
+
+        // LEVELED dimension: prefer the ladder's final θ; defensive fallback
+        // to the legacy mean-difficulty+p estimate if the cache is somehow
+        // missing this dimension's entry (a run that served items for `dim`
+        // but never got a dimension_estimates write — should not happen, see
+        // the /answer stepping block, but the cache is a REBUILDABLE serving
+        // cache, never the sole source of truth — migration 089's down.sql
+        // header makes the same point). `estimateForDimension` cannot return
+        // null here (that only happens for an empty `responses`, already
+        // excluded above), hence the assertion.
+        const ladderTheta = dimensionEstimates[dim];
+        const effectiveEstimate = ladderTheta ?? estimateForDimension(responses)!;
+        const result = dimensionResultForEstimate(responses, effectiveEstimate);
+        if (result === null) continue; // unreachable, defensive (mirrors above)
         dimensionStats[dim] = {
           n: result.n,
           correct,
@@ -2280,7 +2503,18 @@ router.post(
           score: result.score,
           scoreLow: result.scoreLow,
           scoreHigh: result.scoreHigh,
+          theta: ladderTheta ?? result.estimate,
         };
+      }
+
+      // The snapshot's fixed estimate columns (reading/listening/writing/
+      // grammar/vocab_estimate) — read straight off `dimensionStats` so they
+      // are bit-identical to what `evidence.dimensionStats` carries (single
+      // source of computation, matching the invariant `buildSnapshotDTO`'s
+      // doc already relies on for the pre-v1.5.0 four).
+      const finalEstimates: Partial<Record<DiagnosticDimensionKey, number | null>> = {};
+      for (const dim of DIMENSION_ORDER) {
+        finalEstimates[dim] = dimensionStats[dim]?.estimate ?? null;
       }
 
       // Reconstruct the per-answer θ trajectory from the ordered responses.
@@ -2359,11 +2593,11 @@ router.post(
            RETURNING id::text AS id`,
           [
             userId,
-            estimates.reading,
-            estimates.listening,
-            estimates.writing,
-            estimates.grammar,
-            estimates.vocab,
+            finalEstimates.reading,
+            finalEstimates.listening,
+            finalEstimates.writing,
+            finalEstimates.grammar,
+            finalEstimates.vocab,
             JSON.stringify(evidence),
             RUBRIC_VERSION,
           ],
@@ -2382,7 +2616,8 @@ router.post(
       // Build the DTO from the snapshot we just wrote (or the one the race
       // winner wrote — reload it user-scoped to be safe).
       const dto =
-        (await loadSnapshotDTO(snapshotId, userId)) ?? buildSnapshotDTO(estimates, dimensionStats);
+        (await loadSnapshotDTO(snapshotId, userId)) ??
+        buildSnapshotDTO(finalEstimates, dimensionStats);
       res.status(200).json({ snapshot: dto });
     } catch (err) {
       next(mapClaudeError(err));
