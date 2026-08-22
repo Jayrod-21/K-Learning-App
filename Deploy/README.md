@@ -289,12 +289,25 @@ The active color lives in three places that must agree:
 
 * the `ACTIVE_ENVIRONMENT` line in the persistent server `.env`,
 * the live `km-lb` nginx config (which upstream `:1840` points at), and
-* `Deploy/active-color` — a one-line file naming the active color, bind-mounted
-  read-only into BOTH `km-server-blue` and `km-server-green` so each process
-  can tell whether IT is the active one (Phase 1.3: gates the story-TTS/
-  illustration job runners so only the active color claims live work — see
-  `config/index.ts`'s `isRunnerActiveColor`). Deliberately a separate file
-  from the secrets-bearing `.env`; `check-active-env.sh` does not check it
+* `Deploy/active-color.d/active-color` — a one-line file naming the active
+  color, inside `Deploy/active-color.d/`, a small dedicated directory
+  bind-mounted **read-only as a directory** (not the file directly) into BOTH
+  `km-server-blue` and `km-server-green` so each process can tell whether IT
+  is the active one (Phase 1.3: gates the story-TTS/illustration job runners
+  so only the active color claims live work — see `config/index.ts`'s
+  `isRunnerActiveColor`). It is a *directory* mount deliberately: a Linux
+  bind mount of a single FILE pins the container's mountpoint to the inode
+  that existed at container start, so `write_active_color_file`'s atomic
+  temp-file + `mv` (which swaps the host directory entry to a new inode)
+  would never be observed by an already-running container — the newly
+  active color's runners would stall forever after the very first switch.
+  Mounting the enclosing directory instead means only the filename's inode
+  resolution changes, which containers DO observe live, with no restart.
+  `Deploy/active-color.d/` is deliberately a separate directory from the
+  secrets-bearing `.env` (it holds nothing but a one-line color name); the
+  directory itself is committed empty (`active-color.d/.gitkeep`) so the
+  mount source always exists on a fresh checkout, while the mutable value
+  file inside it is gitignored. `check-active-env.sh` does not check it
   (its drift is low-stakes — `SKIP LOCKED` makes concurrent claiming safe,
   just unpredictable — so it is kept in sync by `write_active_color_file`
   rather than gated).
@@ -305,10 +318,13 @@ Deploy/check-active-env.sh                # cross-checks .env vs live nginx; exi
 ```
 
 A flip is `nginx_switch <color>` followed by writing `ACTIVE_ENVIRONMENT` and
-`Deploy/active-color` (all three done by `azure-switch-production.sh`). Never
-edit the live `nginx.conf` or `active-color` by hand — both are overwritten by
-the deploy scripts (`nginx.conf` from `nginx-${color}-active.conf` on every
-switch; `active-color` via `write_active_color_file`).
+`Deploy/active-color.d/active-color` (all three done by
+`azure-switch-production.sh`). Never edit the live `nginx.conf` or
+`active-color.d/active-color` by hand — both are overwritten by the deploy
+scripts (`nginx.conf` from `nginx-${color}-active.conf` on every switch;
+`active-color.d/active-color` via `write_active_color_file`, which writes a
+temp file INSIDE `active-color.d/` and renames it into place so the mount
+sees the change).
 
 ---
 

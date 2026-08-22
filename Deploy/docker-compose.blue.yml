@@ -144,10 +144,12 @@ services:
       # this flag changes nothing unless an operator deliberately sets it.
       - STORY_RUNNERS_ENABLED=${STORY_RUNNERS_ENABLED:-true}
       # In-container path the mounted active-color file is read from (see the
-      # matching volumes: entry below). Fixed — both colors use the same
-      # in-container path; only the HOST file differs per the ACTIVE_COLOR_FILE
-      # bash var in deployment-utils.sh (KM_ACTIVE_COLOR_FILE override).
-      - ACTIVE_COLOR_FILE=/app/deploy/active-color
+      # matching volumes: entry below — a DIRECTORY mount, not a file mount;
+      # the file lives inside it). Fixed — both colors use the same
+      # in-container path; only the HOST directory differs per the
+      # ACTIVE_COLOR_DIR bash var in deployment-utils.sh (KM_ACTIVE_COLOR_FILE_DIR
+      # override).
+      - ACTIVE_COLOR_FILE=/app/deploy/active-color.d/active-color
       # F-006 email verification (values in Deploy/.env). SMTP_HOST unset ⇒
       # mock transport (no real send). host.docker.internal reaches Proton
       # Mail Bridge on the HOST (see extra_hosts below).
@@ -204,13 +206,23 @@ services:
       - ${CORPUS_AUDIO_DIR_HOST:-/srv/korean-master/corpus}:/corpus:ro
       # Phase 1.3: the active-color signal (a single line naming "blue" or
       # "green"), READ-ONLY — a compromised server cannot promote itself.
-      # BOTH colors mount this SAME host file so a switch (which rewrites it
-      # via write_active_color_file) is visible to both without a restart.
-      # NOT the secrets-bearing .env — this file holds nothing but a color
-      # name. KM_ACTIVE_COLOR_FILE overrides the host path (mirrors
-      # KM_LIVE_NGINX_CONF); default is Deploy/active-color, seeded by
-      # local-standup.sh before either color's compose first comes up.
-      - ${KM_ACTIVE_COLOR_FILE:-./active-color}:/app/deploy/active-color:ro
+      # BOTH colors mount this SAME host DIRECTORY (not the file itself) so a
+      # switch is visible to both without a restart: a plain Linux bind mount
+      # of a single FILE pins the container's mountpoint to the inode that
+      # existed at container start — `write_active_color_file`'s atomic
+      # temp-file + `mv` swaps the host directory entry to a NEW inode, which
+      # an already-running single-file mount never observes, so the newly
+      # active color's story-runners would stall forever after the first
+      # switch. A directory mount does not have this problem: the mounted
+      # directory entry itself doesn't change, only which inode the FILENAME
+      # inside it resolves to, and that IS observed live through the mount.
+      # NOT the secrets-bearing .env — this directory holds nothing but the
+      # one-line color-name file. KM_ACTIVE_COLOR_FILE_DIR overrides the host
+      # path (mirrors KM_LIVE_NGINX_CONF); default is Deploy/active-color.d,
+      # committed empty (active-color.d/.gitkeep) so the mount source always
+      # exists, seeded with the value file by local-standup.sh /
+      # azure-deploy-inactive.sh before either color's compose first comes up.
+      - ${KM_ACTIVE_COLOR_FILE_DIR:-./active-color.d}:/app/deploy/active-color.d:ro
 
     ports:
       # Direct debug port, LOOPBACK ONLY (operator curls the color in isolation,

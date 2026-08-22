@@ -60,7 +60,20 @@ LIVE_NGINX_CONF="${KM_LIVE_NGINX_CONF:-${DEPLOY_DIR}/nginx.conf}"
 # container is a needless extra read surface — this file holds nothing but a
 # color name. write_active_color_file (below) keeps it in sync with
 # ACTIVE_ENVIRONMENT.
-ACTIVE_COLOR_FILE="${KM_ACTIVE_COLOR_FILE:-${DEPLOY_DIR}/active-color}"
+#
+# ACTIVE_COLOR_DIR (not ACTIVE_COLOR_FILE) is the compose bind-mount SOURCE.
+# A single-file bind mount pins a running container's mountpoint to the inode
+# that existed at container start; `mv`-based atomic renames (below) swap the
+# host directory entry to a NEW inode, which an already-running single-file
+# mount never observes — the newly-active color's story-runners would stall
+# forever after the first switch. Mounting the enclosing DIRECTORY instead
+# means only the filename-to-inode resolution changes, and containers DO
+# observe that live, no restart required. KM_ACTIVE_COLOR_FILE_DIR overrides
+# the host directory (mirrors KM_LIVE_NGINX_CONF); default is
+# Deploy/active-color.d, committed empty (active-color.d/.gitkeep) so the
+# mount source always exists on a fresh checkout.
+ACTIVE_COLOR_DIR="${KM_ACTIVE_COLOR_FILE_DIR:-${DEPLOY_DIR}/active-color.d}"
+ACTIVE_COLOR_FILE="${ACTIVE_COLOR_DIR}/active-color"
 
 # Compose file paths (per the locked layout).
 COMPOSE_SHARED_FILE="${DEPLOY_DIR}/docker-compose.shared.yml"
@@ -267,10 +280,19 @@ save_env_var() {
 # -----------------------------------------------------------------------------
 # Keeps the bind-mounted active-color signal (Phase 1.3 story-runner gating)
 # in sync with ACTIVE_ENVIRONMENT. Not a secret — world-readable is fine — but
-# still written via temp-file + atomic mv so a concurrent read (a server tick
-# in either color) never observes a half-written file. Callers: every place
-# that persists ACTIVE_ENVIRONMENT should call this too (currently
-# azure-switch-production.sh post-flip, and local-standup.sh's cold seed).
+# still written via temp-file + atomic mv, INSIDE ACTIVE_COLOR_DIR (the same
+# directory the file lives in, and the same directory bind-mounted into both
+# colors' containers — see the ACTIVE_COLOR_DIR comment above), so:
+#   (a) the rename is same-filesystem, so `mv` is atomic — a concurrent read
+#       (a server tick in either color) never observes a half-written file;
+#   (b) the temp file is created UNDER the mounted directory (never /tmp), so
+#       the rename that swaps it in is a rename WITHIN the mount and is
+#       therefore actually visible to already-running containers watching
+#       that directory — the whole reason this is a directory mount and not
+#       a file mount.
+# Callers: every place that persists ACTIVE_ENVIRONMENT should call this too
+# (currently azure-switch-production.sh post-flip, and local-standup.sh's /
+# azure-deploy-inactive.sh's cold seed).
 # =============================================================================
 write_active_color_file() {
     local color="$1"
@@ -278,6 +300,9 @@ write_active_color_file() {
         log_err "write_active_color_file: color must be 'blue' or 'green', got '${color}'"
         return 1
     fi
+    # Defensive: ensure the mount-source directory exists even if a caller
+    # skipped the seed step (mktemp below requires the directory to exist).
+    mkdir -p "$ACTIVE_COLOR_DIR"
     local tmp
     tmp="$(mktemp "${ACTIVE_COLOR_FILE}.XXXXXX")"
     printf '%s\n' "$color" >"$tmp"

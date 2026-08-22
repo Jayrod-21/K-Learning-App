@@ -227,10 +227,15 @@ const EnvSchema = z.object({
   // cached `Config`; it must be re-read from disk on every check instead.
   // azure-switch-production.sh rewrites this file atomically the moment a
   // switch's post-flip health check passes, mirroring how it already
-  // persists ACTIVE_ENVIRONMENT into Deploy/.env. Bind-mounted read-only
-  // into both colors' containers (NOT the secrets-bearing .env itself —
-  // this file holds nothing but a color name).
-  ACTIVE_COLOR_FILE: z.string().min(1).default('/app/deploy/active-color'),
+  // persists ACTIVE_ENVIRONMENT into Deploy/.env. The default path lives
+  // INSIDE a dedicated bind-mounted DIRECTORY, not a file mounted directly —
+  // a single-file bind mount pins the container to the inode present at
+  // container start, so it would never observe the atomic rename this file
+  // is rewritten with; mounting the enclosing directory makes that rename
+  // visible with no container restart. Bind-mounted read-only into both
+  // colors' containers (NOT the secrets-bearing .env itself — this
+  // directory holds nothing but a color name).
+  ACTIVE_COLOR_FILE: z.string().min(1).default('/app/deploy/active-color.d/active-color'),
 
   // ---------------------------------------------------------------------------
   // Story illustrations (F-211 — AI images for generated stories, OpenAI

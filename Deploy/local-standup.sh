@@ -106,13 +106,22 @@ main() {
         cp -- "${DEPLOY_DIR}/nginx-${active}-active.conf" "$LIVE_NGINX_CONF"
     fi
 
-    # --- Seed the active-color file BEFORE the color trio starts -------------
+    # --- Seed the active-color directory + file BEFORE the color trio starts -
     # Phase 1.3 story-runner gating: km-server-{blue,green} both bind-mount
-    # ACTIVE_COLOR_FILE read-only. On a cold box it does not exist yet — same
-    # stale-directory hazard as LIVE_NGINX_CONF above, same fix (remove, then
-    # let write_active_color_file recreate it as a plain file).
+    # ACTIVE_COLOR_DIR (a directory, not the file — see deployment-utils.sh's
+    # ACTIVE_COLOR_DIR comment for why a directory mount is required for the
+    # host's atomic rename to actually propagate into a running container).
+    # Ensure the mount SOURCE directory exists first: the repo commits it
+    # empty (active-color.d/.gitkeep) so a normal checkout already has it,
+    # but mkdir -p keeps this idempotent even without that file, and avoids
+    # Docker silently creating a root-owned directory at the mount target on
+    # first `up` if it were ever missing. Then self-heal the VALUE file path
+    # if a prior failed run left a stale directory there, same as
+    # LIVE_NGINX_CONF above, before letting write_active_color_file (re)create
+    # it as a plain file.
+    mkdir -p "$ACTIVE_COLOR_DIR"
     if [[ -d "$ACTIVE_COLOR_FILE" ]]; then
-        log_warn "active-color path is a directory (stale mount); removing it"
+        log_warn "active-color file path is a directory (stale); removing it"
         rmdir "$ACTIVE_COLOR_FILE" 2>/dev/null || rm -rf -- "$ACTIVE_COLOR_FILE"
     fi
     if [[ ! -f "$ACTIVE_COLOR_FILE" ]]; then
