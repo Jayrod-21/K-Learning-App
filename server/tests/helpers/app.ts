@@ -394,7 +394,12 @@ export function buildTestApp(opts: BuildOptions): TestApp {
   process.env.RATE_LIMIT_WINDOW_MS = '60000';
   process.env.RATE_LIMIT_CHEAP_MAX = '120';
   process.env.RATE_LIMIT_EXPENSIVE_MAX = '20';
-  process.env.RATE_LIMIT_DIAGNOSTIC_MAX = '30';
+  // Mirrors the production default (src/config/index.ts) — a full 30-item
+  // diagnostic run alone makes 30 diagnosticLimiter-gated route-entry hits
+  // (1 create + 29 /next calls, diagnostic-upgrade Phase C), so this must
+  // stay above that floor with real headroom for retries/idempotent
+  // re-serves within a single test.
+  process.env.RATE_LIMIT_DIAGNOSTIC_MAX = '45';
   process.env.RATE_LIMIT_AUTH_MAX = '5';
   process.env.LOG_LEVEL = 'silent';
   // The route suite stubs the Claude proxy (`setClaudeProxy`/`makeStubProxy`)

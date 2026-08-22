@@ -11,6 +11,7 @@ import {
   DIMENSION_ORDER,
   RUBRIC_VERSION,
   dimensionResult,
+  dimensionResultForEstimate,
   estimateForDimension,
   estimateToScore,
   estimatesByDimension,
@@ -31,8 +32,8 @@ describe('RUBRIC_VERSION', () => {
   it('matches the diagnostic_snapshots semver CHECK', () => {
     expect(RUBRIC_VERSION).toMatch(/^v\d+\.\d+\.\d+$/);
   });
-  it('is bumped to v1.4.0 for the diagnostic-upgrade Phase B writing dimension', () => {
-    expect(RUBRIC_VERSION).toBe('v1.4.0');
+  it('is bumped to v1.5.0 for the diagnostic-upgrade Phase C per-category ladders', () => {
+    expect(RUBRIC_VERSION).toBe('v1.5.0');
   });
 });
 
@@ -212,6 +213,54 @@ describe('resultsByDimension', () => {
     const estimates = estimatesByDimension(resp);
     expect(out.reading?.estimate).toBe(estimates.reading);
     expect(out.vocab?.estimate).toBe(estimates.vocab);
+  });
+});
+
+describe('dimensionResultForEstimate (diagnostic-upgrade Phase C / v1.5.0)', () => {
+  it('returns null for a zero-item dimension (same contract as dimensionResult)', () => {
+    expect(dimensionResultForEstimate([], 3)).toBeNull();
+  });
+
+  it('uses the SUPPLIED estimate, not one derived from difficulty/p', () => {
+    // responsesOf(4, 4) at difficulty 4 would derive estimateForDimension →
+    // 4.75 — pass a totally different ladder θ (2.3) and confirm THAT wins.
+    const r = dimensionResultForEstimate(responsesOf(4, 4), 2.3)!;
+    expect(r.estimate).toBe(2.3);
+    expect(r.score).toBe(estimateToScore(2.3));
+  });
+
+  it('clamps the supplied estimate to [1, 6]', () => {
+    expect(dimensionResultForEstimate(responsesOf(2, 1), 8)!.estimate).toBe(6);
+    expect(dimensionResultForEstimate(responsesOf(2, 1), 0)!.estimate).toBe(1);
+  });
+
+  it('band WIDTH matches dimensionResult exactly (same n/k math, different anchor)', () => {
+    // Same n/k as a dimensionResult case, but centered on a different
+    // estimate — the margin (scoreHigh − score, score − scoreLow in θ terms)
+    // should be identical; only the anchor point moves.
+    const viaEstimateForDimension = dimensionResult(responsesOf(4, 4))!;
+    const viaSuppliedEstimate = dimensionResultForEstimate(
+      responsesOf(4, 4),
+      viaEstimateForDimension.estimate,
+    )!;
+    expect(viaSuppliedEstimate.scoreLow).toBe(viaEstimateForDimension.scoreLow);
+    expect(viaSuppliedEstimate.scoreHigh).toBe(viaEstimateForDimension.scoreHigh);
+    expect(viaSuppliedEstimate.score).toBe(viaEstimateForDimension.score);
+    expect(viaSuppliedEstimate.n).toBe(viaEstimateForDimension.n);
+  });
+
+  it('keeps scoreLow ≤ score ≤ scoreHigh, all within [0, 100], across a range of supplied estimates', () => {
+    for (const n of [1, 2, 4]) {
+      for (let k = 0; k <= n; k += 1) {
+        for (const estimate of [1, 2.4, 3.7, 5, 6]) {
+          const r = dimensionResultForEstimate(responsesOf(n, k), estimate)!;
+          expect(r.scoreLow).toBeLessThanOrEqual(r.score);
+          expect(r.score).toBeLessThanOrEqual(r.scoreHigh);
+          expect(r.scoreLow).toBeGreaterThanOrEqual(0);
+          expect(r.scoreHigh).toBeLessThanOrEqual(100);
+        }
+      }
+    }
   });
 });
 

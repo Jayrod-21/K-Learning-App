@@ -132,8 +132,13 @@ router.use(requireAuth);
  * routes/diagnostic.test.ts). `hanja` stays at 4 (coverage-only, no ladder,
  * unaffected by this change) and `writing` stays at 2 (still two Claude
  * calls per item — see the original Phase B cost note below, unchanged).
+ *
+ * Exported (with `SCHEDULE`/`TARGET_ITEM_COUNT` below) for direct fence
+ * coverage — tests derive expected ordinals/positions from the REAL schedule
+ * rather than hardcoding a second copy of it (mirrors `pickVocabSeed`'s
+ * export precedent).
  */
-const WEIGHTS: Record<DiagnosticDimensionKey, number> = {
+export const WEIGHTS: Record<DiagnosticDimensionKey, number> = {
   reading: 6,
   listening: 6,
   vocab: 6,
@@ -241,9 +246,9 @@ function buildSchedule(): DiagnosticDimensionKey[] {
   return result;
 }
 
-const SCHEDULE: readonly DiagnosticDimensionKey[] = buildSchedule();
+export const SCHEDULE: readonly DiagnosticDimensionKey[] = buildSchedule();
 
-const TARGET_ITEM_COUNT = SCHEDULE.length; // 30 (6×4 core dims + 4 hanja + 2 writing)
+export const TARGET_ITEM_COUNT = SCHEDULE.length; // 30 (6×4 core dims + 4 hanja + 2 writing)
 
 type ChoiceId = 'a' | 'b' | 'c' | 'd';
 const CHOICE_IDS: readonly ChoiceId[] = ['a', 'b', 'c', 'd'];
