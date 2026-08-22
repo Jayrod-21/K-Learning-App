@@ -50,8 +50,34 @@
  *  writing evidence rows, it does not change what the estimator reads by
  *  default. No formula here changed — again purely additive (a 6th key), so
  *  every snapshot pre-v1.4.0 (no `writing` estimate) still compares cleanly
- *  on every other dimension. */
-export const RUBRIC_VERSION = 'v1.4.0';
+ *  on every other dimension.
+ *
+ *  v1.5.0 (diagnostic-upgrade Phase C — PER-CATEGORY adaptive ladders): the
+ *  five LEVELED dimensions (reading/listening/vocab/grammar/writing) no
+ *  longer share one global θ ladder — each now steps its OWN ladder,
+ *  cold-started at SEED_THETA on its first item (fix-pass S1: not
+ *  warm-started from the run's live global θ, which was order-dependent on
+ *  the fixed serving schedule) and cached per-run in
+ *  `diagnostic_runs.dimension_estimates` (migration 089). The scoring-layer
+ *  change this version number marks: a leveled dimension's point estimate at
+ *  /finish is now that section's FINAL adaptive θ (the real per-category
+ *  readout), not the `estimateForDimension` mean-difficulty+p heuristic —
+ *  see `dimensionResultForEstimate` below, which keeps the SAME
+ *  Agresti-Coull confidence-band math (`ESTIMATE_SPREAD`/`BAND_Z`, unchanged)
+ *  but centers it on an externally supplied estimate instead of one derived
+ *  from `responses`. `hanja` is UNCHANGED — coverage-only, no ladder, still
+ *  scored via `estimateForDimension`/`dimensionResult` exactly as before.
+ *  `estimateForDimension`/`estimatesByDimension`/`dimensionResult`/
+ *  `resultsByDimension` are NOT removed: they remain hanja's scoring path AND
+ *  the route's defensive fallback if a run's ladder cache is ever missing an
+ *  entry for a dimension that did receive items. No anchor/spread/band
+ *  formula changed — this is a re-sourcing of WHICH number is "the estimate"
+ *  for 5 of 6 dimensions, not a new formula, so a snapshot's score/band
+ *  fields stay directly comparable release-to-release on every dimension
+ *  hanja included; only a leveled dimension's point value moved to a more
+ *  accurate source (F-010 history callers should still prefer comparing
+ *  like rubric versions when precision matters, per the v1.2.0 note above). */
+export const RUBRIC_VERSION = 'v1.5.0';
 
 /** The six diagnostic dimensions, in the fixed display order. `hanja` is
  *  coverage-only (see the v1.3.0 rubric note above) — scored like the others
@@ -203,6 +229,43 @@ export function dimensionResult(responses: readonly ScoredResponse[]): Dimension
   const scoreLow = estimateToScore(clampEstimate(estimate - margin));
   const scoreHigh = estimateToScore(clampEstimate(estimate + margin));
   return { estimate, score, scoreLow, scoreHigh, n };
+}
+
+/**
+ * Same confidence-band math as `dimensionResult`, but centered on an
+ * EXTERNALLY SUPPLIED point estimate (0–6) rather than one computed from
+ * `responses` via `estimateForDimension` (diagnostic-upgrade Phase C /
+ * v1.5.0). A LEVELED dimension's true point estimate is now that section's
+ * adaptive θ ladder readout (`diagnostic_runs.dimension_estimates`,
+ * migration 089) — but the band's WIDTH still depends only on how much
+ * evidence (n, correct) this run gathered for the dimension, which is exactly
+ * what `dimensionResult`'s Agresti-Coull margin already captures, so that
+ * part is reused unchanged; only the anchor the margin is applied around
+ * changes.
+ *
+ * `estimate` is clamped to [1, 6] (same range `estimateForDimension` clamps
+ * to) before anything is derived from it — a caller passing an
+ * already-clamped ladder θ (see `thetaToNumeric`/`clampTheta`, whose [1, 6]
+ * range matches this exactly) is a no-op through the clamp; this guards the
+ * defensive fallback path too, where a caller might pass a raw value.
+ *
+ * Returns `null` for zero responses (same contract as `dimensionResult`).
+ */
+export function dimensionResultForEstimate(
+  responses: readonly ScoredResponse[],
+  estimate: number,
+): DimensionResult | null {
+  if (responses.length === 0) return null;
+  const n = responses.length;
+  const k = responses.filter((r) => r.isCorrect).length;
+  const pTilde = (k + 2) / (n + 4);
+  const seEstimate = ESTIMATE_SPREAD * Math.sqrt((pTilde * (1 - pTilde)) / (n + 4));
+  const margin = BAND_Z * seEstimate; // in estimate (0–6) units
+  const clamped = clampEstimate(estimate);
+  const score = estimateToScore(clamped);
+  const scoreLow = estimateToScore(clampEstimate(clamped - margin));
+  const scoreHigh = estimateToScore(clampEstimate(clamped + margin));
+  return { estimate: clamped, score, scoreLow, scoreHigh, n };
 }
 
 /**

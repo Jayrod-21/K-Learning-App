@@ -395,15 +395,18 @@ const EnvSchema = z.object({
   RATE_LIMIT_EXPENSIVE_MAX: z.coerce.number().int().positive().default(20),
   // The diagnostic run's OWN bucket (middleware/rateLimits.ts's diagnosticLimiter),
   // split out from RATE_LIMIT_EXPENSIVE_MAX (diagnostic-upgrade Phase A fix-pass,
-  // R2 SF-1): a 20-item run makes ~20 route-entry hits on POST /diagnostic +
-  // /diagnostic/:id/next (diagnostic-upgrade Phase A grew the run 16→20), even
-  // though most of those hits are cheap DB reads (only vocab/grammar generation
-  // calls Claude). Sizing the SHARED expensive bucket to a full run's length
-  // would loosen abuse protection for every OTHER paid-upstream route (writing
-  // gen, conversation, TTS, OCR, image-gen) that shares it — so the diagnostic
-  // gets its own ceiling instead. 30 covers a full run plus retry/refresh
-  // headroom.
-  RATE_LIMIT_DIAGNOSTIC_MAX: z.coerce.number().int().positive().default(30),
+  // R2 SF-1): a full run makes one route-entry hit per served item on
+  // POST /diagnostic + /diagnostic/:id/next, even though most of those hits are
+  // cheap DB reads (only vocab/grammar/writing generation calls Claude). Sizing
+  // the SHARED expensive bucket to a full run's length would loosen abuse
+  // protection for every OTHER paid-upstream route (writing gen, conversation,
+  // TTS, OCR, image-gen) that shares it — so the diagnostic gets its own ceiling
+  // instead. Bumped 30→45 (diagnostic-upgrade Phase C): TARGET_ITEM_COUNT grew
+  // 22→30 (WEIGHTS: reading/listening/vocab/grammar 4→6 each), so a full run
+  // alone now makes 30 route-entry hits (1 create + 29 /next calls) — 45 gives
+  // MORE headroom than the old ratio (50% vs the old 30-for-22 sizing's ~36%),
+  // rounded to a clean number rather than sized to the bare minimum.
+  RATE_LIMIT_DIAGNOSTIC_MAX: z.coerce.number().int().positive().default(45),
   RATE_LIMIT_AUTH_MAX: z.coerce.number().int().positive().default(10),
   // Audio streaming: one listening session fires many Range requests (each seek
   // = several partials), so audio gets its OWN, higher, per-user bucket rather
