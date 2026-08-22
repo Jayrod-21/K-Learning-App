@@ -443,17 +443,20 @@ async function pickTopikRow(
   excludeIds: readonly string[],
 ): Promise<TopikRow | null> {
   // Attempts, most→least targeted; each excludes already-served ids.
+  //
+  // A `proficiency`-scoped attempt tier used to run first here, but
+  // `topik_items.proficiency` is 100% NULL across the live pool (items only
+  // ever carry a TOPIK I/II paper, never an L1-L5+ band), so `i.proficiency =
+  // $n::proficiency_level` can never match and that tier only ever burned a
+  // query before falling through to the paper-scoped attempt below. Removed
+  // rather than left as dead weight — see the paper/band fallback for the
+  // selection that actually serves.
   const paper = paperForBand(band);
-  const bandProficiency = band === 'L1' || band === 'L2' ? null : band;
   const attempts: ReadonlyArray<{
-    readonly proficiency: string | null;
     readonly topikLevel: string | null;
   }> = [
-    ...(bandProficiency !== null
-      ? [{ proficiency: bandProficiency, topikLevel: paper }]
-      : []),
-    { proficiency: null, topikLevel: paper },
-    { proficiency: null, topikLevel: null },
+    { topikLevel: paper },
+    { topikLevel: null },
   ];
   for (const attempt of attempts) {
     const params: unknown[] = [section];
@@ -488,10 +491,6 @@ async function pickTopikRow(
       sql += ` AND i.audio_start_ms IS NOT NULL
                AND i.audio_end_ms IS NOT NULL
                AND t.audio_path IS NOT NULL`;
-    }
-    if (attempt.proficiency !== null) {
-      params.push(attempt.proficiency);
-      sql += ` AND i.proficiency = $${params.length}::proficiency_level`;
     }
     if (attempt.topikLevel !== null) {
       params.push(attempt.topikLevel);

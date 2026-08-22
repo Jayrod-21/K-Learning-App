@@ -15,7 +15,10 @@
  *
  * Coverage:
  *   - auth required on every route (401 unauthenticated)
- *   - GET /items: section/level/source_test filters + pagination (limit/offset/total)
+ *   - GET /items: section/source_test filters + pagination (limit/offset/total);
+ *     an unrecognized `level` query param is a no-op, not a silent empty result
+ *     (audit §3.2 — `topik_items.proficiency` is 100% NULL, so the old filter
+ *     predicated on it could never match)
  *   - POST /mock: a section's items, answer-STRIPPED (no options[].correct, no
  *     explanation on the wire — FU-NF-39); server-picks a sourceTest when omitted
  *     (highest test_number with items in the section); 400 on the writing section
@@ -281,7 +284,7 @@ describe('GET /topik/items — filters + pagination', () => {
     expect(res.body.items[49].number).toBe(50);
   });
 
-  it('filters by section (Korean label) and by level', async () => {
+  it('filters by section (Korean label)', async () => {
     await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L3' });
     await seedTopikItem(pg.pool, { section: 'listening', proficiency: 'L4' });
     await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4' });
@@ -291,11 +294,27 @@ describe('GET /topik/items — filters + pagination', () => {
     const reading = await agent.get('/topik/items').query({ section: '읽기' });
     expect(reading.body.total).toBe(2);
     for (const i of reading.body.items) expect(i.section).toBe('읽기');
+  });
 
-    // Level filter: only the single L3 reading item.
-    const l3 = await agent.get('/topik/items').query({ section: 'reading', level: 'L3' });
-    expect(l3.body.total).toBe(1);
-    expect(l3.body.items[0].level).toBe(3);
+  // Audit §3.2 / Phase 1.1 regression pin: `level` used to filter on
+  // `topik_items.proficiency`, a column that is 100% NULL in the live corpus
+  // (items only ever carry a TOPIK I/II paper, never an L1-L5+ band), so
+  // `i.proficiency = $n::proficiency_level` could never match — any request
+  // that supplied `level` silently got `{items: [], total: 0}` back even
+  // though the (unfiltered) pool was non-empty. The field no longer exists on
+  // `ItemsQuerySchema`; a caller that still sends it must be ignored (schema
+  // strips unrecognized keys), not zero the result.
+  it('a `level` query param is ignored, never silently zeroes the result', async () => {
+    await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L3' });
+    await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4' });
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent
+      .get('/topik/items')
+      .query({ section: 'reading', level: 'L3' });
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(2);
+    expect(res.body.items.length).toBe(2);
   });
 
   it('filters by source_test (test_number)', async () => {
@@ -1564,6 +1583,22 @@ describe('POST /topik/study — shuffled cross-test draw', () => {
     expect(res.status).toBe(200);
     const drawnIds = (res.body.items as { id: string }[]).map((i) => i.id).sort();
     expect(drawnIds).toEqual(readingIds.map(String).sort());
+  });
+
+  // Audit §3.2 / Phase 1.1 regression pin: `level` used to filter on
+  // `topik_items.proficiency`, a column that is 100% NULL in the live corpus,
+  // so any request supplying `level` silently drew from an empty pool. The
+  // field no longer exists on `StudyBodySchema` (`.strict()`), so a caller
+  // that still sends it gets a loud 400 rather than a silent empty draw —
+  // no live caller does (`buildStudyDrawOptions` never sets it).
+  it('a `level` body field is rejected (400), never silently zeroes the draw', async () => {
+    await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4' });
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent
+      .post('/topik/study')
+      .send({ section: 'reading', level: 'L4', limit: 5 });
+    expect(res.status).toBe(400);
   });
 });
 

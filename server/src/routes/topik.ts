@@ -160,9 +160,6 @@ const SectionSchema = z
   .enum(['reading', 'listening', 'writing', '읽기', '듣기', '쓰기'])
   .transform((v): SectionEnum => (v in SECTION_KR_TO_ENUM ? SECTION_KR_TO_ENUM[v as SectionKr] : (v as SectionEnum)));
 
-/** Level filter — the client surfaces L3/L4/L5+ as the draw filter. */
-const LevelSchema = z.enum(['L3', 'L4', 'L5+']);
-
 // ---------------------------------------------------------------------------
 // TopikItemDTO + row → DTO mapping
 // ---------------------------------------------------------------------------
@@ -657,7 +654,6 @@ const OFFICIAL_MOCK_SECTION_SIZE = 50;
 
 const ItemsQuerySchema = z.object({
   section: SectionSchema.optional(),
-  level: LevelSchema.optional(),
   // .max(INT4_MAX): test_number is an INTEGER column — an unbounded coerce lets
   // 1e20 pass `.int()` (Number.isInteger(1e20) is true) and overflow in pg
   // (22003 → 500) where a garbage id should 400 at the boundary.
@@ -675,7 +671,7 @@ const ItemsQuerySchema = z.object({
  * GET /topik/items — paginated browse of the item pool.
  *
  * Filters (all optional, ANDed): `section` (accepts enum OR Korean label),
- * `level` (proficiency band), `source_test` (topik_tests.test_number). Returns
+ * `source_test` (topik_tests.test_number). Returns
  * `{ items, total }` where `total` is the count of the browsable (gradeable)
  * pool matching the filter and `items` is the page mapped to DTOs. Stable
  * ORDER BY (test_number, item_number).
@@ -704,10 +700,15 @@ router.get('/items', cheapLimiter(), validateQuery(ItemsQuerySchema), async (req
       filterParams.push(q.section);
       filters.push(`i.section = $${filterParams.length}::topik_section`);
     }
-    if (q.level !== undefined) {
-      filterParams.push(q.level);
-      filters.push(`i.proficiency = $${filterParams.length}::proficiency_level`);
-    }
+    // A `level` (proficiency band) filter used to live here. Removed: it
+    // predicated on `topik_items.proficiency`, which is 100% NULL across the
+    // live corpus (items only ever carry a TOPIK I/II paper, never an
+    // L1-L5+ band), so `i.proficiency = $n::proficiency_level` could never
+    // match and any request that supplied `level` silently got `{items:
+    // [], total: 0}` back. No caller in this repo ever sent it (verified
+    // grep across client/src — the only route that reads it), so removing
+    // the filter changes no live behavior; it only stops a request that
+    // happened to pass `level` from silently zeroing.
     if (q.source_test !== undefined) {
       filterParams.push(q.source_test);
       filters.push(`t.test_number = $${filterParams.length}`);
@@ -2165,7 +2166,6 @@ router.post('/mock/submit', cheapLimiter(), validateBody(MockSubmitBodySchema), 
 const StudyBodySchema = z
   .object({
     section: SectionSchema.optional(),
-    level: LevelSchema.optional(),
     limit: z.number().int().min(1).max(50).default(10),
   })
   .strict();
@@ -2185,10 +2185,14 @@ router.post('/study', cheapLimiter(), validateBody(StudyBodySchema), async (req,
       params.push(body.section);
       filters.push(`i.section = $${params.length}::topik_section`);
     }
-    if (body.level !== undefined) {
-      params.push(body.level);
-      filters.push(`i.proficiency = $${params.length}::proficiency_level`);
-    }
+    // A `level` (proficiency band) filter used to live here, predicating on
+    // `topik_items.proficiency`. That column is 100% NULL across the live
+    // corpus, so `i.proficiency = $n::proficiency_level` could never match —
+    // any request supplying `level` silently drew from an empty pool. No
+    // live caller ever sent it: `buildStudyDrawOptions` (the only site that
+    // builds this request body) never sets it. Removed, along with the
+    // `level` field on `StudyDrawOptions` client-side (client/src/services/
+    // topik.ts) so the two stay in sync.
     const whereClause = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '';
 
     params.push(body.limit);

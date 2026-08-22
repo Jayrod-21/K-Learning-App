@@ -57,8 +57,6 @@ import type {
 export interface StudyDrawOptions {
   /** TOPIK section (Korean label). Omit to draw across all sections. */
   section?: TopikItem['section'];
-  /** Proficiency band the server filters on (e.g. `'L3'`/`'L4'`/`'L5+'`). */
-  level?: string;
   /** Cap on the draw size (server default 10, max 50). */
   limit?: number;
 }
@@ -97,7 +95,6 @@ export async function fetchStudyDraw(
   // for the rest (e.g. limit) rather than receiving an explicit `undefined`.
   const body: StudyDrawOptions = {};
   if (opts.section !== undefined) body.section = opts.section;
-  if (opts.level !== undefined) body.level = opts.level;
   if (opts.limit !== undefined) body.limit = opts.limit;
 
   const res = await api.post<StudyDrawEnvelope>(

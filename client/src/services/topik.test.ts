@@ -63,11 +63,11 @@ describe('fetchStudyDraw', () => {
   it('forwards only the filter fields that were provided', async () => {
     const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({ items: [] });
 
-    await fetchStudyDraw({ section: '듣기', level: 'L4', limit: 5 });
+    await fetchStudyDraw({ section: '듣기', limit: 5 });
 
     expect(spy).toHaveBeenCalledWith(
       '/topik/study',
-      { section: '듣기', level: 'L4', limit: 5 },
+      { section: '듣기', limit: 5 },
       undefined,
     );
   });
@@ -75,11 +75,11 @@ describe('fetchStudyDraw', () => {
   it('omits undefined filter fields rather than sending explicit undefined', async () => {
     const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({ items: [] });
 
-    await fetchStudyDraw({ level: 'L3' });
+    await fetchStudyDraw({ limit: 7 });
 
     expect(spy).toHaveBeenCalledWith(
       '/topik/study',
-      { level: 'L3' },
+      { limit: 7 },
       undefined,
     );
   });
