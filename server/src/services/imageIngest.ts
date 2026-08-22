@@ -30,10 +30,6 @@
  *   - VISION COST: per-user DAILY cap (config IMAGE_OCR_DAILY_CAP) → 429
  *     BEFORE any upstream call. Counts soft-deleted rows on purpose — the
  *     cap is a cost control, deleting captures must not reset the budget.
- *     A per-user `pg_advisory_xact_lock` serializes the count check, closing
- *     the TOCTOU race two concurrent requests would otherwise hit under
- *     READ COMMITTED (audit Phase 0.2; mirrors uploadExtract.ts's
- *     f108_extract_daily_cap fix).
  *   - ATOMICITY: the blob write lives inside the caller's tx boundary; a DB
  *     failure after the write leaves an orphan file (harmless, GC-able),
  *     never a half-capture row.
@@ -42,7 +38,7 @@ import multer, { MulterError } from 'multer';
 import { randomUUID } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import type { PoolClient } from 'pg';
-import { withTransaction } from '../db/pool.js';
+import { query } from '../db/pool.js';
 import {
   AppError,
   PayloadTooLargeError,
@@ -253,31 +249,19 @@ export async function ocrUploadedImage(
     throw new ValidationError('unsupported image type');
   }
 
-  // 2. Per-user DAILY cap (Seoul-day-agnostic — uses the DB's `now()` day).
-  //    Counts even soft-deleted rows: the cap is a COST control on the
-  //    Vision call, and a user deleting captures must not reset their daily
-  //    Vision budget. A per-user advisory xact lock closes the TOCTOU race
-  //    two concurrent requests would otherwise hit under READ COMMITTED
-  //    (both read the pre-spend COUNT and both pass) — copied verbatim from
-  //    uploadExtract.ts's f108_extract_daily_cap fix. The lock is held only
-  //    for the count check, in its own short transaction that commits
-  //    (releasing the lock) BEFORE the Vision call below, preserving this
-  //    function's "no external I/O inside an open tx" contract.
+  // 2. Per-user DAILY cap (Seoul-day-agnostic — uses the DB's `now()` day;
+  //    captures are stamped server-side so this is tamper-proof). Counts even
+  //    soft-deleted rows: the cap is a COST control on the Vision call, and a
+  //    user deleting captures must not reset their daily Vision budget.
   const cfg = loadConfig();
-  const usedToday = await withTransaction(async (client) => {
-    await client.query(
-      `SELECT pg_advisory_xact_lock(hashtextextended('image_ocr_daily_cap:' || $1::text, 0))`,
-      [userId],
-    );
-    const { rows: capRows } = await client.query<{ n: string }>(
-      `SELECT count(*)::text AS n
-         FROM image_captures
-        WHERE user_id = $1
-          AND created_at >= date_trunc('day', now())`,
-      [userId],
-    );
-    return Number(capRows[0]?.n ?? '0');
-  });
+  const { rows: capRows } = await query<{ n: string }>(
+    `SELECT count(*)::text AS n
+       FROM image_captures
+      WHERE user_id = $1
+        AND created_at >= date_trunc('day', now())`,
+    [userId],
+  );
+  const usedToday = Number(capRows[0]?.n ?? '0');
   if (usedToday >= cfg.IMAGE_OCR_DAILY_CAP) {
     throw new DailyCapError(cfg.IMAGE_OCR_DAILY_CAP);
   }

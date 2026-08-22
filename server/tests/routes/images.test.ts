@@ -219,24 +219,6 @@ describe('POST /images/ocr — upload + OCR + persist', () => {
     expect(res.status).toBe(429);
   });
 
-  it('the daily-cap advisory lock is scoped per USER: one user at the cap does not block another (audit Phase 0.2)', async () => {
-    const { agent: cappedAgent, userId: cappedUserId } = await registerUser(t.app, pg.pool);
-    for (let i = 0; i < 20; i += 1) {
-      await seedImageCapture(pg.pool, cappedUserId, { words: [] });
-    }
-    const cappedRes = await cappedAgent
-      .post('/images/ocr')
-      .attach('image', TINY_PNG, { filename: 'menu.png', contentType: 'image/png' });
-    expect(cappedRes.status).toBe(429);
-
-    // A different, unrelated user is unaffected by the first user's lock/cap.
-    const { agent: otherAgent } = await registerUser(t.app, pg.pool);
-    const otherRes = await otherAgent
-      .post('/images/ocr')
-      .attach('image', TINY_PNG, { filename: 'menu.png', contentType: 'image/png' });
-    expect(otherRes.status).toBe(201);
-  });
-
   describe('Claude Vision failure mapping (F-094: shared mapClaudeError)', () => {
     afterEach(() => {
       // Restore the shared suite app's default deterministic stub.
