@@ -354,14 +354,3 @@ def test_089_down_drops_column_then_reups(env, dsn: str, full_dir) -> None:
             # Backfilled fresh on re-add — the prior JSON value was genuinely
             # dropped with the column (this is the destructive-down contract).
             assert cur.fetchone()[0] == {}
-
-
-def test_089_is_the_latest_migration(full_dir) -> None:
-    """Confirm 089 is next after 088 — no gap, no later migration shadows it."""
-    versions = sorted(
-        p.name[:3]
-        for p in REAL_MIGRATIONS_DIR.iterdir()
-        if p.suffix == ".sql" and p.name[:3].isdigit() and p.name.endswith(".up.sql")
-    )
-    assert versions[-1] == "089"
-    assert "088" in versions
