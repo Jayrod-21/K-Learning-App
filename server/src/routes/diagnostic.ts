@@ -458,6 +458,23 @@ function paperForBand(band: DiagnosticBand): TopikPaper {
  * diagnostic's stricter three-column playability gate too — never a
  * placeholder stem re-admitted into the pool only to then fail
  * `hasRealAudio` and render with no audio AND no real stem text.
+ *
+ * Diagnostic-polish pass (FIX 1 — never serve a BROKEN item):
+ *   (a) IMAGE: the diagnostic renders no images and `topik_items.image_ref`
+ *       is NULL for every live row, so an image-dependent item is
+ *       unanswerable here — excluded outright via `i.has_image = FALSE`,
+ *       unconditionally (both sections; reading has image-dependent rows
+ *       too — banner/ad text transcribed with no real image asset).
+ *   (b) LISTENING AUDIO: a listening item with no mapped, playable audio
+ *       span has nothing to listen to — REQUIRED, not merely preferred, for
+ *       `section === 'listening'` via the `audio_start_ms`/`audio_end_ms`/
+ *       `test_audio_path` triple below. Reading carries no such
+ *       requirement. This makes the `ORDER BY` audio-preference CASE below
+ *       a no-op for listening (every listening candidate now already has
+ *       audio) — left in place rather than removed; still the correct
+ *       tiebreak shape, costs nothing extra. Wrong-span accuracy (a
+ *       mis-segmented audio window) is a corpus/segmenter concern, OUT OF
+ *       SCOPE here — this guard only proves a span EXISTS.
  */
 async function pickTopikRow(
   section: 'reading' | 'listening',
@@ -499,9 +516,18 @@ async function pickTopikRow(
                   AND jsonb_array_length(i.options) >= 2
                   AND i.answer IS NOT NULL
                   AND i.options->>0 NOT IN ('①','②','③','④')
+                  AND i.has_image = FALSE
                   AND (coalesce(i.stem, '') NOT LIKE '${NO_TRANSCRIPT_STEM_PREFIX}%'
                        OR (i.audio_start_ms IS NOT NULL AND i.audio_end_ms IS NOT NULL
                            AND t.audio_path IS NOT NULL))`;
+    if (section === 'listening') {
+      // FIX 1(b): a real playable span is REQUIRED for listening, not just
+      // preferred — see the function doc. No-op for reading ($1 already
+      // pins the section, so this branch never runs for it).
+      sql += ` AND i.audio_start_ms IS NOT NULL
+               AND i.audio_end_ms IS NOT NULL
+               AND t.audio_path IS NOT NULL`;
+    }
     if (attempt.proficiency !== null) {
       params.push(attempt.proficiency);
       sql += ` AND i.proficiency = $${params.length}::proficiency_level`;
@@ -595,6 +621,21 @@ function buildTopikItem(
   // rendered with only the instruction + options and NO question text. (B1 fix.)
   const ownStem = row.stem !== null && row.stem.trim().length > 0 ? row.stem : null;
   const passageText = ownStem ?? sharedPassageFor(row.test_passages, row.item_number);
+
+  // FIX 1(c): a READING item with neither its own stem NOR a shared passage
+  // covering it has NO question body of any kind — nothing to read, nothing
+  // to answer from — UNLESS it carries its own self-contained `underline`
+  // phrase (a vocab-in-context comparison item that never needed a
+  // passage/stem to begin with; the live corpus has none of these today, but
+  // the guard stays narrow rather than blanket-excluding every
+  // passageText === null row). Exclude the genuinely broken shape; never
+  // serve a passage-less reading question. Listening is unaffected — its
+  // `audio`/transcript block below has its own fallback chain and FIX 1(b)
+  // already guarantees a real playable span exists.
+  if (section === 'reading' && passageText === null) {
+    const hasUnderline = row.underline !== null && row.underline.trim().length > 0;
+    if (!hasUnderline) return null;
+  }
 
   const base: ServerItem = {
     section,
