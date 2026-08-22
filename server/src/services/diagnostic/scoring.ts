@@ -55,7 +55,9 @@
  *  v1.5.0 (diagnostic-upgrade Phase C — PER-CATEGORY adaptive ladders): the
  *  five LEVELED dimensions (reading/listening/vocab/grammar/writing) no
  *  longer share one global θ ladder — each now steps its OWN ladder,
- *  warm-started from the global θ on its first item and cached per-run in
+ *  cold-started at SEED_THETA on its first item (fix-pass S1: not
+ *  warm-started from the run's live global θ, which was order-dependent on
+ *  the fixed serving schedule) and cached per-run in
  *  `diagnostic_runs.dimension_estimates` (migration 089). The scoring-layer
  *  change this version number marks: a leveled dimension's point estimate at
  *  /finish is now that section's FINAL adaptive θ (the real per-category

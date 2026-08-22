@@ -403,9 +403,9 @@ const EnvSchema = z.object({
   // TTS, OCR, image-gen) that shares it — so the diagnostic gets its own ceiling
   // instead. Bumped 30→45 (diagnostic-upgrade Phase C): TARGET_ITEM_COUNT grew
   // 22→30 (WEIGHTS: reading/listening/vocab/grammar 4→6 each), so a full run
-  // alone now makes 30 route-entry hits (1 create + 29 /next calls) — 45 keeps
-  // the same ~36% retry/refresh headroom the old 30-for-22 sizing had, rounded
-  // up generously rather than left tight against the new floor.
+  // alone now makes 30 route-entry hits (1 create + 29 /next calls) — 45 gives
+  // MORE headroom than the old ratio (50% vs the old 30-for-22 sizing's ~36%),
+  // rounded to a clean number rather than sized to the bare minimum.
   RATE_LIMIT_DIAGNOSTIC_MAX: z.coerce.number().int().positive().default(45),
   RATE_LIMIT_AUTH_MAX: z.coerce.number().int().positive().default(10),
   // Audio streaming: one listening session fires many Range requests (each seek

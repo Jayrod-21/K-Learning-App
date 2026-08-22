@@ -127,8 +127,9 @@ router.use(requireAuth);
  * dimensions gets its OWN θ ladder (rather than sharing one global ladder),
  * it needs enough of ITS OWN answers to genuinely diverge from the others —
  * 4 items barely lets a 2-step staircase move; 6 gives a weak dimension real
- * room to climb down from its warm-started θ while a strong dimension climbs
- * up, which is the entire point of this build (see the divergence test in
+ * room to climb down from its cold-started θ (fix-pass S1: every leveled
+ * dimension seeds at SEED_THETA, not the run's live global θ) while a strong
+ * dimension climbs up, which is the entire point of this build (see the divergence test in
  * routes/diagnostic.test.ts). `hanja` stays at 4 (coverage-only, no ladder,
  * unaffected by this change) and `writing` stays at 2 (still two Claude
  * calls per item — see the original Phase B cost note below, unchanged).
@@ -1241,7 +1242,7 @@ type DimensionEstimates = Partial<Record<DiagnosticDimensionKey, number>>;
  * malformed/legacy value (mirrors `dimensionStatsFromEvidence`'s posture on
  * `evidence` — degrade, never crash). `hanja` is dropped even if present
  * (defensive only; the write path never puts it there) since hanja has no
- * ladder to warm-start or step.
+ * ladder to cold-start or step.
  */
 function parseDimensionEstimates(raw: unknown): DimensionEstimates {
   const out: DimensionEstimates = {};
@@ -1370,14 +1371,19 @@ async function servedHanjaChars(runId: number): Promise<string[]> {
  * Skips ordinals whose section pool is empty: we record nothing for them and
  * move on, so the run can serve fewer items without ever 500-ing.
  *
- * PER-CATEGORY θ (diagnostic-upgrade Phase C): `globalTheta` is the run's
- * overall θ (`ability_estimate ?? SEED_THETA`, already resolved by the
- * caller). Each ordinal's item is built at ITS OWN section's θ:
- * `dimensionEstimates[section] ?? globalTheta` — a warm start from the
- * overall θ the first time a dimension is served, then that dimension's own
- * ladder thereafter. `hanja` is the one exception: it has no ladder entry
- * (never a key in `dimensionEstimates`) and is always served at
- * `globalTheta`, exactly as before this change.
+ * PER-CATEGORY θ (diagnostic-upgrade Phase C, fix-pass S1): `globalTheta` is
+ * the run's overall θ (`ability_estimate ?? SEED_THETA`, already resolved by
+ * the caller) — used ONLY for `hanja`, which has no ladder of its own and is
+ * always served at `globalTheta`, exactly as before this change. Every OTHER
+ * ordinal's item is built at ITS OWN section's θ: `dimensionEstimates[section]
+ * ?? SEED_THETA` — a COLD start (the same easy seed every dimension's first
+ * item would use if it were the run's very first item), not a warm start from
+ * the run's live global θ. Cold-starting keeps each leveled ladder purely a
+ * function of that dimension's own answers, independent of the fixed
+ * schedule order — a dimension served later (e.g. grammar, always 4th) no
+ * longer inherits momentum from whichever dimensions the schedule happened
+ * to interleave first, which previously could inflate a genuinely-weak
+ * dimension's final band by a full level (see fix-pass SHOULD-FIX 1).
  */
 async function serveNextItem(
   runId: number,
@@ -1390,7 +1396,7 @@ async function serveNextItem(
   for (let ordinal = fromOrdinal; ordinal <= TARGET_ITEM_COUNT; ordinal += 1) {
     const section = SCHEDULE[ordinal - 1]!;
     const sectionTheta =
-      section === 'hanja' ? globalTheta : (dimensionEstimates[section] ?? globalTheta);
+      section === 'hanja' ? globalTheta : (dimensionEstimates[section] ?? SEED_THETA);
     const excludeTopik = await servedTopikIds(runId);
     const excludeHanja = await servedHanjaChars(runId);
     const item = await buildItemForSection(
@@ -1659,7 +1665,7 @@ router.post('/', diagnosticLimiter(), validateBody(EmptyBodySchema), async (req,
     const runId = Number(rows[0]!.id);
 
     // A brand-new run has no dimension_estimates yet (default '{}') — item #1
-    // warm-starts at SEED_THETA for its section exactly as it always has.
+    // cold-starts at SEED_THETA for its section exactly as it always has.
     const served = await serveNextItem(runId, 1, theta, {}, req.correlationId, userId);
     if (served === null) {
       // No section pool could produce even one item. Rather than a dead run,
@@ -2081,12 +2087,17 @@ router.post(
             [params.runId, current.section],
           );
           const perSectionAnswerNumber = Number(sectionCountRows[0]!.n) + 1;
-          // Warm start: this section's cached θ if it has one, else the SAME
-          // prior GLOBAL θ the global step above just used (not the
-          // already-updated one) — a dimension's first-ever answer starts
-          // exactly where the run's overall placement currently sits.
+          // COLD start (fix-pass S1): this section's cached θ if it has one,
+          // else SEED_THETA — NOT the run's prior global θ. Warm-starting
+          // from the live global θ made a dimension's ladder depend on the
+          // fixed schedule position (a dimension served later inherited
+          // momentum from whichever dimensions were served first), which
+          // could mask a genuinely weak dimension by a full displayed band
+          // (e.g. a structurally-last-served dimension like grammar). Cold
+          // start makes each ladder purely a function of its own answers,
+          // order-independent — mirrors `serveNextItem`'s `?? SEED_THETA`.
           const dimensionEstimates = parseDimensionEstimates(locked.dimension_estimates);
-          const priorSectionTheta = dimensionEstimates[current.section] ?? priorTheta;
+          const priorSectionTheta = dimensionEstimates[current.section] ?? SEED_THETA;
           sectionTheta = nextTheta(priorSectionTheta, isCorrect, perSectionAnswerNumber);
         }
 
@@ -2338,8 +2349,9 @@ router.post(
       // the next item's band — scoring/θ logic is untouched by the B-006
       // split. `dimensionEstimates` is the per-category ladder cache
       // (diagnostic-upgrade Phase C); `serveNextItem` resolves the next
-      // ordinal's OWN section θ from it, warm-starting from `theta` (the
-      // overall θ) for a dimension not yet in the cache.
+      // ordinal's OWN section θ from it, cold-starting at SEED_THETA (fix-pass
+      // S1) for a dimension not yet in the cache — `theta` (the overall θ)
+      // below is passed through only for hanja, which has no ladder.
       const theta =
         run.ability_estimate !== null ? Number(run.ability_estimate) : SEED_THETA;
       const dimensionEstimates = parseDimensionEstimates(run.dimension_estimates);
@@ -2508,7 +2520,12 @@ router.post(
           score: result.score,
           scoreLow: result.scoreLow,
           scoreHigh: result.scoreHigh,
-          theta: ladderTheta ?? result.estimate,
+          // fix-pass NIT (REVIEW_migration_scoring N1): omit `theta` entirely
+          // rather than fall back to `result.estimate` — in this
+          // (documented-unreachable) missing-cache branch there is no real
+          // ladder readout, so leaving it absent is honest provenance rather
+          // than mislabeling the legacy heuristic as an adaptive θ.
+          theta: ladderTheta,
         };
       }
 

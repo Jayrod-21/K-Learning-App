@@ -71,10 +71,15 @@ const WRITING_ORDINALS = ordinalsFor('writing');
  * REAL exported `nextTheta`/`SEED_THETA`/`thetaToNumeric` (cat.ts) so this
  * can never drift from `routes/diagnostic.ts`'s `/answer` handler. Tests use
  * this to derive exact expected per-dimension estimates instead of manual
- * arithmetic, which the interleaved warm-start order makes genuinely
- * error-prone to hand-compute (a dimension's first-ever answer warm-starts
- * from whatever the GLOBAL θ has already climbed/fallen to by the time that
- * dimension is first served — not always SEED_THETA).
+ * arithmetic.
+ *
+ * COLD START (fix-pass S1): each dimension's ladder seeds at SEED_THETA on
+ * its own first answer, NOT from whatever the GLOBAL θ has climbed/fallen to
+ * by the time that dimension is first served — mirrors production's
+ * `dimensionEstimates[section] ?? SEED_THETA` at both the serve site
+ * (`serveNextItem`) and the step site (`/answer`). This makes every leveled
+ * ladder purely a function of its own answers, independent of SCHEDULE
+ * order/position.
  */
 function simulateLadders(
   isCorrect: (section: string, ordinal: number) => boolean,
@@ -88,13 +93,12 @@ function simulateLadders(
     const ordinal = i + 1;
     const correct = isCorrect(section, ordinal);
     globalAnswerNumber += 1;
-    const priorGlobal = global;
-    global = thetaToNumeric(nextTheta(priorGlobal, correct, globalAnswerNumber));
+    global = thetaToNumeric(nextTheta(global, correct, globalAnswerNumber));
 
     const priorSectionCount = sectionCounts[section] ?? 0;
     const sectionAnswerNumber = priorSectionCount + 1;
     sectionCounts[section] = sectionAnswerNumber;
-    const priorSection = sections[section] ?? priorGlobal;
+    const priorSection = sections[section] ?? SEED_THETA;
     sections[section] = thetaToNumeric(nextTheta(priorSection, correct, sectionAnswerNumber));
   });
   return { global, sections };
@@ -937,17 +941,17 @@ describe('full run → finish → latest', () => {
     // point estimate is now that section's FINAL per-category ladder θ, not
     // the old mean-difficulty+p heuristic. `simulateLadders` mirrors the
     // production stepping exactly (same real `nextTheta`/`SEED_THETA`/
-    // `thetaToNumeric` this route uses) to derive the expected θ: reading is
-    // ordinal 1 (the run's very first item) so it warm-starts at
-    // SEED_THETA; listening is ordinal 2, so it warm-starts from whatever
-    // the GLOBAL θ became after reading's first (correct) answer — HIGHER
-    // than SEED_THETA — which is exactly why reading and listening no
-    // longer land on the same score the way the old shared-ladder rubric
-    // did. Both ladders are fully deterministic here regardless of vocab/
-    // grammar/writing's actual (Claude-stub-shuffled, non-deterministic)
-    // correctness: reading/listening's warm starts are each resolved before
-    // any generated item is ever served (ordinals 1 and 2), so nothing
-    // later in the schedule can feed back into them.
+    // `thetaToNumeric` this route uses) to derive the expected θ.
+    //
+    // COLD START (fix-pass S1): both reading and listening cold-start at
+    // SEED_THETA on their own first answer (not warm-started from whatever
+    // the GLOBAL θ happened to be when each was first served). Since both
+    // are answered all-correct with the SAME per-section step count (6),
+    // their trajectories are now IDENTICAL by construction — this is the
+    // intended fix: a dimension's final θ depends ONLY on its own answers,
+    // never on schedule position. (The genuine per-category DIVERGENCE case
+    // — a dimension answered differently from another — is covered by the
+    // headline 'per-category ladders DIVERGE' test below.)
     const { sections: allCorrectLadders } = simulateLadders(() => true);
     const expectedReading = dimensionResultForEstimate(
       Array.from({ length: 6 }, () => ({ section: 'reading', difficulty: 4, isCorrect: true })),
@@ -965,9 +969,10 @@ describe('full run → finish → latest', () => {
     expect(reading?.scoreHigh).toBe(expectedReading.scoreHigh);
     expect(listening?.scoreLow).toBe(expectedListening.scoreLow);
     expect(listening?.scoreHigh).toBe(expectedListening.scoreHigh);
-    // The two dimensions genuinely diverged — the whole point of per-
-    // category ladders — because listening warm-started higher than reading.
-    expect(listening?.score).toBeGreaterThan(reading?.score ?? -1);
+    // Cold-started + identically all-correct → the two dimensions land on the
+    // SAME score, proving the estimate is order-independent (no more
+    // schedule-position bias between a dimension served 1st vs 2nd).
+    expect(listening?.score).toBe(reading?.score);
 
     // The band evidence is persisted in the snapshot's JSONB (rubric
     // v1.1.0+): per-dimension { n, correct, estimate, score, scoreLow,
@@ -1107,9 +1112,11 @@ describe('full run → finish → latest', () => {
     // ALL-WRONG run floors both dimensions' ladders at THETA_MIN (1.0)
     // within their first couple of answers (θ never recovers once floored,
     // and further wrong answers just clamp) — `simulateLadders` confirms
-    // this exactly, and BOTH dimensions floor at the SAME value (1.0)
-    // regardless of warm-start order, since flooring erases the warm-start
-    // difference the all-correct case exposes.
+    // this exactly, and BOTH dimensions floor at the SAME value (1.0). With
+    // the fix-pass S1 cold start this is no longer a coincidence of flooring
+    // erasing a warm-start difference — both ladders were already identical
+    // from their own first (cold-started) answer, same as the all-correct
+    // case above.
     const { sections: allWrongLadders } = simulateLadders(() => false);
     const expectedWrongReading = dimensionResultForEstimate(
       Array.from({ length: 6 }, () => ({ section: 'reading', difficulty: 4, isCorrect: false })),
@@ -1209,6 +1216,67 @@ describe('per-category ladders DIVERGE (diagnostic-upgrade Phase C headline test
     // final cached θ values (belt-and-suspenders against the served-levels
     // read above ever drifting from the persisted cache).
     expect(bandForTheta(estimates['reading']!)).not.toBe(bandForTheta(estimates['listening']!));
+  });
+});
+
+describe('per-category cold start (fix-pass S1): a late-served weak dimension floors correctly', () => {
+  it('grammar (always scheduled 4th) floors to L1 on all-wrong answers even when reading/listening/vocab are all-correct', async () => {
+    // Regression pin for fix-pass SHOULD-FIX 1 (REVIEW_engine.md's "grammar-
+    // weak" case). Before this fix, every leveled dimension WARM-STARTED
+    // from the run's live GLOBAL θ (`dimensionEstimates[section] ??
+    // priorTheta`/`?? globalTheta`), so a dimension served later in the
+    // fixed SCHEDULE inherited momentum from whichever OTHER dimensions were
+    // served first. Grammar is always ordinal 4 (after reading/listening/
+    // vocab) — so a learner genuinely strong in those three but genuinely
+    // weak in grammar (true θ≈SEED_THETA, band L1) got grammar's ladder
+    // warm-started at ~3.21 (after 3 dimensions' correct answers), and even
+    // 6/6 wrong answers could only claw it back to ~1.96 (L2) — a full band
+    // above the truth, defeating the point of a per-category ladder. The fix
+    // (cat.ts's SEED_THETA cold start at both the serve and step sites)
+    // makes grammar's ladder depend ONLY on grammar's own answers: its own
+    // first wrong answer floors it straight to THETA_MIN, exactly as if it
+    // had been served first.
+    await seedFullPool();
+    const { agent } = await registerUser(t.app, pg.pool);
+    const start = await agent.post('/diagnostic').send({});
+    expect(start.status).toBe(201);
+    const runId = start.body.runId;
+
+    // reading/listening/vocab all-correct ('a'); grammar all-wrong (skip —
+    // ALWAYS graded incorrect regardless of the stub's shuffled/fixed answer
+    // position, see `runAllSkip`'s doc comment above); hanja/writing skipped
+    // (irrelevant to this test, and skips never crash any section).
+    let current: { responseId: number; section: string } | null = start.body.item;
+    while (current !== null) {
+      const picked = current.section === 'reading' || current.section === 'listening' ||
+        current.section === 'vocab' ? 'a' : null;
+      const ans = await agent
+        .post(`/diagnostic/${runId}/answer`)
+        .send({ responseId: current.responseId, picked });
+      expect(ans.status).toBe(200);
+      if (ans.body.done === true) {
+        current = null;
+        continue;
+      }
+      const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
+      expect(nxt.status).toBe(200);
+      current = nxt.body.next;
+    }
+
+    const run = await pg.pool.query<{ dimension_estimates: Record<string, number> }>(
+      `SELECT dimension_estimates FROM diagnostic_runs WHERE id = $1`,
+      [runId],
+    );
+    const estimates = run.rows[0]!.dimension_estimates;
+    // Grammar floors to THETA_MIN (the true-L1 readout) — the fix-pass pin.
+    expect(estimates['grammar']).toBe(1.0); // THETA_MIN, thetaToNumeric-rounded
+    expect(bandForTheta(estimates['grammar']!)).toBe('L1');
+    // Reading/listening/vocab genuinely climbed well above the seed — this is
+    // a real divergence (three strong dimensions, one truly weak one), not
+    // every dimension floored by some unrelated bug.
+    expect(estimates['reading']).toBeGreaterThan(SEED_THETA);
+    expect(estimates['listening']).toBeGreaterThan(SEED_THETA);
+    expect(estimates['vocab']).toBeGreaterThan(SEED_THETA);
   });
 });
 
@@ -1353,7 +1421,7 @@ describe('partial short pool — a dimension exhausted mid-run still scores (F-0
 
     // Exact 2-item scoring (diagnostic-upgrade Phase C / rubric v1.5.0):
     // reading is ALWAYS schedule ordinal 1 (the run's very first item), so
-    // it warm-starts at SEED_THETA regardless of pool size — its estimate is
+    // it cold-starts at SEED_THETA regardless of pool size — its estimate is
     // now the ladder θ after exactly 2 correct answers (its own step counts
     // 1, 2), computed via the SAME real `nextTheta`/`thetaToNumeric` the
     // route uses, not the old mean-difficulty+p heuristic. The band still
