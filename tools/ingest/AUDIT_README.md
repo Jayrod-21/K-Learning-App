@@ -46,7 +46,7 @@ reporting plumbing without burning API budget.
 ### 1. Sample (offline, instant)
 
 ```bash
-cd Repository/tools/ingest
+cd tools/ingest
 python audit_darakwon.py sample \
     --seed 20260528 \
     --rate 0.05 \
@@ -120,7 +120,7 @@ different things".
 ## Testing
 
 ```bash
-cd Repository/tools/ingest
+cd tools/ingest
 pytest tests/test_audit_darakwon.py -v
 ```
 

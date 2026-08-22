@@ -1,6 +1,15 @@
 # Track A — Audio → Listen (Whisper). Build Plan
 
-**Status:** proposal for review (not yet started). Written 2026-07-18.
+**Status:** DONE — shipped and live. Written 2026-07-18; corrected 2026-08-22
+(audit Phase 0.3). The A1 worker described below was built: `km-worker`
+(`Deploy/worker.Dockerfile`, `ENTRYPOINT tools.audio_stt.worker`) runs as its
+own container in the compose stack, polling `audio_transcription_jobs` with
+`FOR UPDATE SKIP LOCKED` exactly as sketched in §0/§2. Live corpus state:
+985/985 tracks transcribed, 18,025 segments, 982 jobs all `done`, running
+Whisper `large-v3`. **Caveat:** ingestion is complete but the Listen surface
+itself is unexercised — `listening_attempts` = 0 rows. The rest of this
+document is retained as the as-built design record (T1/T2 per the doc
+retention policy); read it as history, not a proposal.
 **Goal:** get the ~1,021 owned Korean audio files transcribed and playable inside
 the app's **Listen** surface, with transcripts, ideally aligned to the paired
 reading books. This is the last and largest of the three content-ingest tracks
@@ -12,7 +21,9 @@ below.
 
 ---
 
-## 0. The one hard problem: there is no background worker
+## 0. The one hard problem at write-time: there was no background worker
+   (RESOLVED — see status header above; `km-worker` now runs the A1 design
+   described below)
 
 Every "async job" in this repo today runs **synchronously inside the HTTP
 request**. The `upload_extractions` system (`db/migrations/069_*`,

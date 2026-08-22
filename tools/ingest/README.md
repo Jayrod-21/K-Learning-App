@@ -5,7 +5,7 @@ Scripts to turn raw source materials (PDFs, audio) into structured database rows
 ## Pipeline
 
 ```
-PDF / audio  →  parse_*.py  →  output/*.json  →  load_to_supabase.py  →  Supabase
+PDF / audio  →  parse_*.py  →  output/*.json  →  load_to_postgres.py  →  Postgres
 ```
 
 Output JSON is gitignored (derived data of copyrighted sources). Re-run any time.
@@ -16,7 +16,7 @@ Output JSON is gitignored (derived data of copyrighted sources). Re-run any time
 |---|---|---|
 | `parse_ttmik.py` | TTMIK lesson-script PDFs (Levels 1-9) | JSON with sources/units/sentences |
 | `parse_iyagi.py` | TTMIK 이야기 (Iyagi) transcript PDFs | JSON with sources/episodes/dialog turns |
-| `load_to_supabase.py` | Any parser JSON | Upserts to Supabase via REST API (idempotent) |
+| `load_to_postgres.py` | Any parser JSON in `output/` | Loads into the project's self-hosted Postgres (idempotent, checksum-gated) — see `LOADERS_README.md` / ADR-019 |
 
 ## Running the parsers
 
@@ -34,19 +34,22 @@ python parse_iyagi.py \
     --slug ttmik-iyagi-1-50 --series-title "TTMIK 이야기 #1-50"
 ```
 
-## Loading to Supabase
+## Loading into Postgres
 
-Once a Supabase project exists and the schemas are run:
+The Supabase/PostgREST loader (`load_to_supabase.py`) is retired — see ADR-019
+and `LOADERS_README.md`. The live loader is `load_to_postgres.py`, run as a
+module against the project's self-hosted Postgres:
 
 ```bash
-export SUPABASE_URL="https://xxx.supabase.co"
-export SUPABASE_SERVICE_ROLE_KEY="eyJ..."
-pip install httpx
+export DATABASE_URL=postgres://user:pass@host:5432/db
 
-python load_to_supabase.py output/ttmik_1_3.json
-python load_to_supabase.py output/iyagi_1_50.json
-# ... etc for each JSON file
+python -m tools.ingest.load_to_postgres --corpus all
+# or one corpus at a time, e.g.:
+python -m tools.ingest.load_to_postgres --corpus ttmik
 ```
+
+See `LOADERS_README.md` for the full CLI (`--dry-run`, `--force`,
+`--batch-size`) and per-corpus loader layout.
 
 The loader is idempotent — re-running over the same file updates rather than duplicates.
 
