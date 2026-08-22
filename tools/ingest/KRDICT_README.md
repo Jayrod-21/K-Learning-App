@@ -111,7 +111,7 @@ https://www.kogl.or.kr/info/license.do for the canonical license text.
 export DATABASE_URL="postgresql://user:pass@host:5432/korean_master"
 
 python -m load_krdict \
-    --source Repository/data/krdict/ \
+    --source data/krdict/ \
     --source-label "KRDICT-2026-Q1" \
     --batch-size 1000
 ```
@@ -123,7 +123,7 @@ KRDICT dataset get different labels.
 
 ```bash
 python -m load_krdict \
-    --source Repository/data/krdict/ \
+    --source data/krdict/ \
     --source-label "KRDICT-2026-Q1" \
     --dry-run
 ```
@@ -139,7 +139,7 @@ inside the same transaction as each batch. On crash, re-run with
 
 ```bash
 python -m load_krdict \
-    --source Repository/data/krdict/ \
+    --source data/krdict/ \
     --source-label "KRDICT-2026-Q1" \
     --resume
 ```
