@@ -139,6 +139,7 @@ import { NotFoundError, ValidationError } from '../middleware/errors.js';
 import { loadConfig } from '../config/index.js';
 import { deleteBlob, resolveUnderRoot, saveBlob } from '../services/audioStore.js';
 import { streamFileWithRange } from '../services/rangeStream.js';
+import { sweepAudioTranscriptionJobs } from '../services/jobRetention.js';
 import {
   AudioDailyCapError,
   AudioDailyCountCapError,
@@ -492,6 +493,11 @@ function sourceListingSql(where: string, limitPlaceholder: string): string {
 router.get('/', cheapLimiter(), async (req, res, next) => {
   try {
     const userId = getUserId(req);
+    // Retention (audit §1.4): sweep this user's stale terminal transcription
+    // jobs before listing. Best-effort and user-scoped — the "My Audio" read
+    // is the natural sweep trigger (no cron in this repo); a failure here is
+    // logged and swallowed inside the service, so it never fails the listing.
+    await sweepAudioTranscriptionJobs(userId, req.log);
     // One user-scoped join, sources newest first, tracks in play order. The
     // LIMIT is applied to SOURCES (inner subquery) before the track join —
     // a LIMIT on the joined rows would truncate a source's track list. LEFT

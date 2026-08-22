@@ -264,6 +264,24 @@ const PREFS_DEBOUNCE_MS = 400;
  *  paint-before-fetch window. */
 const VERSION_DEFAULT = 1;
 
+/**
+ * F-040 notifications are gated OFF until a delivery sender exists.
+ *
+ * The schedule UI below persists per-kind reminder timings to
+ * `/notifications/schedules`, but no worker consumes `notification_deliveries`
+ * yet — the `notificationDelivery` claim/settle primitives (migration 063)
+ * shipped ahead of any sender — so a configured reminder can never actually
+ * fire. Presenting live controls for an inert feature misleads users into
+ * "setting" reminders that silently do nothing (3 accounts had already
+ * configured schedules that could never deliver). Until the F-040 sender
+ * phase lands, hide the Notifications group and keep the client mock-only so
+ * a hidden panel issues no dead schedule GET/PUT.
+ *
+ * Reversible by design: all the schedule wiring below is left intact. Flip
+ * this to `true` in the same change that ships the delivery sender.
+ */
+const NOTIFICATIONS_UI_ENABLED = false;
+
 // ─────────────────────────────────────────────────────────────
 // Notification schedules (F-040) — module-scope shapes
 // ─────────────────────────────────────────────────────────────
@@ -975,10 +993,13 @@ export default function Settings(): JSX.Element {
   //     edit un-persistable state would silently lose the choice.
   //   - No rollback dance on failure: the dirty set survives a failed PUT, so
   //     the error toast's Retry re-sends the freshest drafts.
+  // When the Notifications UI is gated off, stay mock-only (no realFn) so the
+  // hidden panel never issues a live schedule fetch. `loadSchedulesMock`
+  // resolves an empty schedule set; the group is not rendered regardless.
   const schedulesQuery = useEndpointOrMock<NotificationSchedulesResponse>(
     'settings:notif-schedules',
     loadSchedulesMock,
-    { realFn: fetchSchedules },
+    NOTIFICATIONS_UI_ENABLED ? { realFn: fetchSchedules } : undefined,
   );
 
   const [scheduleDrafts, setScheduleDrafts] = useState<ScheduleDrafts>(
@@ -1439,7 +1460,7 @@ export default function Settings(): JSX.Element {
       <div className="km-settings__grid">
         {profileGroup}
         {twoFactorGroup}
-        {notificationsGroup}
+        {NOTIFICATIONS_UI_ENABLED ? notificationsGroup : null}
         {appearanceGroup}
         {feedbackGroup}
         {/* Help & tours (guided tutorial) — self-contained: reads the tour

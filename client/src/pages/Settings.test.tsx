@@ -287,7 +287,7 @@ afterEach(() => {
 // ─── Tests ────────────────────────────────────────────────────
 
 describe('Settings — profile hydration', () => {
-  it('renders the four groups (Profile / 2FA / Notifications / Appearance)', () => {
+  it('renders the visible groups (Profile / 2FA / Appearance); Notifications is gated off', () => {
     mocks.fetchMe.mockResolvedValue({
       id: 1,
       email: 'jay@example.com',
@@ -297,8 +297,12 @@ describe('Settings — profile hydration', () => {
     renderSettings();
     expect(screen.getByText('Profile')).toBeInTheDocument();
     expect(screen.getByText('Two-Factor Authentication')).toBeInTheDocument();
-    expect(screen.getByText('Notifications')).toBeInTheDocument();
     expect(screen.getByText('Appearance')).toBeInTheDocument();
+    // Notifications (F-040) is hidden until a delivery sender exists — the
+    // schedule UI persists reminders nothing sends yet, so it is gated off
+    // (NOTIFICATIONS_UI_ENABLED = false in Settings.tsx). Assert it stays out
+    // of the DOM so the gate can't silently regress.
+    expect(screen.queryByText('Notifications')).not.toBeInTheDocument();
   });
 
   it('P3b: group headings render Korean in both-mode, with 화면 표시 (not 외관)', () => {
@@ -310,12 +314,14 @@ describe('Settings — profile hydration', () => {
 
     renderSettings();
     expect(screen.getByText('프로필')).toBeInTheDocument();
-    expect(screen.getByText('알림')).toBeInTheDocument();
+    // Notifications (F-040) is gated off until a delivery sender exists, so its
+    // 알림 eyebrow is absent from both the group list and the topbar manifest.
+    expect(screen.queryByText('알림')).not.toBeInTheDocument();
     // Glossary reconciliation: Appearance is 화면 표시 app-wide; 외관 retired.
     expect(screen.getByText('화면 표시')).toBeInTheDocument();
     expect(screen.queryByText('외관')).not.toBeInTheDocument();
-    // The topbar eyebrow renders the nav manifest pair.
-    expect(screen.getByText('프로필 · 알림 · 화면 표시')).toBeInTheDocument();
+    // The topbar eyebrow renders the nav manifest pair (Notifications dropped).
+    expect(screen.getByText('프로필 · 화면 표시')).toBeInTheDocument();
   });
 
   it('P3b trim: the locally-cached-preferences impl-leak tooltip is gone', () => {
@@ -744,11 +750,13 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
       expect(document.documentElement.dataset.accent).toBe('mint');
     });
 
-    // The old intent controls are gone — the Notifications tile carries
-    // schedule rows now, not "Send me" toggles or channel chips.
-    expandGroup(/Notifications/);
+    // The old intent controls are gone, and the Notifications group is now
+    // gated off entirely (NOTIFICATIONS_UI_ENABLED = false) until a delivery
+    // sender exists — so neither the legacy "Send me"/"Channels" toggles nor
+    // the F-040 schedule tile is present.
     expect(screen.queryByText('Send me')).not.toBeInTheDocument();
     expect(screen.queryByText('Channels')).not.toBeInTheDocument();
+    expect(screen.queryByText('Notifications')).not.toBeInTheDocument();
 
     // A real Appearance change PUTs the full prefs object with the SERVER's
     // notif + palette echoed verbatim — nothing clobbered back to defaults.
@@ -1855,10 +1863,11 @@ describe('Settings — collapsible groups (F-038)', () => {
   it('every group renders collapsed: header aria-expanded=false wired to a hidden body', () => {
     meOk();
     renderSettings();
+    // Notifications (F-040) is gated off until a delivery sender exists, so
+    // it is intentionally absent from the rendered groups.
     for (const name of [
       /Profile/,
       /Two-Factor/,
-      /Notifications/,
       /Appearance/,
       /Beta feedback/,
     ]) {
@@ -2041,8 +2050,13 @@ describe('Settings — Uploads removed (F-039)', () => {
 });
 
 // ─── Notification schedules (F-040) ──────────────────────────────────
-
-describe('Settings — notification schedules (F-040)', () => {
+//
+// SKIPPED while NOTIFICATIONS_UI_ENABLED is false (Settings.tsx): the
+// Notifications group is gated out of the render until a delivery sender
+// exists, so the schedule tile these tests drive is not mounted. The wiring
+// they cover is deliberately left intact — un-skip this block in the same
+// change that flips NOTIFICATIONS_UI_ENABLED to true and ships the sender.
+describe.skip('Settings — notification schedules (F-040)', () => {
   function meOk(): void {
     mocks.fetchMe.mockResolvedValue({
       id: 1,
@@ -2349,12 +2363,13 @@ describe('Settings — F-128 reskin (shared PageHubHeader + CityCard groups)', (
     meOk();
     const { container } = renderSettings();
 
-    // Profile / 2FA / Notifications / Appearance / Beta feedback — five
-    // CollapsibleTile groups, every one now `surface="city"`.
+    // Profile / 2FA / Appearance / Beta feedback — four CollapsibleTile
+    // groups, every one `surface="city"`. Notifications (F-040) is gated off
+    // until a delivery sender exists, so it is not among them.
     const cityGroups = container.querySelectorAll(
       '.km-settings__group.km-citycard.km-collapsible',
     );
-    expect(cityGroups.length).toBe(5);
+    expect(cityGroups.length).toBe(4);
   });
 
   it('reskinning the groups does not disturb the collapsed-by-default disclosure contract (F-038)', () => {
@@ -2420,11 +2435,11 @@ describe('Settings — device-adaptive two-column layout (Phase D2)', () => {
     vi.unstubAllGlobals();
   });
 
-  /** The five group headers, in the canonical (mobile) order. */
+  /** The visible group headers, in the canonical (mobile) order. Notifications
+   *  (F-040) is gated off until a delivery sender exists, so it is absent. */
   const GROUP_ORDER: ReadonlyArray<RegExp> = [
     /Profile/,
     /Two-Factor/,
-    /Notifications/,
     /Appearance/,
     /Beta feedback/,
   ];
@@ -2438,7 +2453,7 @@ describe('Settings — device-adaptive two-column layout (Phase D2)', () => {
       .filter((t) =>
         GROUP_ORDER.some((re) => re.test(t)),
       );
-    expect(headerNames).toHaveLength(5);
+    expect(headerNames).toHaveLength(4);
     GROUP_ORDER.forEach((re, i) => {
       expect(headerNames[i]).toMatch(re);
     });
@@ -2446,7 +2461,7 @@ describe('Settings — device-adaptive two-column layout (Phase D2)', () => {
 
   /**
    * The single-tree contract: exactly one `.km-settings__grid` wrapper
-   * whose DIRECT children are the five groups (they are the grid items —
+   * whose DIRECT children are the four visible groups (they are the grid items —
    * row-major auto-placement depends on nothing else sneaking in between),
    * in the canonical mobile document order. Because the tree is the same
    * at every width, every width test asserts this same shape.
@@ -2455,7 +2470,7 @@ describe('Settings — device-adaptive two-column layout (Phase D2)', () => {
     const grids = container.querySelectorAll('.km-settings__grid');
     expect(grids).toHaveLength(1);
     const children = Array.from(grids[0].children);
-    expect(children).toHaveLength(5);
+    expect(children).toHaveLength(4);
     children.forEach((child) => {
       expect(child.classList.contains('km-settings__group')).toBe(true);
     });
