@@ -113,17 +113,19 @@ def _seed_user(conn: psycopg.Connection, email: str = "reaper-090@test.local") -
         return cur.fetchone()[0]
 
 
-def _seed_running_job(conn: psycopg.Connection, user_id: int) -> int:
+def _seed_running_job(
+    conn: psycopg.Connection, user_id: int, minutes_ago: int = 60
+) -> int:
     with conn.cursor(row_factory=tuple_row) as cur:
         cur.execute(
             """
             INSERT INTO audio_transcription_jobs
                 (user_id, status, charged_bytes, started_at)
             VALUES (%s, 'running'::audio_transcription_status, 1024,
-                    now() - interval '1 hour')
+                    now() - make_interval(mins => %s))
             RETURNING id
             """,
-            (user_id,),
+            (user_id, minutes_ago),
         )
         return cur.fetchone()[0]
 
@@ -158,8 +160,26 @@ def test_090_planner_can_use_the_index_for_the_reaper_predicate(
 
     with psycopg.connect(dsn, autocommit=True) as conn:
         user_id = _seed_user(conn)
+        # A tiny handful of rows would let a Seq Scan win on cost alone
+        # regardless of any index — expected, correct planner behavior, not
+        # evidence the index is unusable. To actually exercise the index's
+        # SHAPE (keyed on started_at, so a range predicate can seek instead
+        # of scanning every 'running' row), seed a wider spread: most rows
+        # are RECENT (started_at within the last 5 minutes -- healthy,
+        # in-flight jobs the reaper's threshold must skip), and only a
+        # handful are STALE (started_at over an hour ago -- what the reaper
+        # is actually looking for). A range-ordered scan on started_at can
+        # seek straight past the recent majority; audio_transcription_jobs'
+        # OTHER partial index (uq_audio_transcription_jobs_track_live, 076,
+        # keyed on track_id, no ordering on started_at) cannot -- it would
+        # have to scan+filter every 'running' row. This selectivity, not a
+        # forced planner setting, is what makes this migration's index the
+        # genuinely cheaper choice, matching the real reaper's workload
+        # (mostly-healthy running jobs, a rare stale one).
+        for _ in range(300):
+            _seed_running_job(conn, user_id, minutes_ago=1)
         for _ in range(5):
-            _seed_running_job(conn, user_id)
+            _seed_running_job(conn, user_id, minutes_ago=120)
         with conn.cursor() as cur:
             cur.execute("ANALYZE audio_transcription_jobs")
 
@@ -173,7 +193,7 @@ def test_090_planner_can_use_the_index_for_the_reaper_predicate(
                 """
             )
             plan = "\n".join(row[0] for row in cur.fetchall())
-        assert INDEX_NAME in plan, f"planner did not consider the index:\n{plan}"
+        assert INDEX_NAME in plan, f"planner did not choose the index:\n{plan}"
 
 
 # ---------------------------------------------------------------------------
