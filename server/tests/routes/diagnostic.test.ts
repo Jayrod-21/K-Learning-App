@@ -485,6 +485,79 @@ describe('POST /diagnostic — shared reading passage (F4)', () => {
     );
     expect(served.rows[0]!.n).toBe(0);
   });
+
+  it('FIX A: a stem that duplicates instruction defers to the covering shared passage instead of showing the question text as its own "passage"', async () => {
+    // Diagnostic-polish FIX A (fix-pass SHOULD-FIX 2). Verified live against
+    // km-db: 153/378 (~40.5%) of the reading pool whose own `stem` resolves
+    // has that stem TEXTUALLY IDENTICAL to `instruction` — a curator
+    // duplicate, not a real passage. Before the fix, `ownStem ?? sharedPassageFor(...)`
+    // short-circuited on the non-empty duplicate and the real shared passage
+    // (which the question is actually about) was never shown; the item
+    // rendered with the question text duplicated as both prompt and passage.
+    const instruction = '이 글의 내용과 같은 것을 고르십시오.';
+    const sharedPassage = '우리 동네에는 웃음 극장이 있습니다. 저는 힘들 때마다 이 극장에 갑니다.';
+    const itemId = await seedTopikItem(pg.pool, {
+      section: 'reading',
+      proficiency: 'L4',
+      answer: 1,
+      stem: instruction, // duplicate of instruction — the bug shape
+      instruction,
+      testNumber: 909_003,
+      itemNumber: 56,
+    });
+    await pg.pool.query(
+      `UPDATE topik_tests t
+          SET passages = $1::jsonb
+         FROM topik_items i
+        WHERE i.id = $2 AND t.id = i.topik_test_id`,
+      [JSON.stringify({ '55-56': sharedPassage }), itemId],
+    );
+
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/diagnostic').send({});
+    expect(res.status).toBe(201);
+    const item = res.body.item;
+    expect(item.section).toBe('reading');
+    // The REAL shared passage is served, not the instruction-duplicate stem.
+    expect(item.passage).toBe(sharedPassage);
+    expect(item.passage).not.toBe(instruction);
+    expect(item.prompt).toBe(instruction);
+  });
+
+  it('FIX A: an item whose own stem carries real content beyond instruction still uses its own stem, even when a shared passage also covers it', async () => {
+    // No-regression pin for the "both needed" fill-the-blank ㉠ shape: own
+    // stem legitimately differs from instruction (it carries the insert
+    // sentence), so `ownIsRealPassage` must stay true and this item's
+    // behavior must be UNCHANGED by FIX A — it keeps rendering its own stem,
+    // never the shared passage, even though one exists and covers it.
+    const instruction = '다음 문장이 들어갈 곳을 고르십시오.';
+    const ownStem = `${instruction}\n어린 아이부터 나이가 많은 사람까지 모두 쉽게 할 수 있습니다.`;
+    const unrelatedSharedPassage = '이것은 관계없는 다른 지문입니다.';
+    const itemId = await seedTopikItem(pg.pool, {
+      section: 'reading',
+      proficiency: 'L4',
+      answer: 1,
+      stem: ownStem,
+      instruction,
+      testNumber: 909_004,
+      itemNumber: 59,
+    });
+    await pg.pool.query(
+      `UPDATE topik_tests t
+          SET passages = $1::jsonb
+         FROM topik_items i
+        WHERE i.id = $2 AND t.id = i.topik_test_id`,
+      [JSON.stringify({ '58-59': unrelatedSharedPassage }), itemId],
+    );
+
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/diagnostic').send({});
+    expect(res.status).toBe(201);
+    const item = res.body.item;
+    expect(item.section).toBe('reading');
+    expect(item.passage).toBe(ownStem);
+    expect(item.passage).not.toBe(unrelatedSharedPassage);
+  });
 });
 
 describe('POST /diagnostic/:runId/answer — grading (reveal only, B-006)', () => {

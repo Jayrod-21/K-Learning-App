@@ -311,6 +311,11 @@ function toClientItem(responseId: number, ordinal: number, item: ServerItem): Cl
 
 const DEFAULT_AUDIO_DURATION_S = 40;
 
+/** FIX C (fix-pass SHOULD-FIX 3): bound on retry-with-exclusion draws inside
+ *  `buildItemForSection` when `buildTopikItem` rejects a row as unbuildable —
+ *  see the comment there. */
+const MAX_TOPIK_BUILD_RETRIES = 3;
+
 /** A topik_items row, as selected for a diagnostic. */
 interface TopikRow {
   id: string;
@@ -413,11 +418,19 @@ function paperForBand(band: DiagnosticBand): TopikPaper {
  *       unanswerable here — excluded outright via `i.has_image = FALSE`,
  *       unconditionally (both sections; reading has image-dependent rows
  *       too — banner/ad text transcribed with no real image asset).
- *   (b) LISTENING AUDIO: a listening item with no mapped, playable audio
- *       span has nothing to listen to — REQUIRED, not merely preferred, for
+ *   (b) LISTENING AUDIO: REQUIRED, not merely preferred, for
  *       `section === 'listening'` via the `audio_start_ms`/`audio_end_ms`/
- *       `test_audio_path` triple below. Reading carries no such
- *       requirement. This makes the `ORDER BY` audio-preference CASE below
+ *       `test_audio_path` triple below. Reading carries no such requirement.
+ *       DECISION (explicit product/pedagogy call, not an oversight): a
+ *       transcript-only "read it" item measures READING, not LISTENING — the
+ *       diagnostic's listening dimension is an assessment score, not a
+ *       practice rep, so it holds a stricter bar than `topik.ts` (a practice
+ *       tool, which never requires audio and correctly re-admits
+ *       transcript-only items so learners can still practice them). ~100
+ *       live listening rows with a real transcript but no mapped audio span
+ *       (36 TOPIK I + 64 TOPIK II) are excluded from the diagnostic by this
+ *       requirement; each band's pool still has 300-500 items remaining, so
+ *       no starvation. This makes the `ORDER BY` audio-preference CASE below
  *       a no-op for listening (every listening candidate now already has
  *       audio) — left in place rather than removed; still the correct
  *       tiebreak shape, costs nothing extra. Wrong-span accuracy (a
@@ -533,9 +546,13 @@ function topikCorrectChoice(answer: unknown, choiceCount: number): ChoiceId | nu
  * Build a reading/listening ServerItem from a topik row. Returns null if the
  * row cannot yield a valid MC item (no usable answer / too few choices).
  *
- * Listening items carry a best-effort `audio` block: the corpus has NO audio
- * files, so we surface the transcript text only (stem / extra.transcript) and a
- * default duration. This is a known limitation, documented in SECURITY.md §13.
+ * Listening items carry an `audio` block (transcript + duration) always, and
+ * a real playable `audioUrl`/`audioStartMs`/`audioEndMs` span whenever the
+ * row has one mapped (F-119/F-206) — `pickTopikRow`'s FIX 1(b) guard now
+ * REQUIRES every listening row reaching this function to have a real mapped
+ * span, so `hasRealAudio` below is always true in practice for listening
+ * items served by the diagnostic. `audio.transcript` still ships alongside
+ * as a caption/reveal, not as a substitute for playback.
  */
 function buildTopikItem(
   section: 'reading' | 'listening',
@@ -567,8 +584,28 @@ function buildTopikItem(
   // 005 `topik_tests.passages`). Without this, items that share a passage —
   // whose own `stem` is empty because the body lives in the test's `passages` —
   // rendered with only the instruction + options and NO question text. (B1 fix.)
+  //
+  // Diagnostic-polish FIX A (passage precedence): ~16% of the live reading
+  // pool (153/378 covered rows, confirmed against km-db) has its own `stem`
+  // TEXTUALLY IDENTICAL to `instruction` — a curator duplicate, not a real
+  // passage body — e.g. stem = instruction = "이 글의 내용과 같은 것을 고르십시오."
+  // The old unconditional `ownStem ?? sharedPassageFor(...)` short-circuited
+  // on that non-empty duplicate and never even reached `sharedPassageFor`, so
+  // the item rendered with the question text duplicated as its own "passage"
+  // and the real shared passage the question depends on was never shown.
+  // `ownIsRealPassage` narrowly targets that duplicate shape: only prefer the
+  // shared passage when the own stem carries NO content beyond the
+  // instruction. Items that legitimately need BOTH the shared passage AND
+  // their own inserted-sentence stem (fill-the-blank ㉠ items, e.g. stem =
+  // instruction + "\n" + the sentence to place) have `ownStem !== instruction`
+  // after normalizing, so `ownIsRealPassage` is true and they keep using
+  // `ownStem` exactly as before this fix — unchanged.
   const ownStem = row.stem !== null && row.stem.trim().length > 0 ? row.stem : null;
-  const passageText = ownStem ?? sharedPassageFor(row.test_passages, row.item_number);
+  const normalize = (s: string): string => s.trim().replace(/\s+/g, ' ');
+  const ownIsRealPassage = ownStem !== null && normalize(ownStem) !== normalize(row.instruction ?? '');
+  const passageText = ownIsRealPassage
+    ? ownStem
+    : (sharedPassageFor(row.test_passages, row.item_number) ?? ownStem ?? null);
 
   // FIX 1(c): a READING item with neither its own stem NOR a shared passage
   // covering it has NO question body of any kind — nothing to read, nothing
@@ -580,6 +617,13 @@ function buildTopikItem(
   // serve a passage-less reading question. Listening is unaffected — its
   // `audio`/transcript block below has its own fallback chain and FIX 1(b)
   // already guarantees a real playable span exists.
+  //
+  // Residual FIX-A gap (intentionally out of scope here): a row whose stem
+  // duplicates instruction AND has no covering shared passage falls back to
+  // `ownStem` (the duplicate, non-null per the `?? ownStem ?? null` chain
+  // above) — this guard does not catch it, so it is served exactly as before
+  // FIX A, not excluded. Rare (no shared passage to begin with) and belongs
+  // to the future full passage-precedence redesign, not this narrow fix.
   if (section === 'reading' && passageText === null) {
     const hasUnderline = row.underline !== null && row.underline.trim().length > 0;
     if (!hasUnderline) return null;
@@ -1183,11 +1227,25 @@ async function buildItemForSection(
 ): Promise<ServerItem | null> {
   const band = bandForTheta(theta);
   if (section === 'reading' || section === 'listening') {
-    // Try the band, widening inside pickTopikRow; then try building. If a row
-    // can't yield a valid MC item, treat as empty (rare — guarded selection).
-    const row = await pickTopikRow(section, band, excludeTopikIds);
-    if (row === null) return null;
-    return buildTopikItem(section, row, band);
+    // Try the band, widening inside pickTopikRow; then try building. A row
+    // that fails to build (no usable answer/choices, or FIX 1(c)'s
+    // passage-less guard) is dormant today (0 live rows hit it — verified
+    // against km-db) but would otherwise stay eligible for re-draw forever,
+    // since it never reaches `insertResponse` (the only place an id joins
+    // `excludeTopikIds`) — the fix-pass review's SHOULD-FIX 3. Retry with
+    // that row locally excluded, bounded by MAX_TOPIK_BUILD_RETRIES so a
+    // corpus with many consecutive broken rows still can't hang or loop —
+    // the pool per band is 300-900+ rows (verified live), so a few retries
+    // is always enough headroom to reach a good row before the bound trips.
+    const triedIds: string[] = [];
+    for (let attempt = 0; attempt < MAX_TOPIK_BUILD_RETRIES; attempt += 1) {
+      const row = await pickTopikRow(section, band, [...excludeTopikIds, ...triedIds]);
+      if (row === null) return null; // pool exhausted for this band — nothing left to try
+      const item = buildTopikItem(section, row, band);
+      if (item !== null) return item;
+      triedIds.push(row.id);
+    }
+    return null;
   }
   if (section === 'hanja') {
     return buildHanjaItem(band, excludeHanjaChars);
