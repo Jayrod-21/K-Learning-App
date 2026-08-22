@@ -77,19 +77,19 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # Deps, pinned to match loader.Dockerfile where shared (psycopg trio) plus the
 # STT stack. ctranslate2 floor 4.5: earlier 4.x links cuDNN 8, which this cuDNN
-# 9 base does not provide.
-RUN pip install --no-cache-dir \
-        "faster-whisper==1.1.1" \
-        "ctranslate2>=4.5,<5" \
-        "psycopg[binary]==3.2.3" \
-        "psycopg-pool>=3.2,<4" \
-        "structlog==24.4.0" \
-        "requests>=2.31,<3"
-# ^ requests is pinned explicitly: faster-whisper's model download goes through
-# huggingface_hub, which imports `requests` at download time but (in this
-# resolve) does not pull it in transitively — the model BAKE below fails with
-# "No module named 'requests'" without it. Pinned so the no-egress runtime is
-# never asked to fetch it.
+# 9 base does not provide. Pins live in tools/audio_stt/requirements.txt (audit
+# §7.4 — this tree previously had NO manifest at all, invisible to pip-audit/
+# Dependabot; that file is now the single source of truth, see its header) —
+# copy just the manifest first (not the full `tools/` tree, copied later below)
+# so this layer only invalidates when a pin actually changes.
+COPY tools/audio_stt/requirements.txt /tmp/audio_stt-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/audio_stt-requirements.txt \
+ && rm /tmp/audio_stt-requirements.txt
+# ^ requests is pinned explicitly in that file: faster-whisper's model download
+# goes through huggingface_hub, which imports `requests` at download time but
+# (in this resolve) does not pull it in transitively — the model BAKE below
+# fails with "No module named 'requests'" without it. Pinned so the no-egress
+# runtime is never asked to fetch it.
 
 # Bake the large-v3 weights into the image layer (see MODEL BAKE above).
 # device='cpu' + int8: the build box has no GPU during `docker build`; the

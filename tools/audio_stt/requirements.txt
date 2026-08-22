@@ -1,0 +1,25 @@
+# Runtime dependencies for tools/audio_stt — the Track A GPU Whisper
+# transcription worker (km-worker, Deploy/worker.Dockerfile). Unlike
+# tools/ingest (ad-hoc operator scripts — see tools/ingest/requirements-dev.txt's
+# header), this tree IS a deployed service: it drains the LIVE
+# audio_transcription_jobs queue and has transcribed all 985 corpus tracks.
+# Before this file existed, these pins lived ONLY as `RUN pip install` lines in
+# worker.Dockerfile — invisible to pip-audit/Dependabot (audit §7.4).
+#
+# worker.Dockerfile installs FROM this file (`pip install -r requirements.txt`)
+# rather than duplicating the list — keep this file as the single source of
+# truth; a pin change here is a pin change for the built image.
+#
+# ctranslate2 floor 4.5: earlier 4.x links cuDNN 8, which the
+# nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 base (cuDNN 9) does not provide
+# — see worker.Dockerfile's header for the full CUDA/cuDNN rationale.
+faster-whisper==1.1.1
+ctranslate2>=4.5,<5
+psycopg[binary]==3.2.3
+psycopg-pool>=3.2,<4
+structlog==24.4.0
+# requests is pinned explicitly: faster-whisper's model download goes through
+# huggingface_hub, which imports `requests` at download time but (in this
+# resolve) does not pull it in transitively — the Dockerfile's model bake step
+# fails with "No module named 'requests'" without it.
+requests>=2.31,<3
