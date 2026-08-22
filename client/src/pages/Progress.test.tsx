@@ -591,6 +591,35 @@ describe('Progress page — trend', () => {
     const rows = within(table).getAllByRole('row');
     expect(within(rows[2]!).getByText('—')).toBeInTheDocument();
   });
+
+  it('FIX 3: an all-skipped dimension is null-safe like a missing one — dash in the table, excluded from Overall', async () => {
+    const user = userEvent.setup();
+    const partial = historyOf(2);
+    // Attempt 2's grammar was SERVED but fully skipped (not a missing/empty
+    // pool) — the server carries it with `skipped: true` and a placeholder
+    // score=0. It must render exactly like a missing dimension here (dash),
+    // and its placeholder 0 must NEVER drag the Overall average down.
+    const second = partial.snapshots[1] as DiagnosticHistorySnapshot;
+    partial.snapshots[1] = {
+      ...second,
+      dimensions: second.dimensions.map((d) =>
+        d.key === 'grammar' ? { ...d, score: 0, scoreLow: 0, scoreHigh: 0, skipped: true } : d,
+      ),
+    };
+    hookOverride.current = { data: partial };
+    renderPage();
+
+    await goToHistoryPage(user, 3);
+    const table = screen.getByRole('table', { name: /All diagnostic attempts/ });
+    const rows = within(table).getAllByRole('row');
+    // Same dash treatment as a genuinely-missing dimension — never a "0".
+    expect(within(rows[2]!).getByText('—')).toBeInTheDocument();
+    expect(within(rows[2]!).queryByText('0')).not.toBeInTheDocument();
+    // Overall for attempt 2 = mean(reading 55, listening 48, vocab 60) — the
+    // skipped grammar's placeholder 0 is excluded, not averaged in.
+    const expectedOverall = Math.round((55 + 48 + 60) / 3);
+    expect(within(rows[2]!).getByText(String(expectedOverall))).toBeInTheDocument();
+  });
 });
 
 describe('Progress page — attempt-history carousel (F-030)', () => {
@@ -673,6 +702,29 @@ describe('Progress page — compare surface (P1.2 reconciliation)', () => {
 
     // Full mode (not the old Today compact): the legend explains the marks.
     expect(screen.getByText('At / above')).toBeInTheDocument();
+  });
+
+  it('FIX 3: "Where you stand" renders a fully-skipped dimension as "Not assessed", not a bar', () => {
+    const full = historyOf(3);
+    const latest = full.snapshots[2] as DiagnosticHistorySnapshot;
+    full.snapshots[2] = {
+      ...latest,
+      dimensions: latest.dimensions.map((d) =>
+        d.key === 'listening'
+          ? { ...d, score: 0, scoreLow: 0, scoreHigh: 0, skipped: true }
+          : d,
+      ),
+    };
+    hookOverride.current = { data: full };
+    renderPage();
+
+    expect(screen.getByText('Where you stand')).toBeInTheDocument();
+    expect(screen.getByText('Not assessed')).toBeInTheDocument();
+    expect(screen.queryByRole('progressbar', { name: /Listening skill/ })).not.toBeInTheDocument();
+    // The other, un-skipped bars still render normally.
+    expect(
+      screen.getByRole('progressbar', { name: 'Reading skill' }),
+    ).toHaveAttribute('aria-valuenow', '70');
   });
 
   it('carries attempt-vs-attempt on the carousel with signed per-dimension deltas', async () => {

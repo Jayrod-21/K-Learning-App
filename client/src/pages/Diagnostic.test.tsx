@@ -160,6 +160,36 @@ const BEGINNER_SNAPSHOT: DiagnosticSnapshot = {
   goals: ['Finish the core 800 vocabulary list.'],
 };
 
+// FIX 3 (diagnostic-polish): a dimension the learner served but SKIPPED
+// every item of — `skipped: true`. `score`/band fields are meaningless
+// placeholders (0) the server never intends to be read as a real level.
+const SKIPPED_DIMENSION_SNAPSHOT: DiagnosticSnapshot = {
+  dimensions: [
+    {
+      key: 'reading',
+      label: 'Reading',
+      kr: '읽기',
+      score: 62,
+      scoreLow: 54,
+      scoreHigh: 70,
+      note: 'OK',
+    },
+    {
+      key: 'listening',
+      label: 'Listening',
+      kr: '듣기',
+      score: 0,
+      scoreLow: 0,
+      scoreHigh: 0,
+      note: 'Not assessed — every item was skipped.',
+      skipped: true,
+    },
+  ],
+  references: [{ id: 'L4', label: 'TOPIK 4', kr: '4급', value: 55 }],
+  defaultRef: 'L4',
+  goals: [],
+};
+
 const ITEM_1: DiagnosticLiveItem = {
   responseId: 101,
   ordinal: 1,
@@ -446,6 +476,22 @@ describe('Diagnostic', () => {
     expect(
       screen.getByRole('button', { name: /re-test diagnostic/i }),
     ).toBeInTheDocument();
+  });
+
+  it('FIX 3: a fully-skipped dimension renders "Not assessed" instead of a fake floored score', () => {
+    hookState.snapshot = {
+      data: SKIPPED_DIMENSION_SNAPSHOT,
+      loading: false,
+      error: null,
+      isMock: false,
+    };
+    renderWithRouter();
+    // The skipped listening row shows the explicit label…
+    expect(screen.getByText('Not assessed')).toBeInTheDocument();
+    // …while the normally-scored reading row still shows its real number.
+    expect(screen.getByText('62')).toBeInTheDocument();
+    // The skipped row never renders a fake "0" score readout.
+    expect(screen.queryByText('0 / 55')).not.toBeInTheDocument();
   });
 
   it('F-143: removes the "Begin today\'s plan" CTA and the "gaps / next steps" card from Results', () => {

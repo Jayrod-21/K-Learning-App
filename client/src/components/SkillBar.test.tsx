@@ -101,6 +101,33 @@ describe('SkillBar', () => {
     expect(screen.getByText('Largest gap')).toBeInTheDocument();
   });
 
+  it('FIX 3 (diagnostic-polish): skipped renders "Not assessed" instead of a bar, ignoring score/band', () => {
+    render(
+      <SkillBar
+        label="Listening"
+        kr="듣기"
+        score={0}
+        target={55}
+        scoreLow={0}
+        scoreHigh={0}
+        gapNote="should not render"
+        skipped
+      />,
+    );
+    expect(screen.getByText('Not assessed')).toBeInTheDocument();
+    // No numeric score readout, no progress bar, no gap note — none of the
+    // normal bar chrome renders for a skipped row.
+    expect(screen.queryByText('0')).not.toBeInTheDocument();
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+    expect(screen.queryByText('should not render')).not.toBeInTheDocument();
+  });
+
+  it('renders a real bar (not "Not assessed") when skipped is false/omitted', () => {
+    render(<SkillBar label="Reading" kr="읽기" score={60} target={55} />);
+    expect(screen.queryByText('Not assessed')).not.toBeInTheDocument();
+    expect(screen.getByRole('progressbar')).toBeInTheDocument();
+  });
+
   it('F-011: an INVERTED band pair (scoreLow > scoreHigh) renders sorted — non-negative width, sorted aria range', () => {
     // The server invariant is scoreLow <= scoreHigh, but SkillBar promises a
     // corrupt inverted pair can never paint a negative-width band. Pin the

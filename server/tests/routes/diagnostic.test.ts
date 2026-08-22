@@ -141,6 +141,31 @@ beforeEach(async () => {
   resetLimiters();
 });
 
+/**
+ * Diagnostic-polish FIX 1(b): `pickTopikRow` now REQUIRES a real playable
+ * audio span for a listening candidate (see routes/diagnostic.ts), not
+ * merely prefers one. Every "give me a servable listening pool" seed helper
+ * in this file routes through here so it keeps producing SERVABLE items
+ * under the new requirement; a test that specifically wants to exercise the
+ * no-audio-excluded path still calls `seedTopikItem` directly (audio fields
+ * default to null there). A monotonic counter keeps each row's `audioPath`
+ * distinct — harmless, but avoids masking a bug where two rows' audio
+ * somehow collide.
+ */
+let seedListeningAudioSeq = 0;
+async function seedListening(
+  opts: NonNullable<Parameters<typeof seedTopikItem>[1]> = {},
+): Promise<number> {
+  seedListeningAudioSeq += 1;
+  return seedTopikItem(pg.pool, {
+    audioStartMs: 0,
+    audioEndMs: 5_000,
+    audioPath: `diag-fixture-audio-${String(seedListeningAudioSeq)}.mp3`,
+    ...opts,
+    section: 'listening',
+  });
+}
+
 /** Seed a corpus rich enough to serve a full 30-item diagnostic (WEIGHTS,
  *  diagnostic-upgrade Phase C: reading/listening/vocab/grammar = 6 each,
  *  hanja = 4, writing = 2 — reading/listening/vocab/grammar bumped from 4 to
@@ -156,7 +181,7 @@ async function seedFullPool(): Promise<void> {
   // needs 6 of each; the 7th is slack.
   for (let i = 0; i < 7; i += 1) {
     await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4', answer: 1 });
-    await seedTopikItem(pg.pool, { section: 'listening', proficiency: 'L4', answer: 1 });
+    await seedListening({ proficiency: 'L4', answer: 1 });
   }
   // vocab + grammar seeds for the Claude stub's seed-picker queries.
   await seedVocabEntry(pg.pool, { proficiency: 'L4', korean: '단어' });
@@ -212,6 +237,46 @@ async function runAllSkip(agent: RegisteredAgent['agent']): Promise<number> {
   }
   return runId;
 }
+
+describe('FIX 2 (diagnostic-polish): SCHEDULE is CONTIGUOUS category blocks, not interleaved', () => {
+  it('blocks reading×6, listening×6, vocab×6, grammar×6, hanja×4, writing×2 in that fixed order', () => {
+    // Pure-function check on the real exported SCHEDULE/WEIGHTS — no DB
+    // needed. Order-agnostic per-category tests elsewhere (ordinalsFor /
+    // READING_ORDINALS etc.) still pass regardless of block order; THIS
+    // test is the one that actually pins the order itself.
+    const expected: string[] = [
+      ...Array<string>(WEIGHTS.reading).fill('reading'),
+      ...Array<string>(WEIGHTS.listening).fill('listening'),
+      ...Array<string>(WEIGHTS.vocab).fill('vocab'),
+      ...Array<string>(WEIGHTS.grammar).fill('grammar'),
+      ...Array<string>(WEIGHTS.hanja).fill('hanja'),
+      ...Array<string>(WEIGHTS.writing).fill('writing'),
+    ];
+    expect(SCHEDULE).toEqual(expected);
+    expect(SCHEDULE.length).toBe(TARGET_ITEM_COUNT);
+  });
+
+  it('every category is one unbroken run (no interleaving) — at most one contiguous block per dimension', () => {
+    const blockStarts: string[] = [];
+    SCHEDULE.forEach((section, i) => {
+      if (i === 0 || SCHEDULE[i - 1] !== section) blockStarts.push(section);
+    });
+    // 6 dimensions, 6 block-start transitions — each appears as exactly ONE
+    // contiguous run, never split across two separate blocks.
+    expect(blockStarts).toEqual(['reading', 'listening', 'vocab', 'grammar', 'hanja', 'writing']);
+  });
+
+  it('writing is last — never item #1, never interleaved earlier', () => {
+    expect(SCHEDULE[0]).toBe('reading');
+    expect(SCHEDULE[SCHEDULE.length - 1]).toBe('writing');
+    const firstWritingIndex = SCHEDULE.indexOf('writing');
+    // Every non-writing item precedes every writing item.
+    expect(SCHEDULE.slice(0, firstWritingIndex)).not.toContain('writing');
+    expect(SCHEDULE.slice(firstWritingIndex)).toEqual(
+      Array<string>(WEIGHTS.writing).fill('writing'),
+    );
+  });
+});
 
 describe('diagnostic — auth required', () => {
   it.each([
@@ -383,7 +448,15 @@ describe('POST /diagnostic — shared reading passage (F4)', () => {
     expect(item.passage).toBe(passageText);
   });
 
-  it('does not invent a passage when no range covers the item', async () => {
+  it('FIX 1(c): a passage-less reading item (no own stem, no covering range) is excluded, not served empty', async () => {
+    // Diagnostic-polish FIX 1(c): before this fix, an item with neither its
+    // own stem NOR a shared passage covering it rendered with NO question
+    // body at all (the old "falls back to inference" behavior this test used
+    // to pin). That's a BROKEN item, not a legitimate self-contained one —
+    // buildTopikItem now excludes it instead. Mirrors the glyph/placeholder
+    // exclusion tests above: seed the broken row as the ONLY reading
+    // candidate, plus vocab/grammar seeds so the run can still start, and
+    // assert reading is skipped entirely rather than served empty.
     const itemId = await seedTopikItem(pg.pool, {
       section: 'reading',
       proficiency: 'L4',
@@ -400,12 +473,17 @@ describe('POST /diagnostic — shared reading passage (F4)', () => {
         WHERE i.id = $2 AND t.id = i.topik_test_id`,
       [JSON.stringify({ '19-20': '관계없는 본문' }), itemId],
     );
+    await seedVocabEntry(pg.pool, { proficiency: 'L4', korean: '단어' });
+    await seedKgiuEntry(pg.pool, { proficiency: 'L4', pattern: '-는 바람에' });
 
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.post('/diagnostic').send({});
     expect(res.status).toBe(201);
-    // No covering range → no passage field (the item falls back to inference).
-    expect(res.body.item).not.toHaveProperty('passage');
+    expect(res.body.item.section).not.toBe('reading');
+    const served = await pg.pool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM diagnostic_responses WHERE source_kind = 'topik'`,
+    );
+    expect(served.rows[0]!.n).toBe(0);
   });
 });
 
@@ -434,7 +512,10 @@ describe('POST /diagnostic/:runId/answer — grading (reveal only, B-006)', () =
     const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
     expect(nxt.status).toBe(200);
     expect(nxt.body.next).not.toBeNull();
-    expect(nxt.body.next.section).toBe('listening'); // schedule[1]
+    // FIX 2: contiguous category blocks — ordinal 2 is still reading
+    // (reading fills ordinals 1..WEIGHTS.reading), not an interleaved
+    // listening item.
+    expect(nxt.body.next.section).toBe('reading'); // schedule[1]
     expect(nxt.body.progress).toEqual({ ordinal: 2, total: TARGET_ITEM_COUNT });
     // The next item is still answer-stripped.
     expect(nxt.body.next).not.toHaveProperty('correctAnswer');
@@ -633,35 +714,43 @@ describe('answer/next decoupling (B-006)', () => {
     await seedFullPool();
     const { agent } = await registerUser(t.app, pg.pool);
 
-    // Schedule: 1 reading, 2 listening, 3 vocab. Start serves reading (topik).
+    // FIX 2: contiguous blocks — every reading/listening ordinal (all
+    // topik-sourced, no Claude needed) serves first; vocab (Claude-
+    // generated) only starts after WEIGHTS.reading + WEIGHTS.listening
+    // items. Walk the whole topik stretch, grading each with 'a'
+    // (seedFullPool seeds every topik row answer=1 → 'a' is correct) — no
+    // Claude call should happen anywhere in it.
     const start = await agent.post('/diagnostic').send({});
     expect(start.status).toBe(201);
-
-    // Grade item 1 — reveal arrives, no Claude call in the request path.
-    const ans1 = await agent
-      .post(`/diagnostic/${start.body.runId}/answer`)
-      .send({ responseId: start.body.item.responseId, picked: 'a' });
-    expect(ans1.status).toBe(200);
-    expect(ans1.body.result.correctAnswer).toBe('a');
+    const runId = start.body.runId;
+    const lastTopikOrdinal = WEIGHTS.reading + WEIGHTS.listening;
+    let current = start.body.item as { responseId: number; ordinal: number };
+    while (current.ordinal < lastTopikOrdinal) {
+      const ans = await agent
+        .post(`/diagnostic/${runId}/answer`)
+        .send({ responseId: current.responseId, picked: 'a' });
+      expect(ans.status).toBe(200);
+      expect(ans.body.result.correctAnswer).toBe('a');
+      expect(genCalls).toBe(0);
+      const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
+      expect(nxt.status).toBe(200);
+      current = nxt.body.next;
+    }
+    // `current` is the LAST reading/listening ordinal — still topik-sourced,
+    // grades with no Claude call.
+    const lastTopikAns = await agent
+      .post(`/diagnostic/${runId}/answer`)
+      .send({ responseId: current.responseId, picked: 'a' });
+    expect(lastTopikAns.status).toBe(200);
+    expect(lastTopikAns.body.result.correct).toBe(true);
     expect(genCalls).toBe(0);
 
-    // Serve + grade item 2 (listening — also topik, still no Claude).
-    const next2 = await agent.post(`/diagnostic/${start.body.runId}/next`).send({});
-    expect(next2.status).toBe(200);
-    expect(next2.body.next.section).toBe('listening');
-    expect(genCalls).toBe(0);
-    const ans2 = await agent
-      .post(`/diagnostic/${start.body.runId}/answer`)
-      .send({ responseId: next2.body.next.responseId, picked: 'a' });
-    // Ordinal 3 is vocab (Claude-generated). Pre-fix THIS call generated it
-    // inline and 502'd under the outage; now it grades cleanly.
-    expect(ans2.status).toBe(200);
-    expect(ans2.body.result.correct).toBe(true);
-    expect(genCalls).toBe(0);
-
-    // The generation cost (and its failure) lives on /next alone.
-    const next3 = await agent.post(`/diagnostic/${start.body.runId}/next`).send({});
-    expect(next3.status).toBe(502);
+    // The generation cost (and its failure) lives on /next alone — the
+    // FIRST vocab ordinal is Claude-generated. Pre-FIX-2 this was ordinal 3
+    // (interleaved schedule); now it's the ordinal right after the topik
+    // stretch — either way, /next (never /answer) pays the generation cost.
+    const firstVocab = await agent.post(`/diagnostic/${runId}/next`).send({});
+    expect(firstVocab.status).toBe(502);
     expect(genCalls).toBe(1);
   });
 
@@ -712,25 +801,26 @@ describe('answer/next decoupling (B-006)', () => {
     expect(reServe.body.next).not.toHaveProperty('correctAnswer');
     expect(reServe.body.next).not.toHaveProperty('explain');
 
-    // Walk to ordinal 3 (vocab — generated).
-    await agent
-      .post(`/diagnostic/${runId}/answer`)
-      .send({ responseId: start.body.item.responseId, picked: 'a' });
-    const n2 = await agent.post(`/diagnostic/${runId}/next`).send({});
-    await agent
-      .post(`/diagnostic/${runId}/answer`)
-      .send({ responseId: n2.body.next.responseId, picked: 'a' });
+    // Walk to the first vocab ordinal (Claude-generated). FIX 2: contiguous
+    // blocks put every reading/listening ordinal first, so this now takes
+    // WEIGHTS.reading + WEIGHTS.listening answers, not a fixed "2".
+    let current: { responseId: number; section: string } = start.body.item;
+    while (current.section !== 'vocab') {
+      await agent
+        .post(`/diagnostic/${runId}/answer`)
+        .send({ responseId: current.responseId, picked: 'a' });
+      const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
+      current = nxt.body.next;
+    }
 
-    const n3a = await agent.post(`/diagnostic/${runId}/next`).send({});
-    expect(n3a.status).toBe(200);
-    expect(n3a.body.next.section).toBe('vocab');
+    expect(current.section).toBe('vocab');
     expect(genCalls).toBe(1);
 
     // A duplicate /next (double-fired prefetch / retry) re-serves the SAME
     // pending item and does NOT generate again.
     const n3b = await agent.post(`/diagnostic/${runId}/next`).send({});
     expect(n3b.status).toBe(200);
-    expect(n3b.body.next.responseId).toBe(n3a.body.next.responseId);
+    expect(n3b.body.next.responseId).toBe(current.responseId);
     expect(genCalls).toBe(1);
 
     // Exactly one unanswered item in flight — the invariant held.
@@ -814,22 +904,34 @@ describe('buildGeneratedItem error mapping (B1 fix regression, F-192)', () => {
     resetLimiters();
   });
 
-  /** Walk a fresh run to the point where /next MUST generate (ordinal 3,
-   *  vocab — mirrors the "answer/next decoupling" describe block above).
-   *  Returns the runId; the CALLER's proxy override decides what ordinal 3's
-   *  generation does. */
+  /** Walk a fresh run to the point where the run's NEXT /next call MUST
+   *  generate (the first vocab ordinal — mirrors the "answer/next
+   *  decoupling" describe block above). FIX 2: contiguous blocks put every
+   *  reading/listening ordinal first, so this answers WEIGHTS.reading +
+   *  WEIGHTS.listening topik-sourced items (all seeded answer=1 → 'a' is
+   *  correct), leaving the run poised exactly at the first vocab serve.
+   *  Returns the runId; the CALLER's proxy override decides what that
+   *  generation call does. */
   async function walkToGeneratedOrdinal(
     agent: RegisteredAgent['agent'],
   ): Promise<number> {
     const start = await agent.post('/diagnostic').send({});
     const runId = start.body.runId;
+    const lastTopikOrdinal = WEIGHTS.reading + WEIGHTS.listening;
+    let current = start.body.item as { responseId: number; ordinal: number };
+    while (current.ordinal < lastTopikOrdinal) {
+      await agent
+        .post(`/diagnostic/${runId}/answer`)
+        .send({ responseId: current.responseId, picked: 'a' });
+      const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
+      current = nxt.body.next;
+    }
+    // `current` is the LAST reading/listening ordinal — answer it. The
+    // CALLER's own /next call is the one that must trigger generation for
+    // the first vocab item.
     await agent
       .post(`/diagnostic/${runId}/answer`)
-      .send({ responseId: start.body.item.responseId, picked: 'a' });
-    const next2 = await agent.post(`/diagnostic/${runId}/next`).send({});
-    await agent
-      .post(`/diagnostic/${runId}/answer`)
-      .send({ responseId: next2.body.next.responseId, picked: 'a' });
+      .send({ responseId: current.responseId, picked: 'a' });
     return runId;
   }
 
@@ -1220,22 +1322,25 @@ describe('per-category ladders DIVERGE (diagnostic-upgrade Phase C headline test
 });
 
 describe('per-category cold start (fix-pass S1): a late-served weak dimension floors correctly', () => {
-  it('grammar (always scheduled 4th) floors to L1 on all-wrong answers even when reading/listening/vocab are all-correct', async () => {
+  it('grammar (a dimension served well after reading/listening/vocab) floors to L1 on all-wrong answers even when reading/listening/vocab are all-correct', async () => {
     // Regression pin for fix-pass SHOULD-FIX 1 (REVIEW_engine.md's "grammar-
     // weak" case). Before this fix, every leveled dimension WARM-STARTED
     // from the run's live GLOBAL θ (`dimensionEstimates[section] ??
     // priorTheta`/`?? globalTheta`), so a dimension served later in the
     // fixed SCHEDULE inherited momentum from whichever OTHER dimensions were
-    // served first. Grammar is always ordinal 4 (after reading/listening/
-    // vocab) — so a learner genuinely strong in those three but genuinely
-    // weak in grammar (true θ≈SEED_THETA, band L1) got grammar's ladder
-    // warm-started at ~3.21 (after 3 dimensions' correct answers), and even
-    // 6/6 wrong answers could only claw it back to ~1.96 (L2) — a full band
-    // above the truth, defeating the point of a per-category ladder. The fix
-    // (cat.ts's SEED_THETA cold start at both the serve and step sites)
-    // makes grammar's ladder depend ONLY on grammar's own answers: its own
-    // first wrong answer floors it straight to THETA_MIN, exactly as if it
-    // had been served first.
+    // served first. Grammar is always served AFTER reading/listening/vocab
+    // (diagnostic-polish FIX 2's contiguous blocks put it in its own
+    // WEIGHTS.grammar-sized block, later still than the old round-robin's
+    // "ordinal 4" — the point pinned here only strengthens with a bigger
+    // gap) — so a learner genuinely strong in those three but genuinely weak
+    // in grammar (true θ≈SEED_THETA, band L1) got grammar's ladder
+    // warm-started well above SEED_THETA (after those dimensions' correct
+    // answers), and even 6/6 wrong answers could only claw it partway back —
+    // a full band above the truth, defeating the point of a per-category
+    // ladder. The fix (cat.ts's SEED_THETA cold start at both the serve and
+    // step sites) makes grammar's ladder depend ONLY on grammar's own
+    // answers: its own first wrong answer floors it straight to THETA_MIN,
+    // exactly as if it had been served first.
     await seedFullPool();
     const { agent } = await registerUser(t.app, pg.pool);
     const start = await agent.post('/diagnostic').send({});
@@ -1594,7 +1699,7 @@ describe('legacy v1.0.0 snapshots (no evidence.dimensionStats)', () => {
 });
 
 describe('F-002 — L1/L2 in the diagnostic', () => {
-  it('a low-ability run descends into L1/L2 bands (never the retired basic collapse) and scores at the low anchors', async () => {
+  it('a low-ability (all-skip) run descends into L1/L2 bands (never the retired basic collapse); FIX 3: every dimension is fully skipped so it renders Not-assessed, never a floored low-anchor score', async () => {
     await seedFullPool();
     const { agent } = await registerUser(t.app, pg.pool);
 
@@ -1652,25 +1757,32 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
     );
     expect(run.rows[0]?.ability_estimate).toBe('1.00');
 
-    // Finish: the generated dims were served ENTIRELY at L1 difficulty (θ
-    // floored before the first vocab/grammar ordinal was even served: 1,1,1,1
-    // each → estimate clamps at 1), so their score is the new 1→10 low
-    // anchor — anchored, not extrapolated.
+    // Finish: FIX 3 (diagnostic-polish) — this run skipped EVERY item
+    // (picked: null throughout), so EVERY dimension (vocab, grammar, hanja,
+    // reading, listening, writing) is fully skipped, not merely "answered
+    // wrong". Pre-FIX-3 this floored to the 1→10 low anchor (a real-looking
+    // but bogus score the user never earned — the exact bug FIX 3 fixes);
+    // now a fully-skipped dimension renders `skipped: true` with NO real
+    // score, never a floored low-anchor number. (The 1→10 anchor formula
+    // itself is still pinned directly in scoring.test.ts — unaffected.)
     const fin = await agent.post(`/diagnostic/${runId}/finish`).send({});
     expect(fin.status).toBe(200);
-    const dims = fin.body.snapshot.dimensions as Array<{ key: string; score: number }>;
-    expect(dims.find((d) => d.key === 'vocab')?.score).toBe(10);
-    expect(dims.find((d) => d.key === 'grammar')?.score).toBe(10);
+    const dims = fin.body.snapshot.dimensions as Array<{
+      key: string;
+      score: number;
+      skipped?: boolean;
+    }>;
+    const vocab = dims.find((d) => d.key === 'vocab');
+    const grammar = dims.find((d) => d.key === 'grammar');
+    expect(vocab?.skipped).toBe(true);
+    expect(grammar?.skipped).toBe(true);
 
-    // Hanja still produced its OWN dimensionStats/snapshot entry (coverage —
-    // it was answered, just never fed the θ ladder above). Served at L2 the
-    // whole run (band L1 → preferredHanjaLevel L2) and all-wrong (skip), so
-    // its estimate/score sit at the same kind of floor as vocab/grammar —
-    // this is what "coverage-only" delivers: a real read-out, decoupled θ.
+    // Hanja: coverage-only, but STILL fully skipped here (every item was
+    // picked: null) — same "Not assessed" treatment as the leveled
+    // dimensions, not a floored score.
     const hanja = dims.find((d) => d.key === 'hanja');
     expect(hanja).toBeDefined();
-    expect(hanja!.score).toBeGreaterThanOrEqual(0);
-    expect(hanja!.score).toBeLessThanOrEqual(100);
+    expect(hanja!.skipped).toBe(true);
   });
 
   it('pickTopikRow prefers TOPIK I items for L1/L2 bands and falls back to any when the pool runs short', async () => {
@@ -1687,7 +1799,7 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
       await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4', answer: 1 });
     }
     for (let i = 0; i < 6; i += 1) {
-      await seedTopikItem(pg.pool, { section: 'listening', proficiency: 'L4', answer: 1 });
+      await seedListening({ proficiency: 'L4', answer: 1 });
     }
     await seedVocabEntry(pg.pool, { proficiency: 'L4', korean: '단어' });
     await seedKgiuEntry(pg.pool, { proficiency: 'L4', pattern: '-는 바람에' });
@@ -1752,7 +1864,7 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
     // Reading/listening pools so the run stays whole.
     for (let i = 0; i < 6; i += 1) {
       await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4', answer: 1 });
-      await seedTopikItem(pg.pool, { section: 'listening', proficiency: 'L4', answer: 1 });
+      await seedListening({ proficiency: 'L4', answer: 1 });
     }
     // ONE basic seed vs NINE L3 seeds per section. With the band→'basic'
     // mapping, every L1/L2 slot's targeted attempt matches exactly the basic
@@ -1807,7 +1919,7 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
   it('L1/L2 seed picking falls back to any level when no basic content exists (fixpass B-1)', async () => {
     for (let i = 0; i < 6; i += 1) {
       await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4', answer: 1 });
-      await seedTopikItem(pg.pool, { section: 'listening', proficiency: 'L4', answer: 1 });
+      await seedListening({ proficiency: 'L4', answer: 1 });
     }
     // NO basic rows anywhere — the targeted attempt is empty, the fallback
     // must still supply a seed so the run never shrinks.
@@ -1898,7 +2010,7 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
       });
     }
     for (let i = 0; i < 6; i += 1) {
-      await seedTopikItem(pg.pool, { section: 'listening', proficiency: null, answer: 1 });
+      await seedListening({ proficiency: null, answer: 1 });
     }
     await seedVocabEntry(pg.pool, { proficiency: 'L4', korean: '단어' });
     await seedKgiuEntry(pg.pool, { proficiency: 'L4', pattern: '-는 바람에' });
@@ -1978,7 +2090,7 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
       });
     }
     for (let i = 0; i < 6; i += 1) {
-      await seedTopikItem(pg.pool, { section: 'listening', proficiency: null, answer: 1 });
+      await seedListening({ proficiency: null, answer: 1 });
     }
     await seedVocabEntry(pg.pool, { proficiency: 'L4', korean: '단어' });
     await seedKgiuEntry(pg.pool, { proficiency: 'L4', pattern: '-는 바람에' });
@@ -2077,6 +2189,106 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
   });
 });
 
+describe('FIX 3 (diagnostic-polish): all-skipped dimension → "Not assessed", partially-attempted dimension stays real', () => {
+  it('grammar (every item skipped) is omitted from evidence.dimensionStats and marked skipped in the DTO; vocab (1 real pick, rest skipped) keeps scoring normally', async () => {
+    await seedFullPool();
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const start = await agent.post('/diagnostic').send({});
+    expect(start.status).toBe(201);
+    const runId = start.body.runId;
+
+    let vocabSeen = 0;
+    let current: { responseId: number; section: string } | null = start.body.item;
+    while (current !== null) {
+      let picked: string | null;
+      if (current.section === 'grammar') {
+        // The ALL-skipped dimension — never a single real pick.
+        picked = null;
+      } else if (current.section === 'vocab') {
+        // A PARTIALLY-attempted dimension — exactly ONE real pick, the rest
+        // skipped. Must NOT collapse to "Not assessed": >=1 real attempt
+        // (even a wrong one) keeps a real level per the FIX 3 contract.
+        vocabSeen += 1;
+        picked = vocabSeen === 1 ? 'a' : null;
+      } else {
+        // Reading/listening/hanja/writing: real attempts throughout
+        // (irrelevant to this test's assertions, but must not themselves be
+        // mistaken for skipped).
+        picked = 'a';
+      }
+      const ans = await agent
+        .post(`/diagnostic/${runId}/answer`)
+        .send({ responseId: current.responseId, picked });
+      expect(ans.status).toBe(200);
+      if (ans.body.done === true) {
+        current = null;
+        continue;
+      }
+      const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
+      expect(nxt.status).toBe(200);
+      current = nxt.body.next;
+    }
+    // The one real vocab pick actually happened.
+    expect(vocabSeen).toBeGreaterThanOrEqual(1);
+
+    const fin = await agent.post(`/diagnostic/${runId}/finish`).send({});
+    expect(fin.status).toBe(200);
+    const dims = fin.body.snapshot.dimensions as Array<{
+      key: string;
+      score: number;
+      skipped?: boolean;
+    }>;
+
+    // grammar: fully skipped → explicit "Not assessed" marker, placeholder
+    // zero score (never a fake floored level).
+    const grammar = dims.find((d) => d.key === 'grammar');
+    expect(grammar).toBeDefined();
+    expect(grammar!.skipped).toBe(true);
+    expect(grammar!.score).toBe(0);
+
+    // vocab: >=1 real attempt → a normal, non-skipped, real-range score.
+    const vocab = dims.find((d) => d.key === 'vocab');
+    expect(vocab).toBeDefined();
+    expect(vocab!.skipped).not.toBe(true);
+    expect(vocab!.score).toBeGreaterThanOrEqual(0);
+    expect(vocab!.score).toBeLessThanOrEqual(100);
+
+    // Raw persisted evidence: dimensionStats OMITS grammar entirely (not a
+    // zero/floored entry), skippedDimensions names it, and vocab DOES carry
+    // a real dimensionStats entry despite being mostly-skipped.
+    const snapRow = await pg.pool.query<{
+      evidence: {
+        dimensionStats?: Record<string, unknown>;
+        skippedDimensions?: string[];
+      };
+      grammar_estimate: string | null;
+    }>(
+      `SELECT evidence, grammar_estimate::text AS grammar_estimate
+         FROM diagnostic_snapshots WHERE user_id = $1`,
+      [userId],
+    );
+    const evidence = snapRow.rows[0]!.evidence;
+    expect(evidence.dimensionStats?.['grammar']).toBeUndefined();
+    expect(evidence.skippedDimensions).toContain('grammar');
+    expect(evidence.skippedDimensions).not.toContain('vocab');
+    expect(evidence.dimensionStats?.['vocab']).toBeDefined();
+    // The fixed grammar_estimate column is NULL for the omitted dimension —
+    // FIX 3 never writes a fake floored estimate there either.
+    expect(snapRow.rows[0]!.grammar_estimate).toBeNull();
+
+    // /latest re-reads the persisted evidence through the SAME reader path
+    // (skippedDimensionsFromEvidence) and reproduces the identical DTO
+    // shape — the "Not assessed" marker survives a reload, not just the
+    // live /finish response.
+    const latest = await agent.get('/diagnostic/latest');
+    expect(latest.status).toBe(200);
+    const latestGrammar = (latest.body.dimensions as typeof dims).find(
+      (d) => d.key === 'grammar',
+    );
+    expect(latestGrammar?.skipped).toBe(true);
+  });
+});
+
 describe('hanja — coverage-only dimension (diagnostic-upgrade Phase A)', () => {
   /** Seed just enough for a run that reaches the hanja ordinal: reading/
    *  listening pools (topik) + vocab/grammar seeds (Claude stub) + a small
@@ -2085,7 +2297,7 @@ describe('hanja — coverage-only dimension (diagnostic-upgrade Phase A)', () =>
   async function seedForHanja(): Promise<void> {
     for (let i = 0; i < 7; i += 1) {
       await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4', answer: 1 });
-      await seedTopikItem(pg.pool, { section: 'listening', proficiency: 'L4', answer: 1 });
+      await seedListening({ proficiency: 'L4', answer: 1 });
     }
     await seedVocabEntry(pg.pool, { proficiency: 'L4', korean: '단어' });
     await seedKgiuEntry(pg.pool, { proficiency: 'L4', pattern: '-는 바람에' });
@@ -2231,7 +2443,7 @@ describe('writing — full leveled dimension (diagnostic-upgrade Phase B)', () =
   async function seedForWriting(): Promise<void> {
     for (let i = 0; i < 7; i += 1) {
       await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4', answer: 1 });
-      await seedTopikItem(pg.pool, { section: 'listening', proficiency: 'L4', answer: 1 });
+      await seedListening({ proficiency: 'L4', answer: 1 });
     }
     await seedVocabEntry(pg.pool, { proficiency: 'L4', korean: '단어' });
     await seedKgiuEntry(pg.pool, { proficiency: 'L4', pattern: '-는 바람에' });
@@ -2549,6 +2761,9 @@ describe('B1 — prompt is instruction, not stem (no duplicated question text)',
       answer: 1,
       stem: transcript,
       instruction,
+      audioStartMs: 0,
+      audioEndMs: 5_000,
+      audioPath: 'diag-fixture-b1-listening.mp3',
     });
     await seedVocabEntry(pg.pool, { proficiency: 'L4', korean: '단어' });
     await seedKgiuEntry(pg.pool, { proficiency: 'L4', pattern: '-는 바람에' });
@@ -2662,14 +2877,18 @@ describe('F-119/F-206 — real listening audio on the diagnostic', () => {
     expect(nxt.body.next.audioUrl).toBe('/topik/audio/555102/1');
   });
 
-  it('a listening item with NO mapped span emits no audioUrl/spans — transcript only', async () => {
+  it('FIX 1(b): a listening item with NO mapped span is excluded, not served transcript-only', async () => {
+    // Superseded expectation: pre-FIX-1(b), a spanless listening item still
+    // served (transcript-only, audioUrl omitted) because a real span was
+    // only a sort PREFERENCE. FIX 1(b) makes it REQUIRED, so this row — the
+    // only listening candidate — excludes the whole dimension instead of
+    // serving an unplayable "listening" question.
     await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4', answer: 1 });
-    const transcript = '오늘은 날씨가 맑습니다.';
     await seedTopikItem(pg.pool, {
       section: 'listening',
       proficiency: 'L4',
       answer: 1,
-      stem: transcript,
+      stem: '오늘은 날씨가 맑습니다.',
       // No audioStartMs/audioEndMs/audioPath — the common live-corpus case.
     });
     await seedVocabEntry(pg.pool, { proficiency: 'L4', korean: '단어' });
@@ -2677,24 +2896,30 @@ describe('F-119/F-206 — real listening audio on the diagnostic', () => {
     const { agent } = await registerUser(t.app, pg.pool);
 
     const start = await agent.post('/diagnostic').send({});
-    const runId = start.body.runId;
-    await agent
-      .post(`/diagnostic/${runId}/answer`)
-      .send({ responseId: start.body.item.responseId, picked: null });
-    const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
-    expect(nxt.status).toBe(200);
-    const item = nxt.body.next;
-    expect(item.section).toBe('listening');
-    expect(item.audioUrl).toBeUndefined();
-    expect(item.audioStartMs).toBeUndefined();
-    expect(item.audioEndMs).toBeUndefined();
-    expect(item.audio.transcript).toBe(transcript);
+    expect(start.status).toBe(201);
+    const runId = start.body.runId as number;
+    let current: { responseId: number; section?: string } | null = start.body.item;
+    while (current !== null) {
+      expect(current.section).not.toBe('listening');
+      const ans = await agent
+        .post(`/diagnostic/${runId}/answer`)
+        .send({ responseId: current.responseId, picked: null });
+      expect(ans.status).toBe(200);
+      if (ans.body.done === true) break;
+      const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
+      expect(nxt.status).toBe(200);
+      current = nxt.body.next;
+    }
+    const served = await pg.pool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM diagnostic_responses WHERE section = 'listening'`,
+    );
+    expect(served.rows[0]!.n).toBe(0);
   });
 
-  it('a half-mapped span (window without a test mp3) still emits no audioUrl', async () => {
+  it('FIX 1(b): a half-mapped span (window without a test mp3) is ALSO excluded', async () => {
     // The window alone is not enough — the DB CHECK forbids a half window,
     // but the TEST's audio_path is a separate table and can independently be
-    // unmapped. Both must be present.
+    // unmapped. Both must be present, or the row is excluded outright.
     await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4', answer: 1 });
     await seedTopikItem(pg.pool, {
       section: 'listening',
@@ -2709,23 +2934,36 @@ describe('F-119/F-206 — real listening audio on the diagnostic', () => {
     const { agent } = await registerUser(t.app, pg.pool);
 
     const start = await agent.post('/diagnostic').send({});
-    const runId = start.body.runId;
-    await agent
-      .post(`/diagnostic/${runId}/answer`)
-      .send({ responseId: start.body.item.responseId, picked: null });
-    const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
-    expect(nxt.body.next.audioUrl).toBeUndefined();
+    expect(start.status).toBe(201);
+    const runId = start.body.runId as number;
+    let current: { responseId: number; section?: string } | null = start.body.item;
+    while (current !== null) {
+      expect(current.section).not.toBe('listening');
+      const ans = await agent
+        .post(`/diagnostic/${runId}/answer`)
+        .send({ responseId: current.responseId, picked: null });
+      expect(ans.status).toBe(200);
+      if (ans.body.done === true) break;
+      const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
+      expect(nxt.status).toBe(200);
+      current = nxt.body.next;
+    }
+    const served = await pg.pool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM diagnostic_responses WHERE section = 'listening'`,
+    );
+    expect(served.rows[0]!.n).toBe(0);
   });
 
-  it('selection prefers an audio-carrying listening item over non-audio candidates in the same band', async () => {
+  it('FIX 1(b): only the audio-carrying listening candidate is even eligible — the 5 non-audio rows are excluded outright, not merely deprioritized', async () => {
     await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4', answer: 1 });
-    // 5 listening candidates with no mapped audio…
+    // 5 listening candidates with no mapped audio — under the OLD preference-
+    // only ORDER BY these would still be eligible (just sorted after); FIX
+    // 1(b) moves the requirement into the WHERE, so they never match at all.
     for (let i = 0; i < 5; i += 1) {
       await seedTopikItem(pg.pool, { section: 'listening', proficiency: 'L4', answer: 1 });
     }
-    // …and exactly one that carries a real span + mp3. The preference CASE
-    // sorts it first deterministically (`random()` only breaks ties WITHIN
-    // a CASE group), so this is not a statistical flake.
+    // …and exactly one that carries a real span + mp3 — the only eligible
+    // row, so this is deterministic by construction, not a lucky draw.
     const audioItemId = await seedTopikItem(pg.pool, {
       section: 'listening',
       proficiency: 'L4',
@@ -2755,7 +2993,13 @@ describe('F-119/F-206 — real listening audio on the diagnostic', () => {
     expect(served.rows[0]?.source_ref).toBe(String(audioItemId));
   });
 
-  it('falls back to a non-audio listening item when none in the pool carry audio (never empties the pool)', async () => {
+  it('FIX 1(b) supersedes the old fallback: when NOTHING in the pool carries audio, listening is skipped rather than served without audio', async () => {
+    // Pre-FIX-1(b) title/behavior was "falls back to a non-audio listening
+    // item … never empties the pool" — audio was only a sort preference, so
+    // an all-non-audio pool still served one. FIX 1(b) makes the pool
+    // GENUINELY empty in that case; the run must still finish on its other
+    // dimensions rather than crash/hang (the ticket's pool-starvation
+    // guard).
     await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4', answer: 1 });
     await seedTopikItem(pg.pool, { section: 'listening', proficiency: 'L4', answer: 1 });
     await seedVocabEntry(pg.pool, { proficiency: 'L4', korean: '단어' });
@@ -2763,14 +3007,27 @@ describe('F-119/F-206 — real listening audio on the diagnostic', () => {
     const { agent } = await registerUser(t.app, pg.pool);
 
     const start = await agent.post('/diagnostic').send({});
-    const runId = start.body.runId;
-    await agent
-      .post(`/diagnostic/${runId}/answer`)
-      .send({ responseId: start.body.item.responseId, picked: null });
-    const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
-    expect(nxt.status).toBe(200);
-    expect(nxt.body.next.section).toBe('listening');
-    expect(nxt.body.next.audioUrl).toBeUndefined();
+    expect(start.status).toBe(201);
+    const runId = start.body.runId as number;
+    let current: { responseId: number; section?: string } | null = start.body.item;
+    while (current !== null) {
+      expect(current.section).not.toBe('listening');
+      const ans = await agent
+        .post(`/diagnostic/${runId}/answer`)
+        .send({ responseId: current.responseId, picked: null });
+      expect(ans.status).toBe(200);
+      if (ans.body.done === true) break;
+      const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
+      expect(nxt.status).toBe(200);
+      current = nxt.body.next;
+    }
+    // The run finished (no crash/hang) with a genuinely empty listening pool.
+    const fin = await agent.post(`/diagnostic/${runId}/finish`).send({});
+    expect(fin.status).toBe(200);
+    const dims = fin.body.snapshot.dimensions as Array<{ key: string }>;
+    // listening got zero items → omitted from the snapshot entirely (same
+    // degrade as any other zero-response dimension), never a fake score.
+    expect(dims.find((d) => d.key === 'listening')).toBeUndefined();
   });
 
   it('SF-1 fix: a placeholder-stem item WITH a mapped audio span is RE-ADMITTED and carries audioUrl', async () => {
