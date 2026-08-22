@@ -122,15 +122,17 @@ const CHOICE_MARKERS = ['①', '②', '③', '④'] as const;
 
 /**
  * Static intro descriptors — the Intro no longer pre-fetches a test bundle.
- * The live run is built server-side (4 each reading/listening/vocab/grammar/
- * hanja + 2 writing, 22 items, ~20 min adaptive); these are the human-
- * readable section labels + per-section item counts the Intro card lists.
- * Kept module-scope (immutable, never re-allocated). `hanja` (diagnostic-
- * upgrade Phase A) is coverage-only — it still gets its own intro row like
- * every other section. `writing` (diagnostic-upgrade Phase B) is weighted
- * DOWN to 2 items (server `WEIGHTS.writing` in `server/src/routes/
- * diagnostic.ts`) — the first dimension with a non-uniform per-section count,
- * hence the `items` field per row instead of one shared constant.
+ * The live run is built server-side (6 each reading/listening/vocab/grammar +
+ * 4 hanja + 2 writing, 30 items, ~20 min adaptive — diagnostic-upgrade
+ * Phase C bumped the four core leveled dims 4→6 each so every dimension gets
+ * its OWN adaptive θ ladder with enough of its own evidence to genuinely
+ * diverge from the others); these are the human-readable section labels +
+ * per-section item counts the Intro card lists. Kept module-scope (immutable,
+ * never re-allocated). `hanja` is coverage-only — it still gets its own intro
+ * row like every other section, unaffected by the Phase C bump. `writing`
+ * stays weighted DOWN to 2 items (server `WEIGHTS.writing` in
+ * `server/src/routes/diagnostic.ts`) — the item counts are non-uniform across
+ * dimensions, hence the `items` field per row instead of one shared constant.
  */
 const INTRO_SECTIONS: ReadonlyArray<{
   id: string;
@@ -138,22 +140,22 @@ const INTRO_SECTIONS: ReadonlyArray<{
   kr: string;
   items: number;
 }> = [
-  { id: 'reading', label: 'Reading', kr: '읽기', items: 4 },
-  { id: 'listening', label: 'Listening', kr: '듣기', items: 4 },
-  { id: 'vocab', label: 'Vocabulary', kr: '어휘', items: 4 },
-  { id: 'grammar', label: 'Grammar', kr: '문법', items: 4 },
+  { id: 'reading', label: 'Reading', kr: '읽기', items: 6 },
+  { id: 'listening', label: 'Listening', kr: '듣기', items: 6 },
+  { id: 'vocab', label: 'Vocabulary', kr: '어휘', items: 6 },
+  { id: 'grammar', label: 'Grammar', kr: '문법', items: 6 },
   { id: 'hanja', label: 'Hanja', kr: '한자', items: 4 },
   { id: 'writing', label: 'Writing', kr: '쓰기', items: 2 },
 ];
 
 // MUST mirror the server's test shape — `WEIGHTS`/`TARGET_ITEM_COUNT` in
-// `server/src/routes/diagnostic.ts` (4 each reading/listening/vocab/grammar/
-// hanja + 2 writing → a 22-item schedule, diagnostic-upgrade Phase B). The
+// `server/src/routes/diagnostic.ts` (6 each reading/listening/vocab/grammar +
+// 4 hanja + 2 writing → a 30-item schedule, diagnostic-upgrade Phase C). The
 // taking-screen progress bar counts to the server's total, so a stale intro
 // promise here is a user-visible contradiction (F-011 fixpass R3 B1). Retune
 // alongside `INTRO_SECTIONS`' per-row `items` when turning the server knob.
 const INTRO_TOTAL_MINS = 20;
-const INTRO_TOTAL_ITEMS = 22;
+const INTRO_TOTAL_ITEMS = 30;
 
 /**
  * Normalise a thrown value to user-facing FIXED copy (F-UP-018). Previously

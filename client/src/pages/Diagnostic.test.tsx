@@ -355,13 +355,14 @@ describe('Diagnostic', () => {
     expect(container.querySelector('.km-diagnostic__display')).toBeNull();
   });
 
-  it('F-011: the intro advertises the real 22-item / 6-section test shape (diagnostic-upgrade Phase B)', () => {
-    // The server serves 4 each of reading/listening/vocab/grammar/hanja plus
-    // 2 writing (WEIGHTS in server/src/routes/diagnostic.ts, diagnostic-
-    // upgrade Phase B) → a 22-item schedule, and the taking-screen progress
-    // bar counts to the server's total. The intro's promise must match — the
-    // old "8 items / 2 items / 12 min" copy shipped one screen before the
-    // progress bar (fixpass R3 B1). This pins intro ↔ server-shape sync.
+  it('F-011: the intro advertises the real 30-item / 6-section test shape (diagnostic-upgrade Phase C)', () => {
+    // The server serves 6 each of reading/listening/vocab/grammar plus 4
+    // hanja + 2 writing (WEIGHTS in server/src/routes/diagnostic.ts,
+    // diagnostic-upgrade Phase C — per-category adaptive ladders) → a
+    // 30-item schedule, and the taking-screen progress bar counts to the
+    // server's total. The intro's promise must match — a stale copy shipped
+    // one screen before the progress bar is a user-visible contradiction
+    // (fixpass R3 B1). This pins intro ↔ server-shape sync.
     hookState.snapshot = {
       data: EMPTY_SNAPSHOT,
       loading: false,
@@ -369,14 +370,16 @@ describe('Diagnostic', () => {
       isMock: true,
     };
     renderWithRouter();
-    // Eyebrow: "진단평가 · 20 min · 22 items".
-    expect(screen.getByText(/20 min · 22 items/)).toBeInTheDocument();
-    // Five section rows promise 4 items each; writing promises 2.
-    expect(screen.getAllByText('4 items')).toHaveLength(5);
+    // Eyebrow: "진단평가 · 20 min · 30 items".
+    expect(screen.getByText(/20 min · 30 items/)).toBeInTheDocument();
+    // Four section rows promise 6 items each; hanja promises 4, writing 2.
+    expect(screen.getAllByText('6 items')).toHaveLength(4);
+    expect(screen.getByText('4 items')).toBeInTheDocument();
     expect(screen.getByText('2 items')).toBeInTheDocument();
-    // The stale pre-F-011 / pre-Phase-B shapes must never come back.
+    // The stale pre-Phase-C shapes must never come back.
     expect(screen.queryByText(/8 items/)).not.toBeInTheDocument();
     expect(screen.queryByText(/20 items/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/22 items/)).not.toBeInTheDocument();
     expect(screen.queryByText(/12 min/)).not.toBeInTheDocument();
   });
 
@@ -407,10 +410,12 @@ describe('Diagnostic', () => {
     }
     // The per-section count carries Korean too. The counts render compact
     // (one language visually), so each row holds the Korean twice: the
-    // visible primary + the sr-only bilingual reading. Five rows at 4문항
-    // (reading/listening/vocab/grammar/hanja) × 2 = 10; writing's own 2문항
-    // row is asserted separately since its count differs.
-    expect(screen.getAllByText('4문항')).toHaveLength(10);
+    // visible primary + the sr-only bilingual reading. Diagnostic-upgrade
+    // Phase C: four rows at 6문항 (reading/listening/vocab/grammar) × 2 = 8;
+    // hanja's own 4문항 and writing's own 2문항 rows are asserted separately
+    // since their counts differ.
+    expect(screen.getAllByText('6문항')).toHaveLength(8);
+    expect(screen.getAllByText('4문항')).toHaveLength(2);
     expect(screen.getAllByText('2문항')).toHaveLength(2);
     // Verbage trim: the eyebrow no longer repeats the title's 진단평가 —
     // it appears exactly once, in the h1.
@@ -1324,7 +1329,7 @@ describe('writing item (diagnostic-upgrade Phase B) — textarea, not ChoiceList
 
   const WRITING_ITEM: DiagnosticLiveItem = {
     responseId: 401,
-    ordinal: 21,
+    ordinal: 19,
     section: 'writing',
     level: 'L3',
     kind: 'writing-production',
@@ -1339,7 +1344,7 @@ describe('writing item (diagnostic-upgrade Phase B) — textarea, not ChoiceList
     startDiagnostic.mockResolvedValue({
       runId: 51,
       item: WRITING_ITEM,
-      progress: { ordinal: 21, total: 22 },
+      progress: { ordinal: 19, total: 30 },
     });
 
     const user = userEvent.setup();
@@ -1367,7 +1372,7 @@ describe('writing item (diagnostic-upgrade Phase B) — textarea, not ChoiceList
     startDiagnostic.mockResolvedValue({
       runId: 52,
       item: WRITING_ITEM,
-      progress: { ordinal: 21, total: 22 },
+      progress: { ordinal: 19, total: 30 },
     });
     answerDiagnostic.mockResolvedValueOnce({
       result: {
@@ -1381,7 +1386,7 @@ describe('writing item (diagnostic-upgrade Phase B) — textarea, not ChoiceList
         referenceModelEn: 'It seems he is a student.',
       },
       done: false,
-      progress: { ordinal: 21, total: 22 },
+      progress: { ordinal: 19, total: 30 },
     });
 
     const user = userEvent.setup();
@@ -1410,7 +1415,7 @@ describe('writing item (diagnostic-upgrade Phase B) — textarea, not ChoiceList
     startDiagnostic.mockResolvedValue({
       runId: 53,
       item: WRITING_ITEM,
-      progress: { ordinal: 21, total: 22 },
+      progress: { ordinal: 19, total: 30 },
     });
     answerDiagnostic.mockResolvedValueOnce({
       result: {
@@ -1424,7 +1429,7 @@ describe('writing item (diagnostic-upgrade Phase B) — textarea, not ChoiceList
         referenceModelEn: 'It seems he is a student.',
       },
       done: false,
-      progress: { ordinal: 21, total: 22 },
+      progress: { ordinal: 19, total: 30 },
     });
 
     const user = userEvent.setup();
@@ -1449,7 +1454,7 @@ describe('writing item (diagnostic-upgrade Phase B) — textarea, not ChoiceList
     startDiagnostic.mockResolvedValue({
       runId: 55,
       item: WRITING_ITEM,
-      progress: { ordinal: 21, total: 22 },
+      progress: { ordinal: 19, total: 30 },
     });
     // First submit loses the server's atomic claim race — distinct `code`
     // from the generic "already recorded" 409 the E-DG-409 test above uses.
@@ -1473,7 +1478,7 @@ describe('writing item (diagnostic-upgrade Phase B) — textarea, not ChoiceList
           referenceModelEn: 'It seems he is a student.',
         },
         done: false,
-        progress: { ordinal: 21, total: 22 },
+        progress: { ordinal: 19, total: 30 },
       });
 
     const user = userEvent.setup();
@@ -1524,7 +1529,7 @@ describe('writing item (diagnostic-upgrade Phase B) — textarea, not ChoiceList
     startDiagnostic.mockResolvedValue({
       runId: 54,
       item: WRITING_ITEM,
-      progress: { ordinal: 21, total: 22 },
+      progress: { ordinal: 19, total: 30 },
     });
     answerDiagnostic.mockResolvedValueOnce({
       result: {
@@ -1540,7 +1545,7 @@ describe('writing item (diagnostic-upgrade Phase B) — textarea, not ChoiceList
         referenceModelEn: 'It seems he is a student.',
       },
       done: false,
-      progress: { ordinal: 21, total: 22 },
+      progress: { ordinal: 19, total: 30 },
     });
 
     const user = userEvent.setup();
