@@ -62,6 +62,14 @@ export interface SkillBarProps {
   gapNote?: string;
   /** Animation stagger in ms; lets a parent fan-in multiple bars. */
   delayMs?: number;
+  /**
+   * Diagnostic-polish FIX 3: when true, every item served for this skill
+   * was skipped — there is no real score. Renders an explicit "Not
+   * assessed" row instead of the progress track/fill/tick/band; `score`/
+   * `scoreLow`/`scoreHigh`/`gapNote` are ignored entirely (no fake bar, no
+   * fake number).
+   */
+  skipped?: boolean;
 }
 
 export function SkillBar({
@@ -75,6 +83,7 @@ export function SkillBar({
   compact = false,
   gapNote,
   delayMs = 0,
+  skipped = false,
 }: SkillBarProps): JSX.Element {
   // Internal "ready" gate — mounts at 0 width so the CSS transition runs
   // once for every freshly-mounted bar. Honors reduced-motion via the
@@ -113,6 +122,39 @@ export function SkillBar({
   const trackLabel = hasBand
     ? `${label} skill — estimated ${String(safeScore)}, range ${String(bandLow)}–${String(bandHigh)}`
     : `${label} skill`;
+
+  // FIX 3 (diagnostic-polish): every item served for this skill was
+  // skipped — there is no real score to chart. Render an explicit
+  // "Not assessed" row instead of a bar (never a fake floored level).
+  if (skipped) {
+    return (
+      <div className={cn('km-skillbar', 'km-skillbar--skipped', compact && 'km-skillbar--compact')}>
+        <div className="km-skillbar__header">
+          <div className="km-skillbar__labels">
+            <span className="km-skillbar__label">
+              <Bilingual en={label} kr={kr} />
+            </span>
+          </div>
+          <div className="km-skillbar__score km-skillbar__score--skipped">
+            <Bilingual en="Not assessed" kr="평가 안 됨" />
+          </div>
+        </div>
+        <div
+          className="km-skillbar__track km-skillbar__track--skipped"
+          role="status"
+          aria-label={`${label} skill — not assessed, every item was skipped`}
+        />
+        {!compact ? (
+          <div className="km-skillbar__note">
+            <Bilingual
+              en="Skipped every question — retake to get a real level."
+              kr="모든 문제를 건너뛰었어요 — 다시 응시하면 실제 수준을 볼 수 있어요."
+            />
+          </div>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div className={cn('km-skillbar', compact && 'km-skillbar--compact')}>

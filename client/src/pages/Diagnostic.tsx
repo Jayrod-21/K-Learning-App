@@ -1370,6 +1370,9 @@ function ResultsBlock({ snapshot, onRetest }: ResultsProps): JSX.Element {
     scoreLow: d.scoreLow,
     scoreHigh: d.scoreHigh,
     note: d.note,
+    // FIX 3: a fully-skipped dimension renders "Not assessed" instead of a
+    // bar/score — see SkillBar's `skipped` prop.
+    skipped: d.skipped,
   }));
   const references: ReadonlyArray<SkillReference> = snapshot.references.map(
     (r) => ({

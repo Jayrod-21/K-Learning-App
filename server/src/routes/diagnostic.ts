@@ -1429,6 +1429,18 @@ interface SnapshotDimensionDTO {
   /** Confidence-band ceiling, 0–100. Same degradation rule as `scoreLow`. */
   readonly scoreHigh: number;
   readonly note: string;
+  /**
+   * FIX 3 (diagnostic-polish): true when the learner served items for this
+   * dimension but SKIPPED every one of them — `score`/`scoreLow`/
+   * `scoreHigh` are then meaningless placeholders (0), never a real
+   * estimate, because a skip carries zero signal (unlike a genuine wrong
+   * answer). Omitted (never `false`) on a normally-scored dimension — only
+   * present, and always `true`, when it applies. The client renders these
+   * rows as "Not assessed" instead of a bar. A dimension the run never
+   * served any item for at all (a genuinely empty pool) is UNCHANGED
+   * behavior: still silently absent from `dimensions[]`, not marked here.
+   */
+  readonly skipped?: true;
 }
 
 interface SnapshotDTO {
@@ -1553,20 +1565,55 @@ function dimensionStatsFromEvidence(
 }
 
 /**
+ * Extract the FIX-3 `skippedDimensions` list from a snapshot's `evidence`
+ * JSONB (mirrors `dimensionStatsFromEvidence`'s defensive posture exactly —
+ * a pre-FIX-3 snapshot has no such field, a hostile/malformed value degrades
+ * to "no skipped dimensions" rather than throwing). Any array entry that
+ * isn't a real `DiagnosticDimensionKey` is dropped, not trusted verbatim.
+ */
+function skippedDimensionsFromEvidence(evidence: unknown): DiagnosticDimensionKey[] {
+  if (typeof evidence !== 'object' || evidence === null) return [];
+  const raw = (evidence as Record<string, unknown>)['skippedDimensions'];
+  if (!Array.isArray(raw)) return [];
+  const known = new Set<string>(DIMENSION_ORDER);
+  return raw.filter((v): v is DiagnosticDimensionKey => typeof v === 'string' && known.has(v));
+}
+
+/**
  * Build the SnapshotDTO from the four stored estimates plus (optionally) the
- * per-dimension band stats. A dimension with no stat — every pre-v1.1.0
- * snapshot, or a malformed evidence entry — degrades to a zero-width band
- * (`scoreLow = scoreHigh = score`); it never crashes. When a stat IS present,
- * the band is re-anchored on the freshly computed `score` (min/max) so a
- * corrupt stored band can never invert the `scoreLow ≤ score ≤ scoreHigh`
- * invariant the client renders against.
+ * per-dimension band stats and (FIX 3) the dimensions the learner fully
+ * skipped. A dimension with no stat — every pre-v1.1.0 snapshot, or a
+ * malformed evidence entry — degrades to a zero-width band (`scoreLow =
+ * scoreHigh = score`); it never crashes. When a stat IS present, the band is
+ * re-anchored on the freshly computed `score` (min/max) so a corrupt stored
+ * band can never invert the `scoreLow ≤ score ≤ scoreHigh` invariant the
+ * client renders against. A dimension in `skippedDimensions` short-circuits
+ * ALL of that — it renders as an explicit "Not assessed" row (`skipped:
+ * true`, placeholder zero score) instead of a real estimate, and is excluded
+ * from the "weakest dimension" goal (it isn't weak, it's unmeasured).
  */
 function buildSnapshotDTO(
   estimates: Partial<Record<DiagnosticDimensionKey, number | null>>,
   stats: Partial<Record<DiagnosticDimensionKey, DimensionStat>> = {},
+  skippedDimensions: readonly DiagnosticDimensionKey[] = [],
 ): SnapshotDTO {
+  const skippedSet = new Set<DiagnosticDimensionKey>(skippedDimensions);
   const dimensions: SnapshotDimensionDTO[] = [];
   for (const key of DIMENSION_ORDER) {
+    const labels = DIMENSION_LABELS[key];
+    if (skippedSet.has(key)) {
+      dimensions.push({
+        key,
+        label: labels.label,
+        kr: labels.kr,
+        score: 0,
+        scoreLow: 0,
+        scoreHigh: 0,
+        note: 'Not assessed — every item was skipped.',
+        skipped: true,
+      });
+      continue;
+    }
     const stat = stats[key];
     // `estimates` here is whatever the CALLER read back (loadSnapshotDTO only
     // SELECTs reading/listening/grammar/vocab_estimate — the pre-v1.3.0 four
@@ -1587,7 +1634,6 @@ function buildSnapshotDTO(
     const score = estimateToScore(est);
     const scoreLow = stat !== undefined ? Math.min(stat.scoreLow, score) : score;
     const scoreHigh = stat !== undefined ? Math.max(stat.scoreHigh, score) : score;
-    const labels = DIMENSION_LABELS[key];
     dimensions.push({
       key,
       label: labels.label,
@@ -1599,8 +1645,11 @@ function buildSnapshotDTO(
     });
   }
   const goals: string[] = [];
-  if (dimensions.length > 0) {
-    const weakest = dimensions.reduce((min, d) => (d.score < min.score ? d : min), dimensions[0]!);
+  // FIX 3: a skipped dimension is UNMEASURED, not weak — never the "focus
+  // here" pick (its placeholder score=0 would otherwise always win).
+  const scorable = dimensions.filter((d) => d.skipped !== true);
+  if (scorable.length > 0) {
+    const weakest = scorable.reduce((min, d) => (d.score < min.score ? d : min), scorable[0]!);
     if (weakest.score < 70) {
       goals.push(`Build ${weakest.label.toLowerCase()} with daily focused drills.`);
     }
@@ -2469,10 +2518,29 @@ router.post(
       // them back for /latest, /history and the idempotent re-finish.
       // Dimensions that received zero items are omitted, mirroring the
       // estimate columns.
+      // FIX 3 (diagnostic-polish): a dimension where the learner SKIPPED
+      // EVERY served item has no real signal — a skip always grades
+      // incorrect, so `estimateForDimension`/the ladder θ would floor it to
+      // a bogus L1 "beginner" rank the user never actually earned (they
+      // never attempted a single question). Track which dimensions are
+      // ALL-skipped here and OMIT them from `dimensionStats`/
+      // `finalEstimates` entirely below — `buildSnapshotDTO` already drops a
+      // null-estimate dimension cleanly, and the `skippedDimensions` list
+      // (persisted alongside `dimensionStats` in `evidence`, read back by
+      // `skippedDimensionsFromEvidence`) lets the DTO mark it "Not assessed"
+      // instead of just vanishing silently. A dimension with >=1 REAL
+      // attempt (picked !== null) — even if that attempt was wrong — is
+      // NEVER all-skipped; it keeps scoring normally.
+      const skippedDimensions: DiagnosticDimensionKey[] = [];
       const dimensionStats: Partial<Record<DiagnosticDimensionKey, DimensionStat>> = {};
       for (const dim of DIMENSION_ORDER) {
         const responses = scored.filter((r) => r.section === dim);
         if (responses.length === 0) continue;
+        const dimRespRows = respRows.filter((r) => r.section === dim);
+        if (dimRespRows.every((r) => r.picked === null)) {
+          skippedDimensions.push(dim);
+          continue;
+        }
         const correct = responses.filter((r) => r.isCorrect).length;
 
         if (dim === 'hanja') {
@@ -2566,6 +2634,11 @@ router.post(
         theta_trajectory: thetaTrajectory,
         schedule: SCHEDULE,
         dimensionStats,
+        // FIX 3: which dimensions (if any) were fully skipped — read back by
+        // `skippedDimensionsFromEvidence` for /latest, /history and the
+        // idempotent re-finish so the DTO can mark them "Not assessed"
+        // rather than just omitting them like a genuine zero-item dimension.
+        skippedDimensions,
       };
 
       // Write the snapshot + flip the run to finished in one short transaction.
@@ -2628,7 +2701,7 @@ router.post(
       // winner wrote — reload it user-scoped to be safe).
       const dto =
         (await loadSnapshotDTO(snapshotId, userId)) ??
-        buildSnapshotDTO(finalEstimates, dimensionStats);
+        buildSnapshotDTO(finalEstimates, dimensionStats, skippedDimensions);
       res.status(200).json({ snapshot: dto });
     } catch (err) {
       next(mapClaudeError(err));
@@ -2663,6 +2736,7 @@ async function loadSnapshotDTO(snapshotId: number, userId: number): Promise<Snap
       vocab: row.vocab_estimate !== null ? Number(row.vocab_estimate) : null,
     },
     dimensionStatsFromEvidence(row.evidence),
+    skippedDimensionsFromEvidence(row.evidence),
   );
 }
 
@@ -2786,6 +2860,7 @@ router.get('/history', cheapLimiter(), async (req, res, next) => {
           vocab: r.vocab_estimate !== null ? Number(r.vocab_estimate) : null,
         },
         dimensionStatsFromEvidence(r.evidence),
+        skippedDimensionsFromEvidence(r.evidence),
       ),
     }));
     res.status(200).json({ snapshots });
