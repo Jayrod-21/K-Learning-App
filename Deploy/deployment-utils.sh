@@ -50,6 +50,17 @@ ENV_FILE="${KM_ENV_FILE:-${DEPLOY_DIR}/.env}"
 # The live nginx.conf the km-lb container bind-mounts. update_nginx_config swaps
 # one of the nginx-${color}-active.conf templates into this path.
 LIVE_NGINX_CONF="${KM_LIVE_NGINX_CONF:-${DEPLOY_DIR}/nginx.conf}"
+# The active-color signal BOTH km-server-blue and km-server-green bind-mount
+# read-only (Phase 1.3 story-runner gating): a single line naming which color
+# is currently promoted, so each server process can tell whether IT is the
+# active one without a restart (a switch is a pure nginx reload — see
+# azure-switch-production.sh). Deliberately a separate file from ENV_FILE:
+# ENV_FILE holds secrets and both colors already receive its values as env
+# vars at container start, but mounting the raw secrets FILE into a running
+# container is a needless extra read surface — this file holds nothing but a
+# color name. write_active_color_file (below) keeps it in sync with
+# ACTIVE_ENVIRONMENT.
+ACTIVE_COLOR_FILE="${KM_ACTIVE_COLOR_FILE:-${DEPLOY_DIR}/active-color}"
 
 # Compose file paths (per the locked layout).
 COMPOSE_SHARED_FILE="${DEPLOY_DIR}/docker-compose.shared.yml"
@@ -249,6 +260,30 @@ save_env_var() {
     chmod 600 "$ENV_FILE"
     # Log the KEY only — never the value.
     log_info "saved ${key} to ${ENV_FILE} (value redacted)"
+}
+
+# =============================================================================
+# write_active_color_file COLOR — atomically (re)write ACTIVE_COLOR_FILE.
+# -----------------------------------------------------------------------------
+# Keeps the bind-mounted active-color signal (Phase 1.3 story-runner gating)
+# in sync with ACTIVE_ENVIRONMENT. Not a secret — world-readable is fine — but
+# still written via temp-file + atomic mv so a concurrent read (a server tick
+# in either color) never observes a half-written file. Callers: every place
+# that persists ACTIVE_ENVIRONMENT should call this too (currently
+# azure-switch-production.sh post-flip, and local-standup.sh's cold seed).
+# =============================================================================
+write_active_color_file() {
+    local color="$1"
+    if [[ "$color" != "blue" && "$color" != "green" ]]; then
+        log_err "write_active_color_file: color must be 'blue' or 'green', got '${color}'"
+        return 1
+    fi
+    local tmp
+    tmp="$(mktemp "${ACTIVE_COLOR_FILE}.XXXXXX")"
+    printf '%s\n' "$color" >"$tmp"
+    chmod 644 "$tmp"
+    mv -f "$tmp" "$ACTIVE_COLOR_FILE"
+    log_info "wrote active color '${color}' to ${ACTIVE_COLOR_FILE}"
 }
 
 # =============================================================================

@@ -93,6 +93,21 @@ main() {
         cp -- "${DEPLOY_DIR}/nginx-${ACTIVE_ENVIRONMENT}-active.conf" "$LIVE_NGINX_CONF"
     fi
 
+    # Same seeding for ACTIVE_COLOR_FILE (Phase 1.3 story-runner gating): both
+    # colors' compose files bind-mount it read-only, so it must exist as a
+    # plain file before EITHER color's containers first come up on this host.
+    # Idempotent no-op once local-standup.sh or a prior deploy has already
+    # created it; self-heals a stale directory the same way as nginx.conf
+    # above so this mechanism can land on an already-running box without a
+    # separate manual step.
+    if [[ -d "$ACTIVE_COLOR_FILE" ]]; then
+        log_warn "active-color path is a directory (stale from a prior failed mount); removing it"
+        rmdir "$ACTIVE_COLOR_FILE" 2>/dev/null || rm -rf -- "$ACTIVE_COLOR_FILE"
+    fi
+    if [[ ! -f "$ACTIVE_COLOR_FILE" ]]; then
+        write_active_color_file "$ACTIVE_ENVIRONMENT"
+    fi
+
     log_info "bringing the shared services up (km-lb / km-db / km-backup / km-worker)"
     compose_shared up
 

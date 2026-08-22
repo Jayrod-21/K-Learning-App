@@ -285,19 +285,30 @@ before any manual rollback.
 
 ## Reading and flipping the active color
 
-The active color lives in two places that must agree:
+The active color lives in three places that must agree:
 
-* the `ACTIVE_ENVIRONMENT` line in the persistent server `.env`, and
-* the live `km-lb` nginx config (which upstream `:1840` points at).
+* the `ACTIVE_ENVIRONMENT` line in the persistent server `.env`,
+* the live `km-lb` nginx config (which upstream `:1840` points at), and
+* `Deploy/active-color` — a one-line file naming the active color, bind-mounted
+  read-only into BOTH `km-server-blue` and `km-server-green` so each process
+  can tell whether IT is the active one (Phase 1.3: gates the story-TTS/
+  illustration job runners so only the active color claims live work — see
+  `config/index.ts`'s `isRunnerActiveColor`). Deliberately a separate file
+  from the secrets-bearing `.env`; `check-active-env.sh` does not check it
+  (its drift is low-stakes — `SKIP LOCKED` makes concurrent claiming safe,
+  just unpredictable — so it is kept in sync by `write_active_color_file`
+  rather than gated).
 
 ```bash
 Deploy/check-active-env.sh --get-active   # prints just: blue | green
 Deploy/check-active-env.sh                # cross-checks .env vs live nginx; exits 1 on drift
 ```
 
-A flip is `nginx_switch <color>` followed by writing `ACTIVE_ENVIRONMENT`
-(both done by `azure-switch-production.sh`). Never edit the live `nginx.conf` by
-hand — it is overwritten from `nginx-${color}-active.conf` on every switch.
+A flip is `nginx_switch <color>` followed by writing `ACTIVE_ENVIRONMENT` and
+`Deploy/active-color` (all three done by `azure-switch-production.sh`). Never
+edit the live `nginx.conf` or `active-color` by hand — both are overwritten by
+the deploy scripts (`nginx.conf` from `nginx-${color}-active.conf` on every
+switch; `active-color` via `write_active_color_file`).
 
 ---
 

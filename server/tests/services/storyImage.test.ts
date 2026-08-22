@@ -29,7 +29,7 @@
  */
 import os from 'node:os';
 import path from 'node:path';
-import { readdir, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, makeStubProxy, teardownTestApp, type TestApp } from '../helpers/app.js';
@@ -40,6 +40,7 @@ import {
   seedStoryImages,
 } from '../helpers/seed.js';
 import { runStoryImageTick } from '../../src/services/storyImage.js';
+import { _setConfigForTesting, loadConfig } from '../../src/config/index.js';
 import {
   ImageGenUpstreamError,
   resetImageGenProviderForTesting,
@@ -366,6 +367,56 @@ describe('runStoryImageTick', () => {
     expect(stale.error).toContain('interrupted');
     const pending = rows.rows.find((r) => r.id === String(pendingId))!;
     expect(pending.status).toBe('done');
+  });
+
+  it('Phase 1.3: the idle color reaps stale jobs but never claims pending ones', async () => {
+    // Blue/green gating (audit §7.2): when this process is NOT the active
+    // color, the tick must still reap (time-based, benign in every color)
+    // but must NOT claim + process pending work — that belongs solely to the
+    // color nginx is actively routing to.
+    const { userId } = await registerUser(t.app, pg.pool);
+    const staleStory = await seedGeneratedStory(pg.pool, userId);
+    const staleId = await seedStoryImageJob(pg.pool, userId, staleStory, {
+      status: 'running',
+      startedAt: new Date(Date.now() - 60 * 60 * 1000), // 1h ago ≫ 15min threshold
+    });
+    const pendingStory = await seedGeneratedStory(pg.pool, userId);
+    const pendingId = await seedStoryImageJob(pg.pool, userId, pendingStory, {
+      status: 'pending',
+    });
+    setImageGenProvider(recordingProvider([]));
+
+    const otherColorDir = await mkdtemp(
+      path.join(os.tmpdir(), 'km-story-image-active-color-'),
+    );
+    const otherColorFile = path.join(otherColorDir, 'active-color');
+    await writeFile(otherColorFile, 'green\n');
+    // Snapshot the whole config and restore it verbatim afterward (rather
+    // than resetting to `{}`) — `_setConfigForTesting` re-parses process.env
+    // fresh under the hood, which would silently drop buildTestApp's own
+    // overrides (MFA_REQUIRED/REGISTRATION_ENABLED/etc.) for every test that
+    // runs after this one in the same file.
+    const prevCfg = loadConfig();
+    _setConfigForTesting({
+      ...prevCfg,
+      DEPLOY_COLOR: 'blue',
+      ACTIVE_COLOR_FILE: otherColorFile,
+    });
+    try {
+      // 'idle', not 'done' — claim+process never ran, even though a pending
+      // job was available and would normally have been claimed immediately.
+      await expect(runStoryImageTick(getLogger())).resolves.toBe('idle');
+    } finally {
+      _setConfigForTesting(prevCfg);
+    }
+
+    const rows = await pg.pool.query<{ id: string; status: string }>(
+      `SELECT id::text AS id, status FROM story_image_jobs ORDER BY id`,
+    );
+    // Reap still ran despite the gate.
+    expect(rows.rows.find((r) => r.id === String(staleId))!.status).toBe('failed');
+    // Claim never ran: the pending job is untouched.
+    expect(rows.rows.find((r) => r.id === String(pendingId))!.status).toBe('pending');
   });
 
   it('a YOUNG running job is neither reaped nor re-claimed', async () => {

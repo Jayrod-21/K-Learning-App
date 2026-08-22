@@ -31,6 +31,13 @@ function main(): void {
   // unref'd and stopped on shutdown. A job caught mid-run by a restart is
   // reaped 'failed' by the stale-run sweep on the next boot.
   //
+  // Started UNCONDITIONALLY in every color (audit §7.2 / Phase 1.3) — this is
+  // intentional, not the bug it looks like: the interval's stale-reap half is
+  // time-based and must keep running in the idle color too. Only the
+  // claim+process half inside each tick is gated on being the active color
+  // (config/index.ts's `isRunnerActiveColor`) — see that function's doc for
+  // why the gate has to live at the tick level, not here at start-up.
+  //
   // The key is OPTIONAL in every environment (dormant-deploy posture): with
   // no key the feature simply reports itself unavailable (503 on enqueue,
   // `ttsConfigured: false` on the status envelope). Warn at boot so a deploy

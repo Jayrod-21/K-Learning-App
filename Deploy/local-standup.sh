@@ -106,6 +106,19 @@ main() {
         cp -- "${DEPLOY_DIR}/nginx-${active}-active.conf" "$LIVE_NGINX_CONF"
     fi
 
+    # --- Seed the active-color file BEFORE the color trio starts -------------
+    # Phase 1.3 story-runner gating: km-server-{blue,green} both bind-mount
+    # ACTIVE_COLOR_FILE read-only. On a cold box it does not exist yet — same
+    # stale-directory hazard as LIVE_NGINX_CONF above, same fix (remove, then
+    # let write_active_color_file recreate it as a plain file).
+    if [[ -d "$ACTIVE_COLOR_FILE" ]]; then
+        log_warn "active-color path is a directory (stale mount); removing it"
+        rmdir "$ACTIVE_COLOR_FILE" 2>/dev/null || rm -rf -- "$ACTIVE_COLOR_FILE"
+    fi
+    if [[ ! -f "$ACTIVE_COLOR_FILE" ]]; then
+        write_active_color_file "$active"
+    fi
+
     # --- Ensure the services_default network (B1) ---------------------------
     # docker-compose.shared.yml declares services_default as an EXTERNAL network that
     # km-lb attaches to for Cloudflare-tunnel ingress. On the production host the

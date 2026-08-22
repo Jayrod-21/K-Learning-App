@@ -103,6 +103,12 @@ services:
       # Deploy/set-km-app-password.sh. See Deploy/.env.example.
       - DATABASE_URL=postgres://${KM_APP_USER:-km_app}:${KM_APP_PASSWORD:?KM_APP_PASSWORD not set in Deploy/.env - required since migration 047 (B-030), see Deploy/.env.example}@km-db:5432/${POSTGRES_DB}
       - PGAPPNAME=km-server-blue
+      # Phase 1.3 story-runner gating (config/index.ts's `isRunnerActiveColor`):
+      # this container's own color, hardcoded per compose file exactly like
+      # PGAPPNAME/KIWI_URL above — it never changes for this container's
+      # lifetime, unlike WHICH color is active (see ACTIVE_COLOR_FILE mount
+      # below, which does change, without a restart, on every switch).
+      - DEPLOY_COLOR=blue
       # Same-color kiwi — NOT cross-color. KIWI_URL is set here by compose, never
       # in the .env (the .env is color-agnostic; the URL is per-color).
       - KIWI_URL=http://km-kiwi-blue:8000
@@ -132,6 +138,16 @@ services:
       - TOTP_SECRET_ENC_KEY=${TOTP_SECRET_ENC_KEY}
       - REGISTRATION_ENABLED=${REGISTRATION_ENABLED:-false}
       - MFA_REQUIRED=${MFA_REQUIRED:-true}
+      # Phase 1.3 operator kill switch for the story-TTS/illustration runners
+      # (config/index.ts's STORY_RUNNERS_ENABLED) — layered UNDER the
+      # automatic DEPLOY_COLOR/ACTIVE_COLOR_FILE gate below; default true so
+      # this flag changes nothing unless an operator deliberately sets it.
+      - STORY_RUNNERS_ENABLED=${STORY_RUNNERS_ENABLED:-true}
+      # In-container path the mounted active-color file is read from (see the
+      # matching volumes: entry below). Fixed — both colors use the same
+      # in-container path; only the HOST file differs per the ACTIVE_COLOR_FILE
+      # bash var in deployment-utils.sh (KM_ACTIVE_COLOR_FILE override).
+      - ACTIVE_COLOR_FILE=/app/deploy/active-color
       # F-006 email verification (values in Deploy/.env). SMTP_HOST unset ⇒
       # mock transport (no real send). host.docker.internal reaches Proton
       # Mail Bridge on the HOST (see extra_hosts below).
@@ -186,6 +202,15 @@ services:
       # empty when missing) and audio endpoints simply 404 — a missing corpus
       # never blocks a deploy.
       - ${CORPUS_AUDIO_DIR_HOST:-/srv/korean-master/corpus}:/corpus:ro
+      # Phase 1.3: the active-color signal (a single line naming "blue" or
+      # "green"), READ-ONLY — a compromised server cannot promote itself.
+      # BOTH colors mount this SAME host file so a switch (which rewrites it
+      # via write_active_color_file) is visible to both without a restart.
+      # NOT the secrets-bearing .env — this file holds nothing but a color
+      # name. KM_ACTIVE_COLOR_FILE overrides the host path (mirrors
+      # KM_LIVE_NGINX_CONF); default is Deploy/active-color, seeded by
+      # local-standup.sh before either color's compose first comes up.
+      - ${KM_ACTIVE_COLOR_FILE:-./active-color}:/app/deploy/active-color:ro
 
     ports:
       # Direct debug port, LOOPBACK ONLY (operator curls the color in isolation,

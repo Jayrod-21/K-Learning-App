@@ -6,6 +6,9 @@
 !.env.example
 # The live nginx.conf that update_nginx_config swaps in (per-host mutable state).
 nginx.conf
+# The live active-color signal that write_active_color_file swaps in (per-host
+# mutable state — Phase 1.3 story-runner gating).
+active-color
 # Saved Docker image tarballs (pipeline artifacts loaded on the agent).
 *.tar
 # Backups live in the km_backups volume / BACKUP_DIR, not in git.

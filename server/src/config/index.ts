@@ -7,6 +7,7 @@
  * Secrets policy (SECURITY.md §1): no defaults for secrets, the parser throws
  * if they are absent. Connection strings are masked when logged.
  */
+import { readFileSync } from 'node:fs';
 import { config as loadDotenv } from 'dotenv';
 import { z } from 'zod';
 
@@ -192,6 +193,44 @@ const EnvSchema = z.object({
   // synthesis of a 6000-char body (uploadExtract.ts's STALE_RUN_MINUTES
   // posture; 'pending' is never reaped — it is the healthy backlog).
   STORY_TTS_STALE_RUN_MINUTES: z.coerce.number().int().positive().default(15),
+
+  // ---------------------------------------------------------------------------
+  // Blue/green runner gating (audit §7.2 / Phase 1.3). `index.ts` starts BOTH
+  // the story-TTS and story-illustration runners UNCONDITIONALLY, in BOTH
+  // colors — the stale-reap half of each tick is time-based and harmless to
+  // run everywhere, but the claim+process half must run in only ONE color at
+  // a time: otherwise the idle color quietly processes live jobs with the
+  // PREVIOUS release's code (SKIP LOCKED keeps that from corrupting
+  // anything, but it makes WHICH code served a job unpredictable). See
+  // `isRunnerActiveColor` below for the mechanism.
+  // ---------------------------------------------------------------------------
+  // Manual kill switch, layered UNDER the automatic active-color check below.
+  // Default true so any deployment that doesn't opt into DEPLOY_COLOR (local
+  // dev, tests, a hypothetical single-color deploy) behaves exactly as
+  // before — this flag exists for an operator who wants to force runners off
+  // everywhere regardless of color (e.g. draining the queue during an
+  // incident), not as the everyday gating mechanism.
+  STORY_RUNNERS_ENABLED: envBool(true),
+
+  // Which color THIS container is. Fixed for the container's lifetime — set
+  // once per compose file (Deploy/docker-compose.{blue,green}.yml), the same
+  // way PGAPPNAME/KIWI_URL are already hardcoded per color. Unset in every
+  // non-blue/green context (local dev, tests), which is exactly the signal
+  // `isRunnerActiveColor` uses to fail open.
+  DEPLOY_COLOR: z.enum(['blue', 'green']).optional(),
+
+  // Where to read the CURRENTLY active color from. A promotion
+  // (azure-switch-production.sh) is a pure nginx reload with NO container
+  // restart — that is what makes rollback a single reload — so which color
+  // is active can change without this process ever reloading its config.
+  // `loadConfig()` caches once at boot, so that fact cannot live on the
+  // cached `Config`; it must be re-read from disk on every check instead.
+  // azure-switch-production.sh rewrites this file atomically the moment a
+  // switch's post-flip health check passes, mirroring how it already
+  // persists ACTIVE_ENVIRONMENT into Deploy/.env. Bind-mounted read-only
+  // into both colors' containers (NOT the secrets-bearing .env itself —
+  // this file holds nothing but a color name).
+  ACTIVE_COLOR_FILE: z.string().min(1).default('/app/deploy/active-color'),
 
   // ---------------------------------------------------------------------------
   // Story illustrations (F-211 — AI images for generated stories, OpenAI
@@ -437,6 +476,37 @@ const EnvSchema = z.object({
 });
 
 export type Config = z.infer<typeof EnvSchema>;
+
+/**
+ * Whether THIS process is currently allowed to CLAIM + PROCESS story-runner
+ * jobs (audio-TTS / illustration queues) — see the `DEPLOY_COLOR` /
+ * `ACTIVE_COLOR_FILE` field comments above for why this cannot be a plain
+ * cached config value. Deliberately takes `cfg` rather than calling
+ * `loadConfig()` itself so callers pass the exact config they already
+ * loaded (and so tests can pass an override without touching process.env).
+ *
+ * Fails OPEN (returns true) whenever the color context is unknown or the
+ * active-color file can't be read: `DEPLOY_COLOR` unset means this isn't a
+ * blue/green deployment at all (local dev, tests — never gate those), and a
+ * missing/unreadable mount on an actual blue/green box is exactly the
+ * failure SKIP LOCKED already tolerates (concurrent claiming is safe, just
+ * unpredictable) — silently stalling BOTH colors' queues over a transient
+ * mount hiccup would be a strictly worse outcome than the bug this exists
+ * to fix.
+ */
+export function isRunnerActiveColor(
+  cfg: Pick<Config, 'DEPLOY_COLOR' | 'ACTIVE_COLOR_FILE'>,
+): boolean {
+  if (cfg.DEPLOY_COLOR === undefined) return true;
+  let recorded: string;
+  try {
+    recorded = readFileSync(cfg.ACTIVE_COLOR_FILE, 'utf8').trim();
+  } catch {
+    return true;
+  }
+  if (recorded === '') return true;
+  return recorded === cfg.DEPLOY_COLOR;
+}
 
 let _config: Config | null = null;
 
