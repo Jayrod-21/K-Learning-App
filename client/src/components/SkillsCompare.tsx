@@ -62,6 +62,12 @@ export interface SkillRow {
   scoreHigh?: number;
   /** Optional one-line gap explanation; shown in full mode only. */
   note?: string;
+  /**
+   * Diagnostic-polish FIX 3: true when every item served for this skill was
+   * skipped — there is no real score to bar-chart. The row renders as
+   * "Not assessed" instead of a `SkillBar`; `score`/band fields are ignored.
+   */
+  skipped?: boolean;
 }
 
 export interface SkillReference {
@@ -218,6 +224,9 @@ export function SkillsCompare({
             tone={activeRef.isCeiling ? 'ceiling' : 'target'}
             compact={isCompact}
             gapNote={s.note}
+            // FIX 3: a fully-skipped dimension renders "Not assessed" —
+            // SkillBar owns that layout so this stays a single pass-through.
+            skipped={s.skipped}
             // Fan bars in (~70ms apart) — same cadence as the prototype.
             delayMs={i * 70}
           />

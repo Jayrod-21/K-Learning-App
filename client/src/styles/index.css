@@ -2330,6 +2330,20 @@ h1, h2 { font-family: var(--font-display); }
   color: var(--paper-mute);
   line-height: 1.5;
 }
+/* FIX 3 (diagnostic-polish) — a fully-skipped dimension renders "Not
+ * assessed" instead of a bar: a dashed, empty track (no fill/tick/band) so
+ * it reads as "unmeasured", never as a real (floored) score. */
+.km-skillbar__score--skipped {
+  font-style: italic;
+  color: var(--paper-mute);
+}
+.km-skillbar__track--skipped {
+  height: 10px;
+  background: transparent;
+  border: 1px dashed var(--paper-faint);
+  border-radius: 2px;
+}
+.km-skillbar--compact .km-skillbar__track--skipped { height: 8px; }
 
 /* SkillsCompare ──────────────────────────────────────────────────────── */
 .km-skillscompare__pickerrow {

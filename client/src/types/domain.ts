@@ -435,6 +435,17 @@ export interface DiagnosticDimension {
   /** Upper edge of the confidence band, 0–100. */
   scoreHigh: number;
   note: string;
+  /**
+   * Diagnostic-polish FIX 3: true when the learner served items for this
+   * dimension but SKIPPED every one of them — `score`/`scoreLow`/
+   * `scoreHigh` are meaningless placeholders (0) in that case, never a real
+   * estimate (a skip carries zero signal, unlike a genuine wrong answer).
+   * Omitted on a normally-scored dimension. Renders as "Not assessed"
+   * instead of a level bar. A dimension the run never served any item for
+   * at all (a genuinely empty pool) is unaffected — still just absent from
+   * `dimensions[]`, not marked here.
+   */
+  skipped?: boolean;
 }
 
 /** Reference line band on the SkillsCompare chart. F-002 adds L1/L2 so a

@@ -148,103 +148,51 @@ export const WEIGHTS: Record<DiagnosticDimensionKey, number> = {
   writing: 2,
 };
 
-/** The four dimensions that round-robin as the run's core spine — each now
- *  carries its OWN θ ladder (diagnostic-upgrade Phase C). `hanja` and
- *  `writing` are woven into this spine separately by `buildSchedule` below,
- *  not round-robinned alongside it (hanja has a different weight; writing
- *  must land in the later half). */
-const CORE_LEVELED_DIMENSIONS: readonly DiagnosticDimensionKey[] = [
+/**
+ * The fixed CATEGORY order the schedule blocks in (diagnostic-polish FIX 2).
+ * `reading`/`listening`/`vocab`/`grammar` come first (any order among these
+ * four is equally valid — evidence-gathering, no cold/warm asymmetry between
+ * them), `hanja` after (coverage-only, no ladder, order-irrelevant), and
+ * `writing` LAST — a writing item is Claude-graded (the single most
+ * expensive per-item reveal latency in the run) and must never be item #1
+ * while every dimension's θ is still cold-started; ending last trivially
+ * satisfies that constraint.
+ */
+const SCHEDULE_BLOCK_ORDER: readonly DiagnosticDimensionKey[] = [
   'reading',
   'listening',
   'vocab',
   'grammar',
+  'hanja',
+  'writing',
 ];
-const CORE_ROUNDS = 6; // WEIGHTS value shared by every core-leveled dimension.
 
 /**
- * Build the fixed, deterministic 30-item serve schedule (diagnostic-upgrade
- * Phase C). No randomness — the exact same array is produced on every
- * process start, so ordinal→section is a stable contract tests can pin.
+ * Build the fixed, deterministic 30-item serve schedule as CONTIGUOUS
+ * per-category blocks (diagnostic-polish FIX 2 — replaces the original
+ * round-robin interleave). No randomness — the exact same array is produced
+ * on every process start, so ordinal→section is a stable contract tests can
+ * pin.
  *
- * Construction, in three passes:
- *
- *   1. CORE round-robin: `CORE_ROUNDS` (6) laps of
- *      `[reading, listening, vocab, grammar]` → 24 slots, evenly spread by
- *      construction (this is the exact pre-Phase-C algorithm, just with
- *      CORE_ROUNDS bumped 4 → 6 to match the new WEIGHTS).
- *   2. hanja's `WEIGHTS.hanja` (4) slots are WOVEN into that 24-slot core
- *      sequence at evenly spaced checkpoints (~ every 6 core items) rather
- *      than clumped at either end — coverage-only, so WHERE it lands only
- *      matters for pacing/variety, never for θ (hanja never touches any
- *      ladder). The checkpoint math is computed off `core.length`/
- *      `hanjaCount` generally, not hardcoded to 24/4, so a future WEIGHTS
- *      retune keeps producing an even spread instead of silently clumping.
- *   3. writing's `WEIGHTS.writing` (2) slots are woven into the LATER HALF
- *      of the resulting 28-slot sequence, at two evenly spaced MIDPOINT
- *      checkpoints (not the half's boundary) — so both writing items land
- *      after most of the run's core/hanja evidence has already served (θ
- *      has had room to move, the reason writing must never be item #1), are
- *      never adjacent to each other, and (the midpoint choice) the second
- *      one is never the run's literal last item either — a writing item is
- *      Claude-graded and the single most expensive per-item reveal latency
- *      in the run; ending the whole diagnostic on one is a worse UX beat
- *      than ending on a fast MC grade.
+ * Each dimension in `SCHEDULE_BLOCK_ORDER` contributes exactly
+ * `WEIGHTS[dim]` consecutive slots, back to back — the learner answers all
+ * of one category before moving to the next, rather than context-switching
+ * every 1–2 questions. Per-category adaptive ladders (diagnostic-upgrade
+ * Phase C) are ORDER-AGNOSTIC — each leveled dimension cold-starts at
+ * SEED_THETA on its OWN first answer (`serveNextItem`'s
+ * `dimensionEstimates[section] ?? SEED_THETA`), regardless of where in the
+ * schedule that first answer lands — so blocking the schedule this way
+ * changes NOTHING about how any dimension is scored, only the ORDER items
+ * are served in.
  *
  * Produces exactly (per the WEIGHTS above): 6 reading, 6 listening, 6 vocab,
  * 6 grammar, 4 hanja, 2 writing = 30 slots, in this fixed order:
- *   reading, listening, vocab, grammar, reading, listening, hanja, vocab,
- *   grammar, reading, listening, vocab, grammar, hanja, reading, listening,
- *   vocab, grammar, writing, reading, listening, hanja, vocab, grammar,
- *   reading, listening, writing, vocab, grammar, hanja
+ *   reading×6, listening×6, vocab×6, grammar×6, hanja×4, writing×2.
  */
 function buildSchedule(): DiagnosticDimensionKey[] {
-  const core: DiagnosticDimensionKey[] = Array.from(
-    { length: CORE_ROUNDS },
-    () => CORE_LEVELED_DIMENSIONS,
-  ).flat();
-
-  const hanjaCount = WEIGHTS.hanja;
-  const withHanja: DiagnosticDimensionKey[] = [];
-  let hanjaInserted = 0;
-  for (let i = 0; i < core.length; i += 1) {
-    withHanja.push(core[i]!);
-    const nextCheckpoint = Math.round((core.length * (hanjaInserted + 1)) / hanjaCount);
-    if (hanjaInserted < hanjaCount && i + 1 === nextCheckpoint) {
-      withHanja.push('hanja');
-      hanjaInserted += 1;
-    }
-  }
-  // Defensive: a future WEIGHTS change could round every checkpoint below
-  // core.length before hanjaCount is exhausted — append any remainder so the
-  // schedule always carries exactly WEIGHTS.hanja hanja slots.
-  while (hanjaInserted < hanjaCount) {
-    withHanja.push('hanja');
-    hanjaInserted += 1;
-  }
-
-  const writingCount = WEIGHTS.writing;
-  const laterHalfStart = Math.ceil(withHanja.length / 2);
-  const laterSpan = withHanja.length - laterHalfStart;
-  const result: DiagnosticDimensionKey[] = [];
-  let writingInserted = 0;
-  for (let i = 0; i < withHanja.length; i += 1) {
-    result.push(withHanja[i]!);
-    if (i + 1 <= laterHalfStart) continue; // never interleave writing into the first half
-    const posInLaterHalf = i + 1 - laterHalfStart;
-    // Midpoint-of-share checkpoint (not the share's boundary) — see the
-    // function doc for why this keeps the last writing slot off the run's
-    // literal final item.
-    const nextCheckpoint = Math.round((laterSpan * (writingInserted + 0.5)) / writingCount);
-    if (writingInserted < writingCount && posInLaterHalf === nextCheckpoint) {
-      result.push('writing');
-      writingInserted += 1;
-    }
-  }
-  while (writingInserted < writingCount) {
-    result.push('writing');
-    writingInserted += 1;
-  }
-  return result;
+  return SCHEDULE_BLOCK_ORDER.flatMap((dim) =>
+    Array<DiagnosticDimensionKey>(WEIGHTS[dim]).fill(dim),
+  );
 }
 
 export const SCHEDULE: readonly DiagnosticDimensionKey[] = buildSchedule();
@@ -363,6 +311,11 @@ function toClientItem(responseId: number, ordinal: number, item: ServerItem): Cl
 
 const DEFAULT_AUDIO_DURATION_S = 40;
 
+/** FIX C (fix-pass SHOULD-FIX 3): bound on retry-with-exclusion draws inside
+ *  `buildItemForSection` when `buildTopikItem` rejects a row as unbuildable —
+ *  see the comment there. */
+const MAX_TOPIK_BUILD_RETRIES = 3;
+
 /** A topik_items row, as selected for a diagnostic. */
 interface TopikRow {
   id: string;
@@ -458,6 +411,31 @@ function paperForBand(band: DiagnosticBand): TopikPaper {
  * diagnostic's stricter three-column playability gate too — never a
  * placeholder stem re-admitted into the pool only to then fail
  * `hasRealAudio` and render with no audio AND no real stem text.
+ *
+ * Diagnostic-polish pass (FIX 1 — never serve a BROKEN item):
+ *   (a) IMAGE: the diagnostic renders no images and `topik_items.image_ref`
+ *       is NULL for every live row, so an image-dependent item is
+ *       unanswerable here — excluded outright via `i.has_image = FALSE`,
+ *       unconditionally (both sections; reading has image-dependent rows
+ *       too — banner/ad text transcribed with no real image asset).
+ *   (b) LISTENING AUDIO: REQUIRED, not merely preferred, for
+ *       `section === 'listening'` via the `audio_start_ms`/`audio_end_ms`/
+ *       `test_audio_path` triple below. Reading carries no such requirement.
+ *       DECISION (explicit product/pedagogy call, not an oversight): a
+ *       transcript-only "read it" item measures READING, not LISTENING — the
+ *       diagnostic's listening dimension is an assessment score, not a
+ *       practice rep, so it holds a stricter bar than `topik.ts` (a practice
+ *       tool, which never requires audio and correctly re-admits
+ *       transcript-only items so learners can still practice them). ~100
+ *       live listening rows with a real transcript but no mapped audio span
+ *       (36 TOPIK I + 64 TOPIK II) are excluded from the diagnostic by this
+ *       requirement; each band's pool still has 300-500 items remaining, so
+ *       no starvation. This makes the `ORDER BY` audio-preference CASE below
+ *       a no-op for listening (every listening candidate now already has
+ *       audio) — left in place rather than removed; still the correct
+ *       tiebreak shape, costs nothing extra. Wrong-span accuracy (a
+ *       mis-segmented audio window) is a corpus/segmenter concern, OUT OF
+ *       SCOPE here — this guard only proves a span EXISTS.
  */
 async function pickTopikRow(
   section: 'reading' | 'listening',
@@ -499,9 +477,18 @@ async function pickTopikRow(
                   AND jsonb_array_length(i.options) >= 2
                   AND i.answer IS NOT NULL
                   AND i.options->>0 NOT IN ('①','②','③','④')
+                  AND i.has_image = FALSE
                   AND (coalesce(i.stem, '') NOT LIKE '${NO_TRANSCRIPT_STEM_PREFIX}%'
                        OR (i.audio_start_ms IS NOT NULL AND i.audio_end_ms IS NOT NULL
                            AND t.audio_path IS NOT NULL))`;
+    if (section === 'listening') {
+      // FIX 1(b): a real playable span is REQUIRED for listening, not just
+      // preferred — see the function doc. No-op for reading ($1 already
+      // pins the section, so this branch never runs for it).
+      sql += ` AND i.audio_start_ms IS NOT NULL
+               AND i.audio_end_ms IS NOT NULL
+               AND t.audio_path IS NOT NULL`;
+    }
     if (attempt.proficiency !== null) {
       params.push(attempt.proficiency);
       sql += ` AND i.proficiency = $${params.length}::proficiency_level`;
@@ -559,9 +546,13 @@ function topikCorrectChoice(answer: unknown, choiceCount: number): ChoiceId | nu
  * Build a reading/listening ServerItem from a topik row. Returns null if the
  * row cannot yield a valid MC item (no usable answer / too few choices).
  *
- * Listening items carry a best-effort `audio` block: the corpus has NO audio
- * files, so we surface the transcript text only (stem / extra.transcript) and a
- * default duration. This is a known limitation, documented in SECURITY.md §13.
+ * Listening items carry an `audio` block (transcript + duration) always, and
+ * a real playable `audioUrl`/`audioStartMs`/`audioEndMs` span whenever the
+ * row has one mapped (F-119/F-206) — `pickTopikRow`'s FIX 1(b) guard now
+ * REQUIRES every listening row reaching this function to have a real mapped
+ * span, so `hasRealAudio` below is always true in practice for listening
+ * items served by the diagnostic. `audio.transcript` still ships alongside
+ * as a caption/reveal, not as a substitute for playback.
  */
 function buildTopikItem(
   section: 'reading' | 'listening',
@@ -593,8 +584,50 @@ function buildTopikItem(
   // 005 `topik_tests.passages`). Without this, items that share a passage —
   // whose own `stem` is empty because the body lives in the test's `passages` —
   // rendered with only the instruction + options and NO question text. (B1 fix.)
+  //
+  // Diagnostic-polish FIX A (passage precedence): ~16% of the live reading
+  // pool (153/378 covered rows, confirmed against km-db) has its own `stem`
+  // TEXTUALLY IDENTICAL to `instruction` — a curator duplicate, not a real
+  // passage body — e.g. stem = instruction = "이 글의 내용과 같은 것을 고르십시오."
+  // The old unconditional `ownStem ?? sharedPassageFor(...)` short-circuited
+  // on that non-empty duplicate and never even reached `sharedPassageFor`, so
+  // the item rendered with the question text duplicated as its own "passage"
+  // and the real shared passage the question depends on was never shown.
+  // `ownIsRealPassage` narrowly targets that duplicate shape: only prefer the
+  // shared passage when the own stem carries NO content beyond the
+  // instruction. Items that legitimately need BOTH the shared passage AND
+  // their own inserted-sentence stem (fill-the-blank ㉠ items, e.g. stem =
+  // instruction + "\n" + the sentence to place) have `ownStem !== instruction`
+  // after normalizing, so `ownIsRealPassage` is true and they keep using
+  // `ownStem` exactly as before this fix — unchanged.
   const ownStem = row.stem !== null && row.stem.trim().length > 0 ? row.stem : null;
-  const passageText = ownStem ?? sharedPassageFor(row.test_passages, row.item_number);
+  const normalize = (s: string): string => s.trim().replace(/\s+/g, ' ');
+  const ownIsRealPassage = ownStem !== null && normalize(ownStem) !== normalize(row.instruction ?? '');
+  const passageText = ownIsRealPassage
+    ? ownStem
+    : (sharedPassageFor(row.test_passages, row.item_number) ?? ownStem ?? null);
+
+  // FIX 1(c): a READING item with neither its own stem NOR a shared passage
+  // covering it has NO question body of any kind — nothing to read, nothing
+  // to answer from — UNLESS it carries its own self-contained `underline`
+  // phrase (a vocab-in-context comparison item that never needed a
+  // passage/stem to begin with; the live corpus has none of these today, but
+  // the guard stays narrow rather than blanket-excluding every
+  // passageText === null row). Exclude the genuinely broken shape; never
+  // serve a passage-less reading question. Listening is unaffected — its
+  // `audio`/transcript block below has its own fallback chain and FIX 1(b)
+  // already guarantees a real playable span exists.
+  //
+  // Residual FIX-A gap (intentionally out of scope here): a row whose stem
+  // duplicates instruction AND has no covering shared passage falls back to
+  // `ownStem` (the duplicate, non-null per the `?? ownStem ?? null` chain
+  // above) — this guard does not catch it, so it is served exactly as before
+  // FIX A, not excluded. Rare (no shared passage to begin with) and belongs
+  // to the future full passage-precedence redesign, not this narrow fix.
+  if (section === 'reading' && passageText === null) {
+    const hasUnderline = row.underline !== null && row.underline.trim().length > 0;
+    if (!hasUnderline) return null;
+  }
 
   const base: ServerItem = {
     section,
@@ -1194,11 +1227,25 @@ async function buildItemForSection(
 ): Promise<ServerItem | null> {
   const band = bandForTheta(theta);
   if (section === 'reading' || section === 'listening') {
-    // Try the band, widening inside pickTopikRow; then try building. If a row
-    // can't yield a valid MC item, treat as empty (rare — guarded selection).
-    const row = await pickTopikRow(section, band, excludeTopikIds);
-    if (row === null) return null;
-    return buildTopikItem(section, row, band);
+    // Try the band, widening inside pickTopikRow; then try building. A row
+    // that fails to build (no usable answer/choices, or FIX 1(c)'s
+    // passage-less guard) is dormant today (0 live rows hit it — verified
+    // against km-db) but would otherwise stay eligible for re-draw forever,
+    // since it never reaches `insertResponse` (the only place an id joins
+    // `excludeTopikIds`) — the fix-pass review's SHOULD-FIX 3. Retry with
+    // that row locally excluded, bounded by MAX_TOPIK_BUILD_RETRIES so a
+    // corpus with many consecutive broken rows still can't hang or loop —
+    // the pool per band is 300-900+ rows (verified live), so a few retries
+    // is always enough headroom to reach a good row before the bound trips.
+    const triedIds: string[] = [];
+    for (let attempt = 0; attempt < MAX_TOPIK_BUILD_RETRIES; attempt += 1) {
+      const row = await pickTopikRow(section, band, [...excludeTopikIds, ...triedIds]);
+      if (row === null) return null; // pool exhausted for this band — nothing left to try
+      const item = buildTopikItem(section, row, band);
+      if (item !== null) return item;
+      triedIds.push(row.id);
+    }
+    return null;
   }
   if (section === 'hanja') {
     return buildHanjaItem(band, excludeHanjaChars);
@@ -1440,6 +1487,18 @@ interface SnapshotDimensionDTO {
   /** Confidence-band ceiling, 0–100. Same degradation rule as `scoreLow`. */
   readonly scoreHigh: number;
   readonly note: string;
+  /**
+   * FIX 3 (diagnostic-polish): true when the learner served items for this
+   * dimension but SKIPPED every one of them — `score`/`scoreLow`/
+   * `scoreHigh` are then meaningless placeholders (0), never a real
+   * estimate, because a skip carries zero signal (unlike a genuine wrong
+   * answer). Omitted (never `false`) on a normally-scored dimension — only
+   * present, and always `true`, when it applies. The client renders these
+   * rows as "Not assessed" instead of a bar. A dimension the run never
+   * served any item for at all (a genuinely empty pool) is UNCHANGED
+   * behavior: still silently absent from `dimensions[]`, not marked here.
+   */
+  readonly skipped?: true;
 }
 
 interface SnapshotDTO {
@@ -1564,20 +1623,55 @@ function dimensionStatsFromEvidence(
 }
 
 /**
+ * Extract the FIX-3 `skippedDimensions` list from a snapshot's `evidence`
+ * JSONB (mirrors `dimensionStatsFromEvidence`'s defensive posture exactly —
+ * a pre-FIX-3 snapshot has no such field, a hostile/malformed value degrades
+ * to "no skipped dimensions" rather than throwing). Any array entry that
+ * isn't a real `DiagnosticDimensionKey` is dropped, not trusted verbatim.
+ */
+function skippedDimensionsFromEvidence(evidence: unknown): DiagnosticDimensionKey[] {
+  if (typeof evidence !== 'object' || evidence === null) return [];
+  const raw = (evidence as Record<string, unknown>)['skippedDimensions'];
+  if (!Array.isArray(raw)) return [];
+  const known = new Set<string>(DIMENSION_ORDER);
+  return raw.filter((v): v is DiagnosticDimensionKey => typeof v === 'string' && known.has(v));
+}
+
+/**
  * Build the SnapshotDTO from the four stored estimates plus (optionally) the
- * per-dimension band stats. A dimension with no stat — every pre-v1.1.0
- * snapshot, or a malformed evidence entry — degrades to a zero-width band
- * (`scoreLow = scoreHigh = score`); it never crashes. When a stat IS present,
- * the band is re-anchored on the freshly computed `score` (min/max) so a
- * corrupt stored band can never invert the `scoreLow ≤ score ≤ scoreHigh`
- * invariant the client renders against.
+ * per-dimension band stats and (FIX 3) the dimensions the learner fully
+ * skipped. A dimension with no stat — every pre-v1.1.0 snapshot, or a
+ * malformed evidence entry — degrades to a zero-width band (`scoreLow =
+ * scoreHigh = score`); it never crashes. When a stat IS present, the band is
+ * re-anchored on the freshly computed `score` (min/max) so a corrupt stored
+ * band can never invert the `scoreLow ≤ score ≤ scoreHigh` invariant the
+ * client renders against. A dimension in `skippedDimensions` short-circuits
+ * ALL of that — it renders as an explicit "Not assessed" row (`skipped:
+ * true`, placeholder zero score) instead of a real estimate, and is excluded
+ * from the "weakest dimension" goal (it isn't weak, it's unmeasured).
  */
 function buildSnapshotDTO(
   estimates: Partial<Record<DiagnosticDimensionKey, number | null>>,
   stats: Partial<Record<DiagnosticDimensionKey, DimensionStat>> = {},
+  skippedDimensions: readonly DiagnosticDimensionKey[] = [],
 ): SnapshotDTO {
+  const skippedSet = new Set<DiagnosticDimensionKey>(skippedDimensions);
   const dimensions: SnapshotDimensionDTO[] = [];
   for (const key of DIMENSION_ORDER) {
+    const labels = DIMENSION_LABELS[key];
+    if (skippedSet.has(key)) {
+      dimensions.push({
+        key,
+        label: labels.label,
+        kr: labels.kr,
+        score: 0,
+        scoreLow: 0,
+        scoreHigh: 0,
+        note: 'Not assessed — every item was skipped.',
+        skipped: true,
+      });
+      continue;
+    }
     const stat = stats[key];
     // `estimates` here is whatever the CALLER read back (loadSnapshotDTO only
     // SELECTs reading/listening/grammar/vocab_estimate — the pre-v1.3.0 four
@@ -1598,7 +1692,6 @@ function buildSnapshotDTO(
     const score = estimateToScore(est);
     const scoreLow = stat !== undefined ? Math.min(stat.scoreLow, score) : score;
     const scoreHigh = stat !== undefined ? Math.max(stat.scoreHigh, score) : score;
-    const labels = DIMENSION_LABELS[key];
     dimensions.push({
       key,
       label: labels.label,
@@ -1610,8 +1703,11 @@ function buildSnapshotDTO(
     });
   }
   const goals: string[] = [];
-  if (dimensions.length > 0) {
-    const weakest = dimensions.reduce((min, d) => (d.score < min.score ? d : min), dimensions[0]!);
+  // FIX 3: a skipped dimension is UNMEASURED, not weak — never the "focus
+  // here" pick (its placeholder score=0 would otherwise always win).
+  const scorable = dimensions.filter((d) => d.skipped !== true);
+  if (scorable.length > 0) {
+    const weakest = scorable.reduce((min, d) => (d.score < min.score ? d : min), scorable[0]!);
     if (weakest.score < 70) {
       goals.push(`Build ${weakest.label.toLowerCase()} with daily focused drills.`);
     }
@@ -2480,10 +2576,29 @@ router.post(
       // them back for /latest, /history and the idempotent re-finish.
       // Dimensions that received zero items are omitted, mirroring the
       // estimate columns.
+      // FIX 3 (diagnostic-polish): a dimension where the learner SKIPPED
+      // EVERY served item has no real signal — a skip always grades
+      // incorrect, so `estimateForDimension`/the ladder θ would floor it to
+      // a bogus L1 "beginner" rank the user never actually earned (they
+      // never attempted a single question). Track which dimensions are
+      // ALL-skipped here and OMIT them from `dimensionStats`/
+      // `finalEstimates` entirely below — `buildSnapshotDTO` already drops a
+      // null-estimate dimension cleanly, and the `skippedDimensions` list
+      // (persisted alongside `dimensionStats` in `evidence`, read back by
+      // `skippedDimensionsFromEvidence`) lets the DTO mark it "Not assessed"
+      // instead of just vanishing silently. A dimension with >=1 REAL
+      // attempt (picked !== null) — even if that attempt was wrong — is
+      // NEVER all-skipped; it keeps scoring normally.
+      const skippedDimensions: DiagnosticDimensionKey[] = [];
       const dimensionStats: Partial<Record<DiagnosticDimensionKey, DimensionStat>> = {};
       for (const dim of DIMENSION_ORDER) {
         const responses = scored.filter((r) => r.section === dim);
         if (responses.length === 0) continue;
+        const dimRespRows = respRows.filter((r) => r.section === dim);
+        if (dimRespRows.every((r) => r.picked === null)) {
+          skippedDimensions.push(dim);
+          continue;
+        }
         const correct = responses.filter((r) => r.isCorrect).length;
 
         if (dim === 'hanja') {
@@ -2577,6 +2692,11 @@ router.post(
         theta_trajectory: thetaTrajectory,
         schedule: SCHEDULE,
         dimensionStats,
+        // FIX 3: which dimensions (if any) were fully skipped — read back by
+        // `skippedDimensionsFromEvidence` for /latest, /history and the
+        // idempotent re-finish so the DTO can mark them "Not assessed"
+        // rather than just omitting them like a genuine zero-item dimension.
+        skippedDimensions,
       };
 
       // Write the snapshot + flip the run to finished in one short transaction.
@@ -2639,7 +2759,7 @@ router.post(
       // winner wrote — reload it user-scoped to be safe).
       const dto =
         (await loadSnapshotDTO(snapshotId, userId)) ??
-        buildSnapshotDTO(finalEstimates, dimensionStats);
+        buildSnapshotDTO(finalEstimates, dimensionStats, skippedDimensions);
       res.status(200).json({ snapshot: dto });
     } catch (err) {
       next(mapClaudeError(err));
@@ -2674,6 +2794,7 @@ async function loadSnapshotDTO(snapshotId: number, userId: number): Promise<Snap
       vocab: row.vocab_estimate !== null ? Number(row.vocab_estimate) : null,
     },
     dimensionStatsFromEvidence(row.evidence),
+    skippedDimensionsFromEvidence(row.evidence),
   );
 }
 
@@ -2797,6 +2918,7 @@ router.get('/history', cheapLimiter(), async (req, res, next) => {
           vocab: r.vocab_estimate !== null ? Number(r.vocab_estimate) : null,
         },
         dimensionStatsFromEvidence(r.evidence),
+        skippedDimensionsFromEvidence(r.evidence),
       ),
     }));
     res.status(200).json({ snapshots });

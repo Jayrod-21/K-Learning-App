@@ -189,18 +189,25 @@ const SERIES: ReadonlyArray<SeriesDef> = [
 ];
 
 /** Score for one dimension of one attempt, or null when it wasn't scored
- *  (an empty item pool can drop a dimension from a run's snapshot). */
+ *  (an empty item pool can drop a dimension from a run's snapshot, or —
+ *  FIX 3 — the dimension was served but fully skipped, which carries the
+ *  SAME "no real score" null-safety even though the row is still present in
+ *  `dimensions[]` with `skipped: true`). */
 function scoreOf(snap: DiagnosticHistorySnapshot, key: DimensionKey): number | null {
   const dim = snap.dimensions.find((d) => d.key === key);
-  return dim ? dim.score : null;
+  return dim && dim.skipped !== true ? dim.score : null;
 }
 
-/** Overall = rounded mean of the attempt's PRESENT dimensions (client-side
- *  derivation — the server DTO deliberately has no overall field). */
+/** Overall = rounded mean of the attempt's PRESENT, ASSESSED dimensions
+ *  (client-side derivation — the server DTO deliberately has no overall
+ *  field). FIX 3: a fully-skipped dimension's placeholder score=0 must never
+ *  drag this average down — it carries no real signal, so it's excluded
+ *  exactly like a genuinely-absent dimension. */
 function overallOf(snap: DiagnosticHistorySnapshot): number | null {
-  if (snap.dimensions.length === 0) return null;
-  const sum = snap.dimensions.reduce((acc, d) => acc + d.score, 0);
-  return Math.round(sum / snap.dimensions.length);
+  const assessed = snap.dimensions.filter((d) => d.skipped !== true);
+  if (assessed.length === 0) return null;
+  const sum = assessed.reduce((acc, d) => acc + d.score, 0);
+  return Math.round(sum / assessed.length);
 }
 
 function seriesScore(snap: DiagnosticHistorySnapshot, key: SeriesKey): number | null {
@@ -235,6 +242,9 @@ function toSkillRows(snap: DiagnosticSnapshot): ReadonlyArray<SkillRow> {
     scoreLow: d.scoreLow,
     scoreHigh: d.scoreHigh,
     note: d.note,
+    // FIX 3: a fully-skipped dimension renders "Not assessed" instead of a
+    // bar/score — see SkillBar's `skipped` prop.
+    skipped: d.skipped,
   }));
 }
 function toSkillRefs(snap: DiagnosticSnapshot): ReadonlyArray<SkillReference> {
@@ -832,8 +842,14 @@ function Progress(): JSX.Element {
     latestSnapshot !== undefined
       ? {
           pageLabel: 'Progress · 성장',
+          // FIX 3: a fully-skipped dimension has no real percentage — never
+          // hand the chat model a fake "0%" for it.
           summary: `Latest diagnostic: ${latestSnapshot.dimensions
-            .map((d) => `${d.label} ${String(Math.round(d.score))}%`)
+            .map((d) =>
+              d.skipped === true
+                ? `${d.label} not assessed`
+                : `${d.label} ${String(Math.round(d.score))}%`,
+            )
             .join(', ')}`,
         }
       : null,

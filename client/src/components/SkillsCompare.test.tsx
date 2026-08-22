@@ -178,6 +178,21 @@ describe('SkillsCompare', () => {
     expect(screen.getByText(/Below/)).toBeInTheDocument();
   });
 
+  it('FIX 3: threads a skipped row through to SkillBar as "Not assessed" and skips its progressbar', () => {
+    const withSkip: ReadonlyArray<SkillRow> = [
+      SKILLS[0]!,
+      { ...SKILLS[1]!, skipped: true },
+    ];
+    render(<SkillsCompare skills={withSkip} references={REFS} />);
+    expect(screen.getByText('Not assessed')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('progressbar', { name: /Listening skill/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('progressbar', { name: 'Reading skill' }),
+    ).toBeInTheDocument();
+  });
+
   it('renders nothing fatal when references is empty', () => {
     const { container } = render(
       <SkillsCompare skills={SKILLS} references={[]} />,
