@@ -1174,9 +1174,14 @@ router.get('/generated', cheapLimiter(), async (req, res, next) => {
     // repo). The produced assets (audio_sources/tracks, story image rows) are
     // owned independently of these ledger rows, so deleting an old terminal
     // job never affects a story's audio or images; a sweep failure is logged
-    // and swallowed inside the service, so it never fails the listing.
-    await sweepStoryAudioJobs(userId, req.log);
-    await sweepStoryImageJobs(userId, req.log);
+    // and swallowed inside the service, so it never fails the listing. The
+    // two sweeps target independent tables and each already swallows its own
+    // errors (runSweep's try/catch), so running them concurrently can't turn
+    // one sweep's failure into a rejected Promise.all.
+    await Promise.all([
+      sweepStoryAudioJobs(userId, req.log),
+      sweepStoryImageJobs(userId, req.log),
+    ]);
     // Metadata only — neither the multi-KB body nor the turns array rides
     // the list (GET /generated/:id serves both).
     const { rows } = await query<

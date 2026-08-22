@@ -99,7 +99,7 @@ export const TOURS: ReadonlyArray<TourDefinition> = [
       {
         target: '[data-tour="tab-settings"]',
         title: 'Settings · 설정',
-        body: 'Profile, notifications, appearance — and a “Help & tours” section to replay this tour later.',
+        body: 'Profile, appearance — and a “Help & tours” section to replay this tour later.',
         side: 'top',
       },
       {

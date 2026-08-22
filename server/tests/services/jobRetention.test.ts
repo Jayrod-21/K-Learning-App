@@ -19,6 +19,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Logger } from 'pino';
+import type { Pool } from 'pg';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { setPoolForTesting } from '../../src/db/pool.js';
 import {
@@ -177,6 +178,38 @@ describe('sweepAudioTranscriptionJobs', () => {
     expect(await sweepAudioTranscriptionJobs(userId, nullLog)).toBe(1);
     expect(await sweepAudioTranscriptionJobs(userId, nullLog)).toBe(0);
   });
+
+  it('pins the strict "<" boundary at exactly JOB_RETENTION_DAYS', async () => {
+    // At the JOB_RETENTION_DAYS boundary, `finished_at < now() - make_interval(days
+    // => JOB_RETENTION_DAYS)` must be false (kept) at the line and true (deleted)
+    // just past it. Seeding literally `now() - make_interval(days =>
+    // JOB_RETENTION_DAYS)` isn't reproducible here: the sweep's own `now()` runs a
+    // moment after the seed insert's `now()`, so a row seeded at exactly that
+    // instant would always read as (barely) older than the cutoff by the time the
+    // sweep query runs, and "kept" would falsely fail. Instead seed one row a
+    // short, fixed offset INSIDE the window (JOB_RETENTION_DAYS − 1 hour) and one
+    // just OUTSIDE it (JOB_RETENTION_DAYS + 1 hour) — both are pinned by an
+    // explicit interval, not by the current instant, so this reliably exercises
+    // the boundary without the seed/sweep timing race, and still catches an
+    // off-by-one-day regression in the interval math or a `<` → `<=` flip.
+    const userId = await seedUser('atj-boundary@example.com');
+
+    await pg.pool.query(
+      `INSERT INTO audio_transcription_jobs (user_id, status, charged_bytes, finished_at)
+       VALUES ($1, 'done', 1024, now() - make_interval(days => $2::int) + interval '1 hour')`,
+      [userId, JOB_RETENTION_DAYS], // finished 1h short of the window — kept
+    );
+    await pg.pool.query(
+      `INSERT INTO audio_transcription_jobs (user_id, status, charged_bytes, finished_at)
+       VALUES ($1, 'done', 1024, now() - make_interval(days => $2::int) - interval '1 hour')`,
+      [userId, JOB_RETENTION_DAYS], // finished 1h past the window — deleted
+    );
+
+    const deleted = await sweepAudioTranscriptionJobs(userId, nullLog);
+
+    expect(deleted).toBe(1);
+    expect(await countTranscriptionJobs(userId)).toBe(1);
+  });
 });
 
 describe('sweepStoryAudioJobs', () => {
@@ -218,5 +251,33 @@ describe('sweepStoryImageJobs', () => {
     expect(deleted).toBe(2);
     expect(await countStoryImageJobs(userId)).toBe(2);
     expect(await countStoryImageJobs(other)).toBe(1);
+  });
+});
+
+describe('runSweep best-effort failure isolation', () => {
+  it('resolves 0 and does not throw when the underlying query rejects', async () => {
+    // The module's core safety property: a sweep is housekeeping riding the
+    // caller's read, so a failing DELETE (connection blip, statement
+    // timeout, ...) must never surface as a thrown/rejected error — it must
+    // be swallowed and reported as "0 swept". Prove it by installing a pool
+    // whose query() always rejects, then restore the real testcontainer pool
+    // in `finally` so later tests aren't affected by this substitution.
+    const throwingPool = {
+      query: async () => {
+        throw new Error('simulated connection failure');
+      },
+      on: () => {},
+    } as unknown as Pool;
+
+    try {
+      setPoolForTesting(throwingPool);
+
+      const userId = 1; // never reached — the query rejects before WHERE user_id = $1 matters
+      await expect(sweepAudioTranscriptionJobs(userId, nullLog)).resolves.toBe(0);
+      await expect(sweepStoryAudioJobs(userId, nullLog)).resolves.toBe(0);
+      await expect(sweepStoryImageJobs(userId, nullLog)).resolves.toBe(0);
+    } finally {
+      setPoolForTesting(pg.pool);
+    }
   });
 });
