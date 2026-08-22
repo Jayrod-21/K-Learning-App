@@ -55,6 +55,11 @@
 ALTER TABLE diagnostic_runs
     ADD COLUMN IF NOT EXISTS dimension_estimates JSONB NOT NULL DEFAULT '{}'::jsonb;
 
+-- DROP + ADD (not IF NOT EXISTS — Postgres has no ADD CONSTRAINT IF NOT
+-- EXISTS) makes a manual re-apply of this file idempotent, mirroring 087/088's
+-- CHECK-widen convention.
+ALTER TABLE diagnostic_runs
+    DROP CONSTRAINT IF EXISTS ck_diagnostic_runs_dimension_estimates_object;
 ALTER TABLE diagnostic_runs
     ADD CONSTRAINT ck_diagnostic_runs_dimension_estimates_object
         CHECK (jsonb_typeof(dimension_estimates) = 'object');
