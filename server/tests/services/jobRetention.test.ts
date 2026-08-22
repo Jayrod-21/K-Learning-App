@@ -179,19 +179,19 @@ describe('sweepAudioTranscriptionJobs', () => {
     expect(await sweepAudioTranscriptionJobs(userId, nullLog)).toBe(0);
   });
 
-  it('pins the strict "<" boundary at exactly JOB_RETENTION_DAYS', async () => {
-    // At the JOB_RETENTION_DAYS boundary, `finished_at < now() - make_interval(days
-    // => JOB_RETENTION_DAYS)` must be false (kept) at the line and true (deleted)
-    // just past it. Seeding literally `now() - make_interval(days =>
-    // JOB_RETENTION_DAYS)` isn't reproducible here: the sweep's own `now()` runs a
-    // moment after the seed insert's `now()`, so a row seeded at exactly that
-    // instant would always read as (barely) older than the cutoff by the time the
-    // sweep query runs, and "kept" would falsely fail. Instead seed one row a
-    // short, fixed offset INSIDE the window (JOB_RETENTION_DAYS − 1 hour) and one
-    // just OUTSIDE it (JOB_RETENTION_DAYS + 1 hour) — both are pinned by an
-    // explicit interval, not by the current instant, so this reliably exercises
-    // the boundary without the seed/sweep timing race, and still catches an
-    // off-by-one-day regression in the interval math or a `<` → `<=` flip.
+  it('brackets the retention cutoff at JOB_RETENTION_DAYS (±1h): the nearer row is kept, the farther deleted', async () => {
+    // Straddle the cutoff with two rows an hour on either side of
+    // `now() - make_interval(days => JOB_RETENTION_DAYS)`: one finished 1h INSIDE
+    // the window (expected kept) and one 1h OUTSIDE it (expected deleted). Both
+    // ages are pinned by an explicit interval rather than the current instant, so
+    // this avoids the seed/sweep timing race that seeding *exactly* on the line
+    // would hit (the sweep's own `now()` runs just after the seed's, so an
+    // exactly-on-line row always reads as marginally older and "kept" would
+    // falsely fail). This brackets the cutoff tightly enough to catch a
+    // wrong-magnitude or wrong-unit regression in the interval math (e.g. days↔
+    // hours, or a changed window size); it deliberately does NOT try to
+    // distinguish `<` from `<=` — neither row sits exactly on the line, and the
+    // exact-boundary instant is not reproducible here without flaking.
     const userId = await seedUser('atj-boundary@example.com');
 
     await pg.pool.query(
