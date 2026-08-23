@@ -298,8 +298,6 @@ def _parse_senses(entry_elem) -> list[KrdictSenseModel]:
                 sense_index=len(senses) + 1,
                 definition_korean=def_ko,
                 definition_english=_english_definition(s),
-                sense_domain=None,  # KRDICT tags category at entry scope, not sense
-                sense_register=None,  # LMF does not carry a speech-level register
                 examples=_parse_examples(s),
             )
         )
@@ -359,7 +357,6 @@ def _entry_from_xml(elem) -> KrdictEntryModel:
         part_of_speech=_feat(elem, FEAT_POS),
         hanja=_hanja(elem),
         vocabulary_level=_vocab_level(elem),
-        register=None,  # KRDICT LMF does not tag speech-level register
         senses=senses,
         inflections=_parse_inflections(elem),
     )

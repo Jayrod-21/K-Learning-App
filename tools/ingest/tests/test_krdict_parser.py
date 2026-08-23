@@ -70,7 +70,6 @@ def test_noun_core_fields(parsed: list[KrdictEntryModel]) -> None:
     assert e.pronunciation == "가족"
     assert e.hanja == "家族"  # origin is hanja -> kept
     assert e.vocabulary_level is VocabularyLevel.BEGINNER  # 초급
-    assert e.register is None  # LMF carries no speech-level register
 
 
 def test_first_sense_definitions_korean_and_english(

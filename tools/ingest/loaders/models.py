@@ -120,7 +120,6 @@ class TopikItemModel(StrictBase):
     instruction_group: str | None = None
     instruction: str | None = None
     skill_tag: str | None = None
-    skill_tag_raw: str | None = None
     proficiency: str | None = None
     points: int | None = None
     has_image: bool = False
@@ -293,23 +292,13 @@ class VocabItemModel(StrictBase):
     type: str               # "word" | "theme_intro" | "subsection_intro" | "reference"
     theme: str | None = None
     subsection: str | None = None
-    audio_track: str | None = None
     korean: str | None = None
     english: str | None = None
     pronunciation: str | None = None
     hanja: str | None = None
-    japanese: str | None = None
     part_of_speech: str | None = None
-    case_marker: str | None = None
-    irregular_class: str | None = None
     example_korean: str | None = None
     example_english: str | None = None
-    passive_form: str | None = None
-    causative_form: str | None = None
-    basic_form: str | None = None
-    honorific_form: str | None = None
-    humble_form: str | None = None
-    contracted_form: str | None = None
     tips: list[Any] = Field(default_factory=list)
     cross_refs: list[Any] = Field(default_factory=list)
     notes: list[Any] | str | None = None    # source carries both shapes

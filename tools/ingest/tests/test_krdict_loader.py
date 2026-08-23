@@ -104,13 +104,6 @@ def test_entry_params_pulls_first_sense_definitions():
     assert params["headword"] == "가족"
     assert params["definition_korean"].startswith("부모")
     assert params["definition_english"] == "family"
-    assert params["register"] is None  # entry has no register tag
-
-
-def test_entry_params_serializes_register_enum_to_string():
-    e = _entry("안녕", "10004", register="해요체")
-    params = load_krdict._entry_params(e, source_pk=1)
-    assert params["register"] == "해요체"
 
 
 def test_dry_run_reports_stats(caplog):
@@ -185,7 +178,6 @@ def _entry(
     source_id: str,
     *,
     english: str | None = None,
-    register: str | None = None,
 ) -> KrdictEntryModel:
     """Tiny entry factory for the helper tests."""
     return KrdictEntryModel(
@@ -199,7 +191,6 @@ def _entry(
                 definition_english=english,
             )
         ],
-        register=register,
     )
 
 
