@@ -26,13 +26,13 @@ from __future__ import annotations
 
 import json
 import pathlib
-import shutil
 
 import psycopg
 import pytest
 from psycopg.rows import dict_row, tuple_row
 
 from db import migrate  # type: ignore[import-not-found]
+from db.tests._helpers import FAKE_HASH, _full_up  # type: ignore[import-not-found]
 
 try:
     from testcontainers.postgres import PostgresContainer  # type: ignore[import-not-found]
@@ -53,9 +53,6 @@ REAL_MIGRATIONS_DIR: pathlib.Path = (
 # ONLY 086 (its DROP TABLE down is destructive-marked).
 PRE_086 = "085"
 
-# A syntactically valid argon2id-shaped hash satisfying
-# ck_users_password_hash_argon2id (LIKE '$argon2id$%', length 80..255).
-FAKE_HASH = "$argon2id$" + "x" * 70
 
 # A schema-valid option set: exactly 4, exactly one correct (the writer-side
 # Zod contract; the DB CHECK pins array-ness + arity only).
@@ -65,53 +62,6 @@ GOOD_OPTIONS = [
     {"text": "거북이", "correct": False},
     {"text": "여우", "correct": False},
 ]
-
-
-# ---------------------------------------------------------------------------
-# Fixtures — one container per session, a fresh DB + full migration dir per test
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(scope="session")
-def pg_container():
-    with PostgresContainer("postgres:16-alpine") as pg:
-        yield pg
-
-
-@pytest.fixture()
-def dsn(pg_container) -> str:
-    raw = pg_container.get_connection_url()
-    raw = raw.replace("postgresql+psycopg2://", "postgres://")
-    raw = raw.replace("postgresql://", "postgres://")
-    with psycopg.connect(raw, autocommit=True) as conn, conn.cursor() as cur:
-        cur.execute("DROP SCHEMA public CASCADE")
-        cur.execute("CREATE SCHEMA public")
-    return raw
-
-
-@pytest.fixture()
-def env(monkeypatch, dsn) -> None:
-    monkeypatch.setenv("DATABASE_URL", dsn)
-
-
-@pytest.fixture()
-def full_dir(tmp_path: pathlib.Path) -> pathlib.Path:
-    """A tmp directory containing EVERY production migration file."""
-    d = tmp_path / "migrations_full"
-    d.mkdir(parents=True)
-    copied = 0
-    for src in REAL_MIGRATIONS_DIR.iterdir():
-        if src.suffix == ".sql" and src.is_file():
-            shutil.copy2(src, d / src.name)
-            copied += 1
-    assert copied > 0, f"no migration files found under {REAL_MIGRATIONS_DIR}"
-    return d
-
-
-def _full_up(full_dir: pathlib.Path) -> None:
-    # --allow-destructive: migration 045 (hygiene_cleanup, DROP TABLE) sits in
-    # the chain, so a full `up` trips migrate.py's destructive gate without it.
-    rc = migrate.main(["--migrations-dir", str(full_dir), "--allow-destructive", "up"])
-    assert rc == 0, f"full up returned {rc}"
 
 
 # ---------------------------------------------------------------------------

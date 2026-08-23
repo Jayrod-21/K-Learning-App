@@ -70,28 +70,6 @@ SEEDED_SOURCE_IDS = [
 ] + [f"wp-topik54-{n:02d}" for n in range(4, 16)]
 
 
-@pytest.fixture(scope="session")
-def pg_container():
-    with PostgresContainer("postgres:16-alpine") as pg:
-        yield pg
-
-
-@pytest.fixture()
-def dsn(pg_container) -> str:
-    raw = pg_container.get_connection_url()
-    raw = raw.replace("postgresql+psycopg2://", "postgres://")
-    raw = raw.replace("postgresql://", "postgres://")
-    with psycopg.connect(raw, autocommit=True) as conn, conn.cursor() as cur:
-        cur.execute("DROP SCHEMA public CASCADE")
-        cur.execute("CREATE SCHEMA public")
-    return raw
-
-
-@pytest.fixture()
-def env(monkeypatch, dsn) -> None:
-    monkeypatch.setenv("DATABASE_URL", dsn)
-
-
 def _copy_real_migrations(dest: pathlib.Path, versions: Iterable[str]) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     wanted = set(versions)

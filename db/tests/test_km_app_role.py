@@ -118,11 +118,6 @@ def _default_acl_entries_for_km_app(cur: psycopg.Cursor) -> int:
 # sibling migration test files.
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(scope="session")
-def pg_container():
-    with PostgresContainer("postgres:16-alpine") as pg:
-        yield pg
-
 
 @pytest.fixture()
 def dsn(pg_container) -> str:
@@ -140,11 +135,6 @@ def dsn(pg_container) -> str:
             cur.execute("DROP OWNED BY km_app")
             cur.execute("DROP ROLE km_app")
     return raw
-
-
-@pytest.fixture()
-def env(monkeypatch, dsn) -> None:
-    monkeypatch.setenv("DATABASE_URL", dsn)
 
 
 @pytest.fixture()

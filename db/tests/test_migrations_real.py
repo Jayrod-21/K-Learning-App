@@ -131,31 +131,6 @@ def _applied_versions(conn: psycopg.Connection) -> set[str]:
 # Fixtures — borrow the session-scoped container, give each test a fresh DB
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(scope="session")
-def pg_container():
-    """One Postgres container per test session. Reused across all tests in
-    this module — orders of magnitude faster than per-test containers."""
-    with PostgresContainer("postgres:16-alpine") as pg:
-        yield pg
-
-
-@pytest.fixture()
-def dsn(pg_container) -> str:
-    """Per-test fresh DB: drop + recreate the public schema. Matches the
-    pattern in test_migrations.py so the two files share a container."""
-    raw = pg_container.get_connection_url()
-    raw = raw.replace("postgresql+psycopg2://", "postgres://")
-    raw = raw.replace("postgresql://", "postgres://")
-    with psycopg.connect(raw, autocommit=True) as conn, conn.cursor() as cur:
-        cur.execute("DROP SCHEMA public CASCADE")
-        cur.execute("CREATE SCHEMA public")
-    return raw
-
-
-@pytest.fixture()
-def env(monkeypatch, dsn) -> None:
-    monkeypatch.setenv("DATABASE_URL", dsn)
-
 
 @pytest.fixture()
 def foundation_dir(tmp_path: pathlib.Path) -> pathlib.Path:

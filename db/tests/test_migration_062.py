@@ -63,11 +63,6 @@ KM_APP_TEST_PASSWORD = "km-app-testcontainer-only"
 # Fixtures
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(scope="session")
-def pg_container():
-    with PostgresContainer("postgres:16-alpine") as pg:
-        yield pg
-
 
 @pytest.fixture()
 def dsn(pg_container) -> str:
@@ -84,11 +79,6 @@ def dsn(pg_container) -> str:
             cur.execute("DROP OWNED BY km_app")
             cur.execute("DROP ROLE km_app")
     return raw
-
-
-@pytest.fixture()
-def env(monkeypatch, dsn) -> None:
-    monkeypatch.setenv("DATABASE_URL", dsn)
 
 
 def _copy_real_migrations(dest: pathlib.Path, versions: Iterable[str]) -> None:
