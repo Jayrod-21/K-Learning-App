@@ -257,6 +257,7 @@ import { StoryTtsDailyCapError, TtsUnavailableError } from '../services/storyAud
 import { isTtsConfigured } from '../services/tts.js';
 import { ImageGenUnavailableError, StoryImageDailyCapError } from '../services/storyImage.js';
 import { isImageGenConfigured } from '../services/imageGen.js';
+import { sweepStoryAudioJobs, sweepStoryImageJobs } from '../services/jobRetention.js';
 import { readBlob } from '../services/imageStore.js';
 import type { StoryTurn } from '../services/claude/index.js';
 
@@ -1167,6 +1168,20 @@ type AssetStatus = 'none' | 'pending' | 'running' | 'failed' | 'done';
 router.get('/generated', cheapLimiter(), async (req, res, next) => {
   try {
     const userId = getUserId(req);
+    // Retention (audit §1.4): sweep this user's stale terminal story-audio and
+    // story-image jobs before listing. Best-effort and user-scoped — the
+    // generated-stories read is the natural sweep trigger (no cron in this
+    // repo). The produced assets (audio_sources/tracks, story image rows) are
+    // owned independently of these ledger rows, so deleting an old terminal
+    // job never affects a story's audio or images; a sweep failure is logged
+    // and swallowed inside the service, so it never fails the listing. The
+    // two sweeps target independent tables and each already swallows its own
+    // errors (runSweep's try/catch), so running them concurrently can't turn
+    // one sweep's failure into a rejected Promise.all.
+    await Promise.all([
+      sweepStoryAudioJobs(userId, req.log),
+      sweepStoryImageJobs(userId, req.log),
+    ]);
     // Metadata only — neither the multi-KB body nor the turns array rides
     // the list (GET /generated/:id serves both).
     const { rows } = await query<

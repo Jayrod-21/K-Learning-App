@@ -115,8 +115,11 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     path: '/settings',
     label: 'Settings',
     kr: '설정',
-    eyebrow: 'Profile · notifications · appearance',
-    krEyebrow: '프로필 · 알림 · 화면 표시',
+    // Notifications (F-040) is gated off until a delivery sender exists, so
+    // the Settings eyebrow does not advertise it — see NOTIFICATIONS_UI_ENABLED
+    // in pages/Settings.tsx. Restore 'notifications' / '알림' when it ships.
+    eyebrow: 'Profile · appearance',
+    krEyebrow: '프로필 · 화면 표시',
     headerTitle: '설정 · Settings',
     icon: 'settings',
   },
