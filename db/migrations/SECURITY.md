@@ -238,21 +238,28 @@ So the attack surface here is:
   - Pydantic validates each entry. Per-entry failures are logged and the
     loader continues — one bad row does not poison the batch.
 
-#### A2-3. Pathological full-text-search query (FTS DoS)
+#### A2-3. Pathological full-text-search query (FTS DoS) — NO LONGER APPLICABLE
 
-- **Vector:** A user-supplied search query — translated to `to_tsquery` —
-  with deeply nested OR/AND operators causes the query planner to allocate
-  large workspaces. Repeated queries tie up DB connections.
+> **Eliminated by migration `091_fts_removal` (audit §4.2).** The tsvector
+> full-text-search subsystem was removed — no route ever built a `to_tsquery`/
+> `plainto_tsquery` (a full-codebase audit found zero live callers), so this
+> attack surface no longer exists. The defenses below are retained for
+> historical context; the durable ones that guard other query shapes remain in
+> force regardless: the app role's `statement_timeout = 5s` (ADR-001 §D13) and
+> the per-IP rate limits on the search/tap-a-word endpoints. Reference/vocab/
+> grammar search now uses substring/prefix (ILIKE) matching, not `@@`.
+
+- **Vector (historical):** A user-supplied search query — translated to
+  `to_tsquery` — with deeply nested OR/AND operators causes the query planner
+  to allocate large workspaces. Repeated queries tie up DB connections.
 - **Defense (DB layer):**
   - The app role's `statement_timeout = 5s` (per ADR-001 §D13) kills any
-    runaway query before it monopolizes a connection.
-  - GIN indexes (`ix_kgiu_entries_search_tsv`, `ix_vocab_entries_search_tsv`)
-    handle normal-shape queries in low milliseconds.
+    runaway query before it monopolizes a connection. **(Still in force.)**
+  - ~~GIN indexes (`ix_kgiu_entries_search_tsv`, `ix_vocab_entries_search_tsv`)~~
+    removed with the subsystem.
 - **Defense (app layer):**
-  - User input goes through `plainto_tsquery` (which escapes operators),
-    not `to_tsquery` (which parses them). Only system queries built from
-    trusted UI controls may use `to_tsquery`.
-  - Per-IP rate limit on Reference-search and tap-a-word endpoints.
+  - ~~User input goes through `plainto_tsquery`~~ — no FTS path remains.
+  - Per-IP rate limit on Reference-search and tap-a-word endpoints. **(Still in force.)**
 
 #### A2-4. Stored XSS via JSONB content rendered to the browser
 
