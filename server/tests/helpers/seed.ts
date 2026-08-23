@@ -5,14 +5,32 @@
  * tables in beforeEach. We avoid coupling to specific id values: helpers
  * return the freshly-inserted ids so tests can chain.
  */
-import type { Pool } from 'pg';
+import type { Pool, QueryResultRow } from 'pg';
 import { createHash, randomUUID } from 'node:crypto';
 
 /** Register a user via the app, then return the supertest agent + user id. */
 import request from 'supertest';
 import type { Express } from 'express';
 import { issueVerificationToken } from '../../src/auth/emailVerification.js';
+import type { Querier } from '../../src/db/pool.js';
 import { generateTotp } from '../../src/auth/totp.js';
+
+/**
+ * Adapt a `Pool` into the `Querier` shape (mirrors `src/db/pool.ts`'s
+ * `clientQuerier`, which does the same for a transaction-bound `PoolClient`)
+ * so a caller-supplied pool can be threaded explicitly into helpers that
+ * accept an optional `Querier`, instead of those helpers silently resolving
+ * against whatever pool is currently installed globally.
+ */
+function poolQuerier(pool: Pool): Querier {
+  return async <T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    params: readonly unknown[] = [],
+  ) => {
+    const result = await pool.query<T>(text, params as unknown[]);
+    return { rows: result.rows, rowCount: result.rowCount ?? 0 };
+  };
+}
 
 /** Deterministic 64-char lowercase hex from any string. */
 function hex64(input: string): string {
@@ -72,16 +90,24 @@ export async function registerUser(app: Express, pool: Pool): Promise<Registered
   // If registration already established a session (EMAIL_VERIFICATION_REQUIRED
   // off AND no MFA gate to satisfy), we are done — the legacy direct-session
   // path. Otherwise complete verification + login.
+  //
+  // CAVEAT (B-044, pre-existing prod defect): this branch is also taken when
+  // emailVerificationRequired:false is paired with mfaRequired:true — the
+  // route mints a session here without ever routing through MFA enrollment,
+  // so the "authenticated" agent returned below holds a valid session that
+  // bypassed MFA. This mirrors real production behavior (see B-044); no
+  // current suite builds that flag combination via registerUser, but a future
+  // caller that does will get an agent that is NOT MFA-compliant.
   if ((reg.body as { status?: string }).status !== 'verification_required') {
-    // pool param is reserved for callers that need it; explicitly mark used.
-    void pool;
     return { agent, email, userId };
   }
 
   // Step 2 — verify email. Mint a fresh token directly (mail is mocked) and
   // consume it via the real verify route so email_verified_at is stamped by
-  // production code, not a raw UPDATE.
-  const { raw: verifyToken } = await issueVerificationToken(userId, email);
+  // production code, not a raw UPDATE. Uses the CALLER's pool explicitly
+  // (rather than riding whatever pool happens to be global) so this stays
+  // correct if a future caller ever interleaves two buildTestApp instances.
+  const { raw: verifyToken } = await issueVerificationToken(userId, email, poolQuerier(pool));
   const verify = await agent.post('/auth/verify').send({ token: verifyToken });
   if (verify.status !== 200) {
     throw new Error(`registerUser: verify failed: ${verify.status} ${JSON.stringify(verify.body)}`);
@@ -94,7 +120,6 @@ export async function registerUser(app: Express, pool: Pool): Promise<Registered
     throw new Error(`registerUser: login failed: ${login.status} ${JSON.stringify(login.body)}`);
   }
   if ((login.body as { status?: string }).status === 'authenticated') {
-    void pool;
     return { agent, email, userId };
   }
   if ((login.body as { status?: string }).status !== 'enrollment_required') {
@@ -120,8 +145,6 @@ export async function registerUser(app: Express, pool: Pool): Promise<Registered
     throw new Error(`registerUser: mfa confirm failed: ${confirm.status} ${JSON.stringify(confirm.body)}`);
   }
 
-  // pool param is reserved for callers that need it; explicitly mark used.
-  void pool;
   return { agent, email, userId };
 }
 
