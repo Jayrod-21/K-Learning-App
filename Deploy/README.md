@@ -472,7 +472,6 @@ needs.
 
 | File                        | Role                                              |
 |-----------------------------|---------------------------------------------------|
-| `azure-pipelines.yml`       | legacy Azure Pipelines def — **unused** (deploys are manual, see above) |
 | `local-build.sh`            | build the 5 images into the local Docker store    |
 | `azure-deploy-inactive.sh`  | deploy+migrate+validate the inactive color (:1841) |
 | `azure-switch-production.sh`| flip the LB to the new color (:1840), auto-rollback |

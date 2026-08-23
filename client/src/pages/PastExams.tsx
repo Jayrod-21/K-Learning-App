@@ -47,6 +47,7 @@ import { Pill } from '../components/Pill';
 import { navItem } from '../lib/nav';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { errorMessageFor } from '../lib/errorCopy';
+import { bandForPercentage } from '../lib/topikBand';
 import {
   fetchAttemptHistory,
   type AttemptHistoryResult,
@@ -164,16 +165,6 @@ function reEnterHref(a: TopikAttemptHistoryEntry): string | null {
   });
   if (a.topikLevel !== null) params.set('level', a.topikLevel);
   return `/learn/topik?${params.toString()}`;
-}
-
-/** Percentage → readiness band headline — mirrors `Topik.tsx`'s own
- *  presentation-only copy (each screen owns its own band function; this is
- *  not a shared grading contract, just consistent wording). */
-function bandForPercentage(percentage: number): string {
-  if (percentage >= 80) return 'On track for L5+';
-  if (percentage >= 60) return 'L4 range';
-  if (percentage >= 40) return 'L3 range';
-  return 'Below L3';
 }
 
 function whenLabel(iso: string): string {

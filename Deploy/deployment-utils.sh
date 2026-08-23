@@ -524,7 +524,7 @@ run_migrate() {
 
     local migrate_image="km-migrate:${DEPLOY_TAG}"
     # The image is built + saved in BuildAndTest and docker-load'd in
-    # DeployToInactive (azure-pipelines.yml). It is NEVER built or pip-installed
+    # DeployToInactive (local-build.sh). It is NEVER built or pip-installed
     # here — km-internal is egress-blocked by design, so a runtime install is
     # impossible. Fail fast with a clear message if the load step didn't run.
     if ! docker image inspect "$migrate_image" >/dev/null 2>&1; then

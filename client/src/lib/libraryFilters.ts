@@ -26,13 +26,6 @@ export const DOMAIN_FILTERS: ReadonlyArray<FilterOption<DomainFilter>> = [
   { id: 'business', label: 'Business' },
 ];
 
-/** The curated vocab corpora carry only beginner/intermediate bands. */
-export const VOCAB_LEVEL_FILTERS: ReadonlyArray<FilterOption<LevelFilter>> = [
-  { id: 'all', label: 'All' },
-  { id: 'beginner', label: 'Beginner' },
-  { id: 'intermediate', label: 'Intermediate' },
-];
-
 /** KGIU spans all three bands. */
 export const GRAMMAR_LEVEL_FILTERS: ReadonlyArray<FilterOption<LevelFilter>> = [
   { id: 'all', label: 'All' },

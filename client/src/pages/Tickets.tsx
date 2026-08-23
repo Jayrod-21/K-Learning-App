@@ -111,7 +111,9 @@ import { Tabs } from '../components/Tabs';
 import { useToast } from '../components/useToast';
 import { usePagination } from '../hooks/usePagination';
 import { errorMessageFor } from '../lib/errorCopy';
+import { formatDate } from '../lib/formatDate';
 import { pageNameForPath } from '../lib/nav';
+import { parseIdParam } from '../lib/urlIdParam';
 import { ApiError } from '../services/api';
 import {
   addTicketComment,
@@ -189,16 +191,6 @@ const COMMENT_MAX = 2000;
  */
 const COMMUNITY_FETCH_LIMIT = 100;
 
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleDateString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
-}
-
 function formatDateTime(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
@@ -208,15 +200,6 @@ function formatDateTime(iso: string): string {
     hour: 'numeric',
     minute: '2-digit',
   });
-}
-
-/** Length-capped before parseInt so a hostile mile-long digit string can't
- *  reach Number territory where precision loss lies (mirrors Review.tsx's
- *  `parseListIdParam`). */
-function parseTicketIdParam(raw: string | null): number | null {
-  if (raw === null || !/^\d{1,15}$/.test(raw)) return null;
-  const n = Number.parseInt(raw, 10);
-  return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
 function parseTab(raw: string | null): TabId {
@@ -918,7 +901,7 @@ export default function Tickets(): JSX.Element {
   const { toast } = useToast();
 
   const tab = parseTab(searchParams.get('tab'));
-  const ticketId = parseTicketIdParam(searchParams.get('ticket'));
+  const ticketId = parseIdParam(searchParams.get('ticket'));
 
   // F-127: FeedbackFab.tsx's router state, if that's how we got here.
   // Narrowed defensively (router state is caller-controlled, not a typed
