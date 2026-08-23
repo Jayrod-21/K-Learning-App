@@ -440,20 +440,24 @@ describe('registration gating', () => {
       emailVerificationRequired: false,
       registrationEnabled: false,
     });
-    const res = await request(closed.app)
-      .post('/auth/register')
-      .send({ email: 'new@example.com', password: PASSWORD });
-    expect(res.status).toBe(403);
-    expect(res.body.error.code).toBe('registration_closed');
+    try {
+      const res = await request(closed.app)
+        .post('/auth/register')
+        .send({ email: 'new@example.com', password: PASSWORD });
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe('registration_closed');
+    } finally {
+      await teardownTestApp(closed);
+    }
     // Rebuild the shared app so the rest of the suite keeps the default config.
     // emailVerificationRequired:false isolates the MFA gate — this suite drives
-  // the enrollment branch via /auth/login and must not also trip the F-006
-  // email-verification block (now on by default, audit §3.1).
-  t = buildTestApp({
-    connectionString: pg.connectionString,
-    mfaRequired: true,
-    emailVerificationRequired: false,
-  });
+    // the enrollment branch via /auth/login and must not also trip the F-006
+    // email-verification block (now on by default, audit §3.1).
+    t = buildTestApp({
+      connectionString: pg.connectionString,
+      mfaRequired: true,
+      emailVerificationRequired: false,
+    });
   });
 });
 
