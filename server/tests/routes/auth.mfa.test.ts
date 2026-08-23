@@ -42,7 +42,14 @@ const PASSWORD = 'correct horse battery staple';
 
 beforeAll(async () => {
   pg = await startPostgres();
-  t = buildTestApp({ connectionString: pg.connectionString, mfaRequired: true });
+  // emailVerificationRequired:false isolates the MFA gate — this suite drives
+  // the enrollment branch via /auth/login and must not also trip the F-006
+  // email-verification block (now on by default, audit §3.1).
+  t = buildTestApp({
+    connectionString: pg.connectionString,
+    mfaRequired: true,
+    emailVerificationRequired: false,
+  });
 });
 
 afterAll(async () => {
@@ -430,6 +437,7 @@ describe('registration gating', () => {
     const closed = buildTestApp({
       connectionString: pg.connectionString,
       mfaRequired: true,
+      emailVerificationRequired: false,
       registrationEnabled: false,
     });
     const res = await request(closed.app)
@@ -438,7 +446,14 @@ describe('registration gating', () => {
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe('registration_closed');
     // Rebuild the shared app so the rest of the suite keeps the default config.
-    t = buildTestApp({ connectionString: pg.connectionString, mfaRequired: true });
+    // emailVerificationRequired:false isolates the MFA gate — this suite drives
+  // the enrollment branch via /auth/login and must not also trip the F-006
+  // email-verification block (now on by default, audit §3.1).
+  t = buildTestApp({
+    connectionString: pg.connectionString,
+    mfaRequired: true,
+    emailVerificationRequired: false,
+  });
   });
 });
 

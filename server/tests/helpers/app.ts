@@ -414,17 +414,22 @@ export function buildTestApp(opts: BuildOptions): TestApp {
   // already uses for the same reason.
   process.env.ANTHROPIC_API_KEY ??= 'sk-test-' + 'x'.repeat(30);
   // Pass Login: provision the fixed test AES key (so TOTP secrets encrypt/decrypt
-  // deterministically) and default to the LEGACY single-step login so the
-  // pre-existing auth tests keep their direct-session expectations. The MFA suite
-  // flips mfaRequired on.
+  // deterministically).
   process.env.TOTP_SECRET_ENC_KEY = TEST_TOTP_SECRET_ENC_KEY;
   // F-006: never let a host machine's SMTP env leak into tests — with
   // SMTP_HOST unset the mail module selects the log-only mock transport.
   delete process.env.SMTP_HOST;
+  // Auth gates default to the PRODUCTION values (both true) so route tests
+  // authenticate through the flow production actually runs — email
+  // verification + mandatory MFA enrollment — rather than a legacy
+  // single-step login prod never uses (audit §3.1). The shared `registerUser`
+  // helper (tests/helpers/seed.ts) drives that full flow. A suite that
+  // specifically exercises a gate-off path can still pass `mfaRequired: false`
+  // / `emailVerificationRequired: false` explicitly.
   _setConfigForTesting({
-    MFA_REQUIRED: opts.mfaRequired ?? false,
+    MFA_REQUIRED: opts.mfaRequired ?? true,
     REGISTRATION_ENABLED: opts.registrationEnabled ?? true,
-    EMAIL_VERIFICATION_REQUIRED: opts.emailVerificationRequired ?? false,
+    EMAIL_VERIFICATION_REQUIRED: opts.emailVerificationRequired ?? true,
   });
 
   // Capture the pool currently installed as the global so teardown can restore

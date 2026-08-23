@@ -36,7 +36,15 @@ let t: TestApp;
 
 beforeAll(async () => {
   pg = await startPostgres();
-  t = buildTestApp({ connectionString: pg.connectionString });
+  // Legacy single-step register/logout/session mechanics = the operator
+  // gate-off config; opt into it explicitly now that the harness defaults to
+  // the production gates (audit §3.1). Gate-ON coverage lives in
+  // auth.verify/auth.mfa and the shared registerUser helper.
+  t = buildTestApp({
+    connectionString: pg.connectionString,
+    mfaRequired: false,
+    emailVerificationRequired: false,
+  });
 });
 
 afterAll(async () => {

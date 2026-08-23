@@ -6,6 +6,7 @@ import { createServer, type Server } from 'node:http';
 import request from 'supertest';
 import { startPostgres, stopPostgres, type PgHandle } from './helpers/pg.js';
 import { buildTestApp, teardownTestApp, type TestApp } from './helpers/app.js';
+import { registerUser } from './helpers/seed.js';
 
 let pg: PgHandle;
 let t: TestApp;
@@ -59,10 +60,7 @@ describe('POST /lemmatize', () => {
   });
 
   it('proxies to Kiwi and returns parsed tokens', async () => {
-    const agent = request.agent(t.app);
-    await agent
-      .post('/auth/register')
-      .send({ email: 'a@b.com', password: 'correct horse battery staple' });
+    const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.post('/lemmatize').send({ text: '먹었어요' });
     expect(res.status).toBe(200);
     expect(res.body.tokens[0].lemma).toBe('먹다');
@@ -70,10 +68,7 @@ describe('POST /lemmatize', () => {
   });
 
   it('rejects oversized input at the zod boundary', async () => {
-    const agent = request.agent(t.app);
-    await agent
-      .post('/auth/register')
-      .send({ email: 'a@b.com', password: 'correct horse battery staple' });
+    const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.post('/lemmatize').send({ text: 'x'.repeat(5000) });
     expect(res.status).toBe(400);
   });

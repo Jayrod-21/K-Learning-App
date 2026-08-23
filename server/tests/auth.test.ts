@@ -15,7 +15,17 @@ let t: TestApp;
 
 beforeAll(async () => {
   pg = await startPostgres();
-  t = buildTestApp({ connectionString: pg.connectionString });
+  // This suite exercises the legacy single-step auth mechanics — register and
+  // login minting a session directly — which is the operator gate-off config
+  // (EMAIL_VERIFICATION_REQUIRED=false, MFA_REQUIRED=false). Opt into it
+  // explicitly now that the harness defaults to the production gates (audit
+  // §3.1); the gate-ON flow is covered by auth.verify/auth.mfa and, for route
+  // suites, by the shared registerUser helper.
+  t = buildTestApp({
+    connectionString: pg.connectionString,
+    mfaRequired: false,
+    emailVerificationRequired: false,
+  });
 });
 
 afterAll(async () => {
