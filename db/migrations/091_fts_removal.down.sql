@@ -23,6 +23,7 @@
 
 -- krdict_entries (003) ---------------------------------------------------------
 ALTER TABLE krdict_entries ADD COLUMN IF NOT EXISTS search_tsv TSVECTOR;
+COMMENT ON COLUMN krdict_entries.search_tsv         IS 'Maintained by trg_krdict_entries_tsv. Weights: headword=A, pronunciation=B, definition_korean=C, definition_english=D. Config simple — ADR-006.';
 
 CREATE OR REPLACE FUNCTION krdict_entries_tsv_refresh()
 RETURNS TRIGGER
@@ -56,9 +57,14 @@ UPDATE krdict_entries SET search_tsv =
 
 CREATE INDEX IF NOT EXISTS ix_krdict_entries_search_tsv
     ON krdict_entries USING GIN (search_tsv);
+COMMENT ON INDEX ix_krdict_entries_search_tsv IS
+    'GIN over search_tsv. Query: tap-a-word FTS — "find KRDICT entries matching '
+    'ts query X" — used by the Reference search and the tap-a-word fallback when '
+    'Kiwi-derived exact lemma misses.';
 
 -- kgiu_entries (002) -----------------------------------------------------------
 ALTER TABLE kgiu_entries ADD COLUMN IF NOT EXISTS search_tsv TSVECTOR;
+COMMENT ON COLUMN kgiu_entries.search_tsv       IS 'Maintained by trg_kgiu_entries_tsv. Sources: pattern + title_en + explanation + notes. Config: simple (Korean tokenizing deferred to Kiwi — ADR-006).';
 
 CREATE OR REPLACE FUNCTION kgiu_entries_tsv_refresh()
 RETURNS TRIGGER
@@ -92,9 +98,14 @@ UPDATE kgiu_entries SET search_tsv =
 
 CREATE INDEX IF NOT EXISTS ix_kgiu_entries_search_tsv
     ON kgiu_entries USING GIN (search_tsv);
+COMMENT ON INDEX ix_kgiu_entries_search_tsv IS
+    'GIN over search_tsv. Query: tap-a-grammar lookup ("find KGIU entries '
+    'matching ts query X"). Used by Grammar bank search and TOPIK Prep weak-'
+    'area lookups.';
 
 -- vocab_entries (002) ----------------------------------------------------------
 ALTER TABLE vocab_entries ADD COLUMN IF NOT EXISTS search_tsv TSVECTOR;
+COMMENT ON COLUMN vocab_entries.search_tsv       IS 'Maintained by trg_vocab_entries_tsv. Sources: korean + english + example_korean + example_english. Config `simple` — ADR-006.';
 
 CREATE OR REPLACE FUNCTION vocab_entries_tsv_refresh()
 RETURNS TRIGGER
@@ -128,9 +139,15 @@ UPDATE vocab_entries SET search_tsv =
 
 CREATE INDEX IF NOT EXISTS ix_vocab_entries_search_tsv
     ON vocab_entries USING GIN (search_tsv);
+COMMENT ON INDEX ix_vocab_entries_search_tsv IS
+    'GIN over search_tsv. Query: vocab full-text search (Reference page; '
+    '"have I seen this word?" lookups in tap-a-word flow before Kiwi+KRDICT).';
 
 -- ttmik_sentences (005) --------------------------------------------------------
 ALTER TABLE ttmik_sentences ADD COLUMN IF NOT EXISTS search_tsv TSVECTOR;
+COMMENT ON COLUMN ttmik_sentences.search_tsv IS
+    'Maintained by trg_ttmik_sentences_tsv. Config simple per ADR-006 — Kiwi '
+    'tokenizing is a Phase-B upgrade.';
 
 CREATE OR REPLACE FUNCTION ttmik_sentences_tsv_refresh()
 RETURNS TRIGGER LANGUAGE plpgsql AS $fn$
@@ -157,6 +174,9 @@ UPDATE ttmik_sentences SET search_tsv =
 
 CREATE INDEX IF NOT EXISTS ix_ttmik_sentences_search_tsv
     ON ttmik_sentences USING GIN (search_tsv);
+COMMENT ON INDEX ix_ttmik_sentences_search_tsv IS
+    'GIN over search_tsv. Query: full-text sentence lookup in tap-a-word/'
+    '"have I seen this phrase" flows.';
 
 -- iyagi_sentences (005) --------------------------------------------------------
 ALTER TABLE iyagi_sentences ADD COLUMN IF NOT EXISTS search_tsv TSVECTOR;
@@ -183,6 +203,8 @@ UPDATE iyagi_sentences SET search_tsv =
 
 CREATE INDEX IF NOT EXISTS ix_iyagi_sentences_search_tsv
     ON iyagi_sentences USING GIN (search_tsv);
+COMMENT ON INDEX ix_iyagi_sentences_search_tsv IS
+    'GIN search_tsv — listening transcript lookup.';
 
 -- topik_items (005) ------------------------------------------------------------
 ALTER TABLE topik_items ADD COLUMN IF NOT EXISTS search_tsv TSVECTOR;
@@ -211,5 +233,7 @@ UPDATE topik_items SET search_tsv =
 
 CREATE INDEX IF NOT EXISTS ix_topik_items_search_tsv
     ON topik_items USING GIN (search_tsv);
+COMMENT ON INDEX ix_topik_items_search_tsv IS
+    'Search items by stem/prompt text (TOPIK Prep weak-area search).';
 
 -- End of 091_fts_removal.down.sql — runner owns the transaction (ADR-013).

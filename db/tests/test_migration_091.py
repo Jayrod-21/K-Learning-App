@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import pathlib
+import re
 import shutil
 
 import psycopg
@@ -194,7 +195,8 @@ def test_091_reapply_up_body_is_noop(env, dsn: str, full_dir) -> None:
     with psycopg.connect(dsn, autocommit=True) as conn:
         with conn.cursor() as cur:
             cur.execute(up_sql)  # must not raise on already-dropped objects
-        assert not _column_exists(conn, "krdict_entries", "search_tsv")
+        for table, _index, _trigger, _function in FTS_OBJECTS:
+            assert not _column_exists(conn, table, "search_tsv"), f"{table}.search_tsv reappeared on reapply"
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +249,15 @@ def _search_tsv(conn: psycopg.Connection, sentence_id: int) -> str | None:
         return row[0] if row else None
 
 
+def _has_weighted_lexeme(tsv_text: str, token: str, weight: str) -> bool:
+    """True if `token` appears in the tsvector's ::text form tagged with
+    `weight` at some position — e.g. `'사과':1A` for token='사과', weight='A'.
+    Position number is deliberately not pinned (only the weight letter is),
+    since ordinal position is an implementation detail of to_tsvector, not
+    of setweight()."""
+    return re.search(rf"'{re.escape(token)}':\d+{weight}\b", tsv_text) is not None
+
+
 def test_091_down_backfills_existing_rows_and_trigger_maintains_writes(
     env, dsn: str, full_dir
 ) -> None:
@@ -262,9 +273,22 @@ def test_091_down_backfills_existing_rows_and_trigger_maintains_writes(
         backfilled = _search_tsv(conn, pre_existing_id)
         assert backfilled is not None and backfilled != "", "backfill left search_tsv empty"
         assert "사과" in backfilled, f"backfilled tsv missing the source token: {backfilled}"
+        # `korean` is weight A on ttmik_sentences (setweight(..., 'A')) — assert
+        # the weight LABEL survived, not just the lexeme, so a regression that
+        # dropped setweight() (leaving an unweighted 'D'-default or bare
+        # to_tsvector() call) would fail this test instead of hiding behind a
+        # substring-only check.
+        assert _has_weighted_lexeme(backfilled, "사과", "A"), (
+            f"backfilled tsv has the token but not an 'A'-weighted position "
+            f"(setweight() may not have run): {backfilled}"
+        )
 
         # The recreated trigger maintains search_tsv on a fresh write.
         new_id = _seed_ttmik_sentence(conn, "바나나")  # "banana"
         maintained = _search_tsv(conn, new_id)
         assert maintained is not None and maintained != "", "trigger did not populate search_tsv"
         assert "바나나" in maintained, f"trigger tsv missing the source token: {maintained}"
+        assert _has_weighted_lexeme(maintained, "바나나", "A"), (
+            f"trigger-maintained tsv has the token but not an 'A'-weighted "
+            f"position (setweight() may not have run): {maintained}"
+        )
