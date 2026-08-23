@@ -98,7 +98,15 @@ case and matches the rest of A1's user-facing tables.
 multi-sense rendering in the "i" drawer). The entry-row copy is the
 performance shortcut.
 
-### D6. FTS via `tsvector` + GIN, `simple` config (ADR-006)
+### D6. FTS via `tsvector` + GIN, `simple` config (ADR-006) — SUPERSEDED
+
+> **Superseded (2026-08-23) by migration `091_fts_removal` (audit §4.2).** The
+> `search_tsv` column, its GIN index (`ix_krdict_entries_search_tsv`), and the
+> maintenance trigger described in this section and D7 were removed — the FTS
+> subsystem had zero live query callers (see ADR-006's superseding note). The
+> rest of this ADR (the KRDICT schema itself) still stands; only the full-text
+> decision is retired. The `search_tsv_kiwi` migration sketch later in this
+> document is likewise cancelled.
 
 Per ADR-006, Phase A uses `to_tsvector('simple', …)` until Kiwi is online.
 

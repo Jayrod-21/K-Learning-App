@@ -1,9 +1,21 @@
 # ADR-006: Full-text search language configuration for Darakwon corpora
 
-**Status:** Accepted (Phase A interim)
+**Status:** ~~Accepted (Phase A interim)~~ **SUPERSEDED** by migration `091_fts_removal` (audit §4.2), 2026-08-23
 **Date:** 2026-05-28
 **Implemented in:** migration `002_darakwon_corpora.up.sql`
 **Revisits:** Open question in ADR-001 (D, "Full-text search for Korean")
+
+> **Superseded (2026-08-23).** The entire `search_tsv` full-text-search
+> subsystem this ADR governs — the tsvector columns, GIN indexes, and
+> maintenance triggers across all six content tables — was removed by migration
+> `091_fts_removal`. A full-codebase audit found it had **zero live query
+> callers**: the Reference/vocab/grammar search paths use substring/prefix
+> (ILIKE) matching, never `to_tsquery`/`@@`, so the subsystem cost a trigger on
+> every write and ~17% of the database while serving nothing. The Phase-B
+> `search_tsv_kiwi` successor described below (Decision §"When Phase B Kiwi
+> exists") is **cancelled** — if morphology-aware full-text search is ever
+> wanted, it will be designed fresh against the then-current requirements, not
+> revived from this column. This ADR is retained for historical context only.
 
 ## Context
 

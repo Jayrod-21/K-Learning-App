@@ -24,9 +24,9 @@ land). See `ADR-008-kgiu-vs-grammar-entries.md`.
 | Table | Rows about | PK | Audit cols |
 |---|---|---|---|
 | `corpus_sources` | One per ingested JSON file | `id BIGINT IDENTITY` | yes |
-| `kgiu_entries` | One per KGIU source-JSON entry (all 3 levels unified) | `id` | yes + tsvector |
+| `kgiu_entries` | One per KGIU source-JSON entry (all 3 levels unified) | `id` | yes |
 | `kgiu_entry_relations` | Directed FK cross-references between `kgiu_entries` rows | `id` | yes |
-| `vocab_entries` | One per 2000-Words entry (Beginner + Intermediate) | `id` | yes + tsvector |
+| `vocab_entries` | One per 2000-Words entry (Beginner + Intermediate) | `id` | yes |
 | `vocab_entry_relations` | Hybrid-target word↔word relations | `id` | yes |
 | `hanja_extensions` | "Korean through Chinese Characters" mind-maps | `id` | yes |
 | `lets_check_exercises` | Review-exercise pages, polymorphic parent | `id` | yes |
@@ -99,7 +99,6 @@ erDiagram
         TEXT    audio_track
         TEXT    source_book
         INT_ARRAY source_pages
-        TSVECTOR search_tsv
     }
 
     kgiu_entry_relations {
@@ -140,7 +139,6 @@ erDiagram
         JSONB   notes
         proficiency_level proficiency
         content_domain domain
-        TSVECTOR search_tsv
         TEXT    audio_track
         TEXT    source_book
         INT_ARRAY source_pages
@@ -207,12 +205,14 @@ erDiagram
 | `vocab_entries(id) ← vocab_entry_relations.source_entry_id` | CASCADE | CASCADE | Relation has no meaning without its source. |
 | `vocab_entries(id) ← vocab_entry_relations.target_entry_id` | SET NULL | CASCADE | Preserve text label if FK target goes away (ADR-007). |
 
-## FTS / GIN indexes
+## FTS / GIN indexes — REMOVED (migration 091_fts_removal, audit §4.2)
 
-- `ix_kgiu_entries_search_tsv` GIN on `search_tsv` (pattern A, title_en B, explanation C, notes D)
-- `ix_vocab_entries_search_tsv` GIN on `search_tsv` (korean A, english B, example_korean C, example_english D)
-- Triggers `trg_kgiu_entries_tsv` and `trg_vocab_entries_tsv` maintain on INSERT/UPDATE.
-- Config: `simple`. Korean tokenization deferred to Phase B Kiwi (ADR-006).
+The `search_tsv` tsvector columns, their GIN indexes
+(`ix_kgiu_entries_search_tsv`, `ix_vocab_entries_search_tsv`), and the
+maintenance triggers (`trg_kgiu_entries_tsv`, `trg_vocab_entries_tsv`) were
+removed — the full-text-search subsystem had no live query callers (see the
+superseding notes in ADR-006 / ADR-015). Reference/vocab/grammar search uses
+substring/prefix (ILIKE) matching instead.
 
 ## Composite uniqueness
 

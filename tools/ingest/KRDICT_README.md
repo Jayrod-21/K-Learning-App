@@ -179,11 +179,14 @@ SELECT id, headword, part_of_speech, definition_english
   FROM krdict_entries
  WHERE headword = '먹다';
 
--- Smoke-test FTS:
-SELECT id, headword, ts_rank(search_tsv, q) AS r
-  FROM krdict_entries, plainto_tsquery('simple', 'family') q
- WHERE search_tsv @@ q
- ORDER BY r DESC LIMIT 5;
+-- NOTE: the tsvector full-text-search subsystem (search_tsv column + GIN
+-- index) was removed in migration 091_fts_removal (audit §4.2) — it had no
+-- live query callers. Reference/tap-a-word lookups use substring/prefix
+-- (ILIKE) matching on headword/definition instead, e.g.:
+SELECT id, headword, part_of_speech, definition_english
+  FROM krdict_entries
+ WHERE headword ILIKE '먹%'
+ ORDER BY headword LIMIT 5;
 ```
 
 `entries_skipped` > 0 means the loader logged at least one
