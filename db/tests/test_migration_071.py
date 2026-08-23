@@ -42,6 +42,7 @@ from psycopg import errors
 from psycopg.rows import tuple_row
 
 from db import migrate  # type: ignore[import-not-found]
+from db.tests._helpers import FAKE_HASH  # type: ignore[import-not-found]
 
 try:
     from testcontainers.postgres import PostgresContainer  # type: ignore[import-not-found]
@@ -60,9 +61,6 @@ REAL_MIGRATIONS_DIR: pathlib.Path = (
 
 MIGRATION_NUM = "071"
 
-# A syntactically valid argon2id-shaped hash satisfying
-# ck_users_password_hash_argon2id (LIKE '$argon2id$%', length 80..255).
-FAKE_HASH = "$argon2id$" + "x" * 70
 
 # A well-formed (shape-wise) SHA-256 hex token hash.
 HASH_A = "a" * 64
@@ -72,41 +70,6 @@ HASH_B = "b" * 64
 # ---------------------------------------------------------------------------
 # Fixtures — one container per session, a fresh DB + migration dirs per test
 # ---------------------------------------------------------------------------
-
-@pytest.fixture(scope="session")
-def pg_container():
-    with PostgresContainer("postgres:16-alpine") as pg:
-        yield pg
-
-
-@pytest.fixture()
-def dsn(pg_container) -> str:
-    raw = pg_container.get_connection_url()
-    raw = raw.replace("postgresql+psycopg2://", "postgres://")
-    raw = raw.replace("postgresql://", "postgres://")
-    with psycopg.connect(raw, autocommit=True) as conn, conn.cursor() as cur:
-        cur.execute("DROP SCHEMA public CASCADE")
-        cur.execute("CREATE SCHEMA public")
-    return raw
-
-
-@pytest.fixture()
-def env(monkeypatch, dsn) -> None:
-    monkeypatch.setenv("DATABASE_URL", dsn)
-
-
-@pytest.fixture()
-def full_dir(tmp_path: pathlib.Path) -> pathlib.Path:
-    """A tmp directory containing EVERY production migration file."""
-    d = tmp_path / "migrations_full"
-    d.mkdir(parents=True)
-    copied = 0
-    for src in REAL_MIGRATIONS_DIR.iterdir():
-        if src.suffix == ".sql" and src.is_file():
-            shutil.copy2(src, d / src.name)
-            copied += 1
-    assert copied > 0, f"no migration files found under {REAL_MIGRATIONS_DIR}"
-    return d
 
 
 @pytest.fixture()

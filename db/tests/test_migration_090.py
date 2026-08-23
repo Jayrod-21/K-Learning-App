@@ -21,13 +21,13 @@ DETERMINISM:
 from __future__ import annotations
 
 import pathlib
-import shutil
 
 import psycopg
 import pytest
 from psycopg.rows import tuple_row
 
 from db import migrate  # type: ignore[import-not-found]
+from db.tests._helpers import FAKE_HASH, _full_up  # type: ignore[import-not-found]
 
 try:
     from testcontainers.postgres import PostgresContainer  # type: ignore[import-not-found]
@@ -48,56 +48,8 @@ REAL_MIGRATIONS_DIR: pathlib.Path = (
 # ONLY 090.
 PRE_090 = "089"
 
-FAKE_HASH = "$argon2id$" + "x" * 70
 
 INDEX_NAME = "ix_audio_transcription_jobs_running"
-
-
-# ---------------------------------------------------------------------------
-# Fixtures — one container per session, a fresh DB + full migration dir per test
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(scope="session")
-def pg_container():
-    with PostgresContainer("postgres:16-alpine") as pg:
-        yield pg
-
-
-@pytest.fixture()
-def dsn(pg_container) -> str:
-    raw = pg_container.get_connection_url()
-    raw = raw.replace("postgresql+psycopg2://", "postgres://")
-    raw = raw.replace("postgresql://", "postgres://")
-    with psycopg.connect(raw, autocommit=True) as conn, conn.cursor() as cur:
-        cur.execute("DROP SCHEMA public CASCADE")
-        cur.execute("CREATE SCHEMA public")
-    return raw
-
-
-@pytest.fixture()
-def env(monkeypatch, dsn) -> None:
-    monkeypatch.setenv("DATABASE_URL", dsn)
-
-
-@pytest.fixture()
-def full_dir(tmp_path: pathlib.Path) -> pathlib.Path:
-    """A tmp directory containing EVERY production migration file."""
-    d = tmp_path / "migrations_full"
-    d.mkdir(parents=True)
-    copied = 0
-    for src in REAL_MIGRATIONS_DIR.iterdir():
-        if src.suffix == ".sql" and src.is_file():
-            shutil.copy2(src, d / src.name)
-            copied += 1
-    assert copied > 0, f"no migration files found under {REAL_MIGRATIONS_DIR}"
-    return d
-
-
-def _full_up(full_dir: pathlib.Path) -> None:
-    # --allow-destructive: migration 045 (hygiene_cleanup, DROP TABLE) sits in
-    # the chain, so a full `up` trips migrate.py's destructive gate without it.
-    rc = migrate.main(["--migrations-dir", str(full_dir), "--allow-destructive", "up"])
-    assert rc == 0, f"full up returned {rc}"
 
 
 # ---------------------------------------------------------------------------

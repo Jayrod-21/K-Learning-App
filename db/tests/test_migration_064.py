@@ -33,13 +33,13 @@ DETERMINISM:
 from __future__ import annotations
 
 import pathlib
-import shutil
 
 import psycopg
 import pytest
 from psycopg.rows import dict_row, tuple_row
 
 from db import migrate  # type: ignore[import-not-found]
+from db.tests._helpers import FAKE_HASH  # type: ignore[import-not-found]
 
 try:
     from testcontainers.postgres import PostgresContainer  # type: ignore[import-not-found]
@@ -56,14 +56,6 @@ REAL_MIGRATIONS_DIR: pathlib.Path = (
     pathlib.Path(__file__).resolve().parents[1] / "migrations"
 )
 
-FAKE_HASH = "$argon2id$" + "x" * 70
-
-
-@pytest.fixture(scope="session")
-def pg_container():
-    with PostgresContainer("postgres:16-alpine") as pg:
-        yield pg
-
 
 @pytest.fixture()
 def dsn(pg_container) -> str:
@@ -78,26 +70,6 @@ def dsn(pg_container) -> str:
             cur.execute("DROP OWNED BY km_app")
             cur.execute("DROP ROLE km_app")
     return raw
-
-
-@pytest.fixture()
-def env(monkeypatch, dsn) -> None:
-    monkeypatch.setenv("DATABASE_URL", dsn)
-
-
-@pytest.fixture()
-def full_dir(tmp_path: pathlib.Path) -> pathlib.Path:
-    """Every production migration file (needed for the users/notification_*
-    tables + the F-089/F-092 siblings sitting in the same version range)."""
-    d = tmp_path / "migrations_full"
-    d.mkdir(parents=True)
-    copied = 0
-    for src in REAL_MIGRATIONS_DIR.iterdir():
-        if src.suffix == ".sql" and src.is_file():
-            shutil.copy2(src, d / src.name)
-            copied += 1
-    assert copied > 0, f"no migration files found under {REAL_MIGRATIONS_DIR}"
-    return d
 
 
 PRE_064 = "063"

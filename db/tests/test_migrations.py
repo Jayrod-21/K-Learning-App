@@ -50,33 +50,6 @@ pytestmark = pytest.mark.skipif(
 # Fixtures
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(scope="session")
-def pg_container():
-    """One Postgres container per test session — cheap to reuse, expensive to spin."""
-    with PostgresContainer("postgres:16-alpine") as pg:
-        yield pg
-
-
-@pytest.fixture()
-def dsn(pg_container) -> str:
-    """Postgres DSN suitable for psycopg.connect(). Each test gets a fresh DB
-    by dropping + recreating the public schema rather than spinning a new
-    container — orders of magnitude faster."""
-    raw = pg_container.get_connection_url()
-    # testcontainers returns a SQLAlchemy URL (postgresql+psycopg2://…) — strip
-    # the driver suffix for psycopg.
-    raw = raw.replace("postgresql+psycopg2://", "postgres://")
-    raw = raw.replace("postgresql://", "postgres://")
-    with psycopg.connect(raw, autocommit=True) as conn, conn.cursor() as cur:
-        cur.execute("DROP SCHEMA public CASCADE")
-        cur.execute("CREATE SCHEMA public")
-    return raw
-
-
-@pytest.fixture()
-def env(monkeypatch, dsn):
-    monkeypatch.setenv("DATABASE_URL", dsn)
-
 
 @pytest.fixture()
 def migrations_dir(tmp_path: pathlib.Path) -> pathlib.Path:

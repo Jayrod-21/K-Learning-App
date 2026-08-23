@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import json
 import pathlib
-import shutil
 
 import psycopg
 import pytest
@@ -71,46 +70,6 @@ OPTIONS = [
     "지금 제주도는 날씨가 좋습니다.",
     "민희 씨는 수미 씨와 같이 있습니다.",
 ]
-
-
-# ---------------------------------------------------------------------------
-# Fixtures — one container per session, a fresh DB + full migration dir per test
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(scope="session")
-def pg_container():
-    with PostgresContainer("postgres:16-alpine") as pg:
-        yield pg
-
-
-@pytest.fixture()
-def dsn(pg_container) -> str:
-    raw = pg_container.get_connection_url()
-    raw = raw.replace("postgresql+psycopg2://", "postgres://")
-    raw = raw.replace("postgresql://", "postgres://")
-    with psycopg.connect(raw, autocommit=True) as conn, conn.cursor() as cur:
-        cur.execute("DROP SCHEMA public CASCADE")
-        cur.execute("CREATE SCHEMA public")
-    return raw
-
-
-@pytest.fixture()
-def env(monkeypatch, dsn) -> None:
-    monkeypatch.setenv("DATABASE_URL", dsn)
-
-
-@pytest.fixture()
-def full_dir(tmp_path: pathlib.Path) -> pathlib.Path:
-    """A tmp directory containing EVERY production migration file."""
-    d = tmp_path / "migrations_full"
-    d.mkdir(parents=True)
-    copied = 0
-    for src in REAL_MIGRATIONS_DIR.iterdir():
-        if src.suffix == ".sql" and src.is_file():
-            shutil.copy2(src, d / src.name)
-            copied += 1
-    assert copied > 0, f"no migration files found under {REAL_MIGRATIONS_DIR}"
-    return d
 
 
 def _up(full_dir: pathlib.Path, target: str | None = None) -> None:

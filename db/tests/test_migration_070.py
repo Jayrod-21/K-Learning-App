@@ -56,6 +56,7 @@ from psycopg import errors
 from psycopg.rows import tuple_row
 
 from db import migrate  # type: ignore[import-not-found]
+from db.tests._helpers import _seed_user  # type: ignore[import-not-found]
 
 try:
     from testcontainers.postgres import PostgresContainer  # type: ignore[import-not-found]
@@ -72,7 +73,6 @@ REAL_MIGRATIONS_DIR: pathlib.Path = (
     pathlib.Path(__file__).resolve().parents[1] / "migrations"
 )
 
-FAKE_HASH = "$argon2id$" + "x" * 70
 
 # The migration immediately before 070 in this file's minimal chain — both
 # the seeding stop-point for backfill tests and the down-target that rolls
@@ -80,28 +80,6 @@ FAKE_HASH = "$argon2id$" + "x" * 70
 # target) + vocab_entries.source_upload_id (the backfill source); 001
 # creates vocab_cards; 002 creates vocab_entries.
 PRE_070 = "040"
-
-
-@pytest.fixture(scope="session")
-def pg_container():
-    with PostgresContainer("postgres:16-alpine") as pg:
-        yield pg
-
-
-@pytest.fixture()
-def dsn(pg_container) -> str:
-    raw = pg_container.get_connection_url()
-    raw = raw.replace("postgresql+psycopg2://", "postgres://")
-    raw = raw.replace("postgresql://", "postgres://")
-    with psycopg.connect(raw, autocommit=True) as conn, conn.cursor() as cur:
-        cur.execute("DROP SCHEMA public CASCADE")
-        cur.execute("CREATE SCHEMA public")
-    return raw
-
-
-@pytest.fixture()
-def env(monkeypatch, dsn) -> None:
-    monkeypatch.setenv("DATABASE_URL", dsn)
 
 
 def _copy_real_migrations(dest: pathlib.Path, versions: Iterable[str]) -> None:
@@ -132,15 +110,6 @@ def provenance_dir(tmp_path: pathlib.Path) -> pathlib.Path:
     d = tmp_path / "migrations_vocab_card_provenance"
     _copy_real_migrations(d, versions={"001", "002", "040", "070"})
     return d
-
-
-def _seed_user(conn: psycopg.Connection, email: str) -> int:
-    with conn.cursor(row_factory=tuple_row) as cur:
-        cur.execute(
-            "INSERT INTO users (email, password_hash) VALUES (%s, %s) RETURNING id",
-            (email, FAKE_HASH),
-        )
-        return cur.fetchone()[0]
 
 
 def _seed_upload(conn: psycopg.Connection, user_id: int, title: str) -> int:
