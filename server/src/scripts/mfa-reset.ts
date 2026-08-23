@@ -21,7 +21,8 @@
  *   - Fails loud on an unknown email rather than silently doing nothing, so an
  *     operator typo is caught.
  */
-import { withTransaction, closePool } from '../db/pool.js';
+import { withTransaction, closePool, clientQuerier } from '../db/pool.js';
+import { revokeAllUserSessions } from '../auth/sessions.js';
 import { getLogger } from '../logging.js';
 
 async function main(): Promise<void> {
@@ -45,13 +46,10 @@ async function main(): Promise<void> {
     await client.query(`DELETE FROM user_totp WHERE user_id = $1`, [userId]);
     await client.query(`DELETE FROM user_recovery_codes WHERE user_id = $1`, [userId]);
     // Revoke every live session: a reset is a security event; force re-login so a
-    // stale cookie cannot ride past the re-enrollment requirement.
-    await client.query(
-      `UPDATE sessions
-          SET revoked_at = now(), revoked_reason = 'mfa_reset'
-        WHERE user_id = $1 AND revoked_at IS NULL`,
-      [userId],
-    );
+    // stale cookie cannot ride past the re-enrollment requirement. Runs on THIS
+    // transaction's client (B-045) so it stays atomic with the deletes above,
+    // reusing the shared helper instead of an inline copy.
+    await revokeAllUserSessions(userId, 'mfa_reset', clientQuerier(client));
 
     log.info({ userId, email }, 'mfa-reset: factor + recovery codes cleared, sessions revoked');
     // eslint-disable-next-line no-console
