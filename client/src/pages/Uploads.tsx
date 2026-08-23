@@ -50,6 +50,7 @@ import { Pill, type PillTone } from '../components/Pill';
 import { UploadTypeModal } from '../components/UploadTypeModal';
 import { useToast } from '../components/useToast';
 import { errorMessageFor } from '../lib/errorCopy';
+import { formatDate } from '../lib/formatDate';
 import { navItem } from '../lib/nav';
 import { ApiError } from '../services/api';
 import { deleteUpload, listUploads } from '../services/uploads';
@@ -97,16 +98,6 @@ function formatBytes(n: number): string {
 function hasViewableRendition(upload: BookUpload): boolean {
   if (upload.status !== 'ready') return true;
   return upload.pageCount !== undefined && upload.pageCount > 0;
-}
-
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleDateString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
 }
 
 export default function Uploads(): JSX.Element {

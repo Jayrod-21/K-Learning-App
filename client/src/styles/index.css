@@ -1780,12 +1780,6 @@ h1, h2 { font-family: var(--font-display); }
   font-weight: 500;
   letter-spacing: -0.005em;
 }
-.km-library__rowkr {
-  font-size: 0.6875rem;
-  color: var(--paper-mute);
-  margin-top: 1px;
-}
-
 /* Login ──────────────────────────────────────────────────────────────── */
 .km-login {
   padding: 32px 22px 80px;

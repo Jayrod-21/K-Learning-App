@@ -16,7 +16,7 @@
 # only needs rebuilding when the deps or loader code change.
 #
 # NOTE on the build context: this Dockerfile is built with the REPO ROOT as the
-# context (azure-pipelines.yml) so `COPY tools` works. The corpus JSON under
+# context (see local-build.sh) so `COPY tools` works. The corpus JSON under
 # tools/ingest/output/ and the _work/ scratch are gitignored, so the CI checkout
 # (tracked files only) does not carry them into the context — the image stays
 # lean and never ships data.

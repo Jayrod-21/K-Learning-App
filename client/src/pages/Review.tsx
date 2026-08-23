@@ -98,6 +98,7 @@ import { pickPresentation } from '../lib/clozePresentation';
 import { errorMessageFor } from '../lib/errorCopy';
 import { isInteractiveElement } from '../lib/interactiveElement';
 import { navItem } from '../lib/nav';
+import { parseIdParam } from '../lib/urlIdParam';
 import type {
   ClozeGradeCommittedResponse,
   DefineExample,
@@ -231,15 +232,6 @@ function sameGrammarCards(
 // ─────────────────────────────────────────────────────────────
 // URL-boundary validation
 // ─────────────────────────────────────────────────────────────
-
-/** `?list=` must be a short positive integer; anything else → null (landing).
- *  Length-capped before parseInt so a hostile mile-long digit string can't
- *  reach Number territory where precision loss lies. */
-function parseListIdParam(raw: string | null): number | null {
-  if (raw === null || !/^\d{1,15}$/.test(raw)) return null;
-  const n = Number.parseInt(raw, 10);
-  return Number.isSafeInteger(n) && n > 0 ? n : null;
-}
 
 // ─────────────────────────────────────────────────────────────
 // B-013 corpus seeding (unchanged wiring, re-homed into a CollapsibleTile)
@@ -518,7 +510,7 @@ export function Review(): JSX.Element {
 
   // URL → view resolution, validated at the boundary. `study=1` without a
   // valid list id is meaningless and degrades to the landing.
-  const listId = parseListIdParam(searchParams.get('list'));
+  const listId = parseIdParam(searchParams.get('list'));
   const studyRaw = searchParams.get('study');
   const study: 'list' | 'due' | null =
     studyRaw === 'due' ? 'due'

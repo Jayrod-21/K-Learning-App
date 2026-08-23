@@ -121,6 +121,7 @@ import {
 } from '../services/topik';
 import { cn } from '../lib/cn';
 import { splitImageItem } from '../lib/topikImage';
+import { bandForPercentage } from '../lib/topikBand';
 import { errorMessageFor } from '../lib/errorCopy';
 import { SKILL_COLOR } from '../lib/skill-colors';
 import {
@@ -641,22 +642,6 @@ function AttemptsReview(): JSX.Element {
       </CollapsibleTile>
     </section>
   );
-}
-
-/**
- * Percentage → readiness band headline. Mirrors the server's Mock-mode
- * `bandForPercentage` (server/src/routes/topik.ts) so Study's client-tallied
- * results screen (F-008) reads consistently with Mock's server-computed one.
- * Duplicated rather than imported: Study's tally is a client-side summary of
- * reveals the learner already saw (no server round trip), and the two
- * scoring paths are already independent (inline vs DB-graded) — this is
- * presentation parity, not a shared grading contract.
- */
-function bandForPercentage(percentage: number): string {
-  if (percentage >= 80) return 'On track for L5+';
-  if (percentage >= 60) return 'L4 range';
-  if (percentage >= 40) return 'L3 range';
-  return 'Below L3';
 }
 
 /**
