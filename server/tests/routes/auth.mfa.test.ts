@@ -461,6 +461,28 @@ describe('registration gating', () => {
   });
 });
 
+describe('B-044: register never mints a session when MFA is mandatory', () => {
+  // The suite app is built with mfaRequired:true, emailVerificationRequired:false
+  // — the exact operator config (mail-outage kill-switch on, MFA still on) that
+  // the B-044 bug mis-handled by minting a full, MFA-bypassing session at
+  // registration.
+  it('returns mfa_setup_required with NO session cookie; login then requires enrollment', async () => {
+    const email = 'b044-register@example.com';
+    const reg = await request(t.app).post('/auth/register').send({ email, password: PASSWORD });
+    expect(reg.status).toBe(201);
+    expect(reg.body.status).toBe('mfa_setup_required');
+    // THE invariant: no session was handed to a factor-less brand-new account.
+    expect(reg.headers['set-cookie']).toBeUndefined();
+
+    // The account exists and can now authenticate — and login correctly routes
+    // to forced enrollment, never a direct session.
+    const login = await request(t.app).post('/auth/login').send({ email, password: PASSWORD });
+    expect(login.status).toBe(200);
+    expect(login.body.status).toBe('enrollment_required');
+    expect(login.headers['set-cookie']).toBeUndefined();
+  });
+});
+
 describe('encryption at rest', () => {
   it('stores the TOTP secret encrypted (not plaintext base32) and round-trips', async () => {
     const { userId } = await enrollFromLogin();

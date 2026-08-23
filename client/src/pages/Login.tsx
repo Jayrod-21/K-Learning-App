@@ -150,6 +150,11 @@ function CredentialsStep({
   // code — renders the unverified notice + resend affordance instead of a
   // generic failure. Cleared on the next submit / mode switch.
   const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
+  // B-044: set when a register resolves `mfa_setup_required` (email
+  // verification off, MFA mandatory) — the account exists but NO session was
+  // minted; the screen switches to login and prompts sign-in to enroll a
+  // second factor. Cleared on the next submit / mode switch.
+  const [mfaSetupPending, setMfaSetupPending] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const emailId = useId();
@@ -162,6 +167,7 @@ function CredentialsStep({
     if (submitting) return;
     setError(null);
     setUnverifiedEmail(null);
+    setMfaSetupPending(false);
     setSubmitting(true);
     try {
       if (mode === 'register') {
@@ -174,6 +180,14 @@ function CredentialsStep({
           // F-006: account created, no session — advance to "check your
           // email". Lower-cased to match what the server stored/mailed.
           onRegistered(email.trim().toLowerCase());
+          return;
+        }
+        if (outcome === 'mfa_setup_required') {
+          // B-044: account created, NO session (MFA mandatory, email gate
+          // off). Switch to sign-in; logging in returns `enrollment_required`
+          // and drives TOTP setup. The email stays prefilled.
+          setMode('login');
+          setMfaSetupPending(true);
           return;
         }
       } else {
@@ -199,6 +213,7 @@ function CredentialsStep({
     setMode((m) => (m === 'login' ? 'register' : 'login'));
     setError(null);
     setUnverifiedEmail(null);
+    setMfaSetupPending(false);
   }
 
   return (
@@ -308,6 +323,15 @@ function CredentialsStep({
               then sign in again.
             </p>
             <ResendVerificationButton email={unverifiedEmail} />
+          </div>
+        ) : null}
+
+        {mfaSetupPending ? (
+          <div role="alert" className="km-login__notice">
+            <p>
+              Your account was created. Sign in to finish setting up two-factor
+              authentication.
+            </p>
           </div>
         ) : null}
 

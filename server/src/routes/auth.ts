@@ -395,7 +395,27 @@ router.post(
         return;
       }
 
-      // Legacy / gate-off: the original direct-session behavior, unchanged.
+      if (cfg.MFA_REQUIRED) {
+        // SECURITY (B-044): the direct-session path below exists ONLY when MFA
+        // is also off. When email verification is disabled (the operator
+        // mail-outage kill-switch) but MFA is still mandatory, minting a
+        // session here would hand a brand-new account a full session that
+        // never passed a second factor — the exact "no session without a
+        // confirmed factor" invariant SECURITY.md §"MFA" forbids. Instead,
+        // create the account WITHOUT a session and tell the client to sign in;
+        // /auth/login then returns `enrollment_required` and drives TOTP
+        // setup. (Before this fix the branch checked only
+        // EMAIL_VERIFICATION_REQUIRED, so EMAIL_VERIFICATION_REQUIRED=false +
+        // MFA_REQUIRED=true bypassed MFA at registration.)
+        req.log.info({ userId }, 'user registered — mfa enrollment required at login');
+        res.status(201).json({
+          status: 'mfa_setup_required',
+          user: { id: userId, email },
+        });
+        return;
+      }
+
+      // Both gates off (legacy): the original direct-session behavior.
       const { raw, record } = await issueSession(userId, {
         userAgent: req.header('user-agent') ?? undefined,
         ipAddress: req.ip ?? undefined,

@@ -391,7 +391,11 @@ const EnvSchema = z.object({
   // The login gate: an unverified account cannot complete a password login
   // (typed `email_unverified` response). Default ON (email verification is a
   // standing deploy priority); this flag is the operator kill-switch if mail
-  // delivery breaks — flipping it to false changes NOTHING else about auth.
+  // delivery breaks. Flipping it to false removes the email gate ONLY — it
+  // does NOT relax MFA: when MFA_REQUIRED is on, a register with the email gate
+  // off returns `mfa_setup_required` (no session) rather than a direct session,
+  // so no account is ever handed a session without a confirmed factor (B-044).
+  // The direct-session register path exists only when BOTH gates are off.
   // Uses the strict envBool parser so `EMAIL_VERIFICATION_REQUIRED=false` in a
   // compose file actually disables it (see envBool's header).
   EMAIL_VERIFICATION_REQUIRED: envBool(true),

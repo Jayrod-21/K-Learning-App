@@ -196,6 +196,32 @@ describe('Login — F-006 register verification_required', () => {
   });
 });
 
+describe('Login — B-044 register mfa_setup_required', () => {
+  it('switches to sign-in with a notice (no session) when register resolves mfa_setup_required', async () => {
+    const register = vi.fn(async () => 'mfa_setup_required' as const);
+    mocks.authValue = makeAuth({ register });
+    render(<Login />);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /Create one/ }));
+    await user.type(screen.getByLabelText('Email'), 'mfa-setup@example.com');
+    await user.type(screen.getByLabelText('Password'), 'a-long-passphrase');
+    await user.click(screen.getByRole('button', { name: 'Create account' }));
+
+    // No app navigation (no session was minted) — the screen prompts sign-in
+    // so the user can enroll a factor.
+    expect(
+      await screen.findByText(
+        /Sign in to finish setting up two-factor authentication/,
+      ),
+    ).toBeInTheDocument();
+    // Switched to login mode — the register-only "Create account" submit is gone.
+    expect(
+      screen.queryByRole('button', { name: 'Create account' }),
+    ).not.toBeInTheDocument();
+  });
+});
+
 // ─── F-006: unverified login notice ───────────────────────────
 
 describe('Login — F-006 email_unverified login', () => {
