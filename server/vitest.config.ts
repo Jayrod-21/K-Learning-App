@@ -6,6 +6,11 @@ export default defineConfig({
     include: ['tests/**/*.test.ts'],
     testTimeout: 120_000, // testcontainers warm-up
     hookTimeout: 120_000,
+    // Boots ONE postgres:16-alpine container and applies ALL migrations ONCE
+    // into a template database, in the main process before any fork starts.
+    // Per-file databases (tests/helpers/pg.ts) then clone that template
+    // instead of each booting a container and replaying every migration.
+    globalSetup: ['./tests/globalSetup.ts'],
     setupFiles: ['./tests/setup.ts'],
     pool: 'forks',
     // vitest 4 removed `poolOptions.forks.singleFork`. `fileParallelism:
