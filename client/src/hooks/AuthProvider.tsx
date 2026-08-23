@@ -285,6 +285,13 @@ export function AuthProvider({
         // exists inside the email.)
         return 'verification_required';
       }
+      if (data.status === 'mfa_setup_required') {
+        // B-044: email verification off but MFA mandatory. The server minted
+        // NO session; stay `guest`. The Login screen prompts the user to sign
+        // in, where /auth/login returns `enrollment_required` and drives TOTP
+        // setup. Never treat this as authenticated.
+        return 'mfa_setup_required';
+      }
       setState({ status: 'authenticated', user: data.user });
       return 'authenticated';
     },

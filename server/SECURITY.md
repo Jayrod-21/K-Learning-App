@@ -1031,6 +1031,14 @@ mfaChallenges}.ts`. Operator CLIs `seed-user` and `mfa-reset`.
   `/auth/login/totp` (valid code/recovery) or `/auth/mfa/confirm` (enrollment).
   The legacy single-step direct-session path exists ONLY behind
   `MFA_REQUIRED=false` (test / explicit opt-out).
+- **Registration honors this too (B-044):** `POST /auth/register` mints a
+  direct session ONLY when both `MFA_REQUIRED` and `EMAIL_VERIFICATION_REQUIRED`
+  are off. With `MFA_REQUIRED` on, register returns `mfa_setup_required` (no
+  session) even if the email gate is off (the mail-outage kill-switch), so a
+  brand-new account is never handed a session that skipped enrollment. Before
+  this fix the register branch checked only `EMAIL_VERIFICATION_REQUIRED`, so
+  `EMAIL_VERIFICATION_REQUIRED=false` + `MFA_REQUIRED=true` bypassed MFA at
+  registration.
 
 ### 18.9 Registration lockdown
 - **Threat:** self-service signup on a single-user deployment is an account-

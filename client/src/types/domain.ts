@@ -2293,6 +2293,10 @@ export interface MfaStatus {
  */
 export type RegisterResponse =
   | { status: 'verification_required'; user: { id: number; email: string } }
+  // B-044: email verification off but MFA mandatory — the account is created
+  // WITHOUT a session; the user must sign in to enroll a second factor. No
+  // session is minted here (SECURITY: no session without a confirmed factor).
+  | { status: 'mfa_setup_required'; user: { id: number; email: string } }
   | { status?: undefined; user: AuthMeResponse['user'] };
 
 /** `GET|POST /auth/verify` success envelope. `already_verified` is the
@@ -2308,7 +2312,10 @@ export interface ResendVerificationResponse {
 }
 
 /** `register()` outcome the Login screen branches on. */
-export type RegisterOutcome = 'authenticated' | 'verification_required';
+export type RegisterOutcome =
+  | 'authenticated'
+  | 'verification_required'
+  | 'mfa_setup_required';
 
 // ─────────────────────────────────────────────────────────────
 // Images / OCR mining (Pass 8)
