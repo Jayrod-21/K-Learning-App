@@ -1068,7 +1068,11 @@ mfaChallenges}.ts`. Operator CLIs `seed-user` and `mfa-reset`.
   operator-run `mfa-reset` CLI: it deletes the factor + recovery codes and
   revokes the user's live sessions in ONE transaction; the next login then falls
   into forced re-enrollment. Possession of shell + DB access is the authorization
-  boundary for that CLI (it is not an endpoint).
+  boundary for that CLI (it is not an endpoint). This is unchanged by §22's
+  self-service PASSWORD reset — that flow gets a user past the password check
+  only; login still stops at the TOTP/recovery-code challenge, so a lost
+  second factor still needs the operator. See
+  `docs/OPERATOR_ACCOUNT_RECOVERY.md` for the combined decision table.
 
 ### 18.13 Never-log list (Pass Login)
 - TOTP secret (plaintext base32 or encrypted blob), recovery-code plaintext,
@@ -1314,3 +1318,81 @@ entry needed): `POST /reading/generated/:id/audio` requests narration,
   server-generated story (already fully readable to them via
   `GET /reading/generated/:id`). No answer material, no third-party content,
   no cross-user data is embedded in the audio, the segments, or the job rows.
+
+## 22. Phase 2.1 surface — self-service password reset (`/auth/password-reset/*`, migration 094)
+
+Password reset is the account-recovery gap §18.12 left open: a locked-out
+user who has forgotten their password (but still controls their verified
+inbox) previously had NO door back in short of an operator running
+`mfa-reset` — which only touches MFA state, not the password. The flow
+mirrors §19's email-verification token discipline closely; see
+`server/src/auth/passwordReset.ts` for the module and
+`docs/OPERATOR_ACCOUNT_RECOVERY.md` for the operator-facing decision table
+(this self-service path vs. the still-operator-only `mfa-reset` path for a
+lost-TOTP-and-recovery-codes lockout).
+
+### 22.1 Reset-token hygiene
+- **Threat:** a leaked or guessed reset link grants a full account takeover
+  (not just an address attestation like a verification token — it lets the
+  holder set the account's password).
+- **Defense:** the token is 32 CSPRNG bytes (256-bit) base64url; only its
+  SHA-256 **hash** is stored (`password_reset_tokens.token_hash`, CHECK
+  `^[0-9a-f]{64}$`) — a DB read never yields a clickable link. Confirm compares
+  hashes with `timingSafeEqual` (defense-in-depth over the indexed lookup).
+  Single-use via an atomic `UPDATE … WHERE consumed_at IS NULL AND
+  invalidated_at IS NULL AND expires_at > now()` rowCount gate, run in the
+  SAME transaction as the password write and the session revoke (§22.4) — a
+  crash between them is impossible; either all three land or none do.
+  Deliberately **1-hour expiry** — much shorter than email verification's 24h
+  — because a reset token's blast radius (full takeover) is far larger than a
+  verification token's (an address attestation). Unlike
+  `email_verification_tokens`, there is NO address-binding column: a reset
+  token attests a **user**, not an address (there is nothing to compare it
+  against — a reset never touches `users.email`). The emailed link carries the
+  token in the **URL fragment** (`/reset-password#token=…`), which never
+  leaves the browser — reverse-proxy/CDN access logs and Referer headers never
+  see a live token, and the SPA scrubs the fragment from history immediately
+  after capture. There is no GET/query-string variant.
+
+### 22.2 No user-enumeration
+- **Threat:** the request endpoint as an account-existence oracle.
+- **Defense:** `POST /auth/password-reset/request` returns a fixed generic
+  `200 {status:'ok', message:'…'}` in EVERY case (unknown email / known email
+  / cooldown-suppressed), and the token issue+send work runs fire-and-forget
+  AFTER the response so response timing does not leak existence either (same
+  pattern as `/auth/verify/resend`, §19.2). `POST /auth/password-reset/confirm`
+  collapses `invalid` and `consumed` outcomes into the SAME `token_invalid`
+  response; `token_expired` is disclosed separately, which is safe because
+  both branches are reachable ONLY by someone already HOLDING the specific
+  token — neither carries a signal about whether the underlying account
+  exists (identical reasoning to §19.2's verify error split).
+
+### 22.3 Anti-abuse (mail-bombing)
+- **Defense:** `authLimiter` bounds the per-IP request rate on both routes,
+  and a per-USER DB cooldown (60 s) is the real mail-bomb gate — it is
+  **atomic with issuance**: the probe runs inside the same per-user-locked
+  transaction as the token insert (`issuePasswordResetTokenIfCooldownClear`),
+  so a concurrent request burst serializes and mints exactly once — at most
+  one email per account per window, no matter how many IPs ask. A request
+  past the cooldown supersedes prior live tokens (`invalidated_at`), so only
+  the newest link is ever redeemable.
+
+### 22.4 Confirm = ONE security event, not a login
+- **Threat:** a stale or attacker-held session surviving a password reset;
+  an attacker who triggered the reset getting a free session out of it.
+- **Defense:** `POST /auth/password-reset/confirm` runs the token consume,
+  the `users.password_hash` overwrite, and `revokeAllUserSessions(userId,
+  'password_reset', tx)` in ONE transaction. EVERY existing session for the
+  account dies, including one the caller might currently be holding — there
+  is deliberately **no auto-login**; the response carries no session cookie,
+  and the legitimate user proves the new password by signing in fresh. This
+  closes the "attacker resets the password to lock the owner out, then rides
+  a session they already had" scenario as well as the more obvious "reset
+  grants a session without proving the new password" shortcut.
+
+### 22.5 Password floor unchanged
+- The replacement password is validated with the SAME schema/min-length
+  (`PASSWORD_MIN = 12`) as registration — a reset cannot downgrade an account
+  to a weaker password than register would ever have allowed. Argon2id
+  hashing (`hashPassword`) is unchanged from every other password-setting
+  path (`server/src/auth/passwords.ts`).

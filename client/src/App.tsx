@@ -48,6 +48,7 @@ import { Shell } from './components/Shell';
 import { legacyRedirectRoutes } from './lib/redirects';
 import Login from './pages/Login';
 import VerifyEmail from './pages/VerifyEmail';
+import ResetPassword from './pages/ResetPassword';
 import Today from './pages/Today';
 import Topik from './pages/Topik';
 import Review from './pages/Review';
@@ -109,6 +110,15 @@ export default function App(): JSX.Element {
                       SPA route, NOT an API prefix, so no nginx allow-list
                       entry (see km-nginx-api-route-allowlist). */}
                   <Route path="/verify-email" element={<VerifyEmail />} />
+                  {/* Phase 2.1: password-reset link landing. Same posture as
+                      /verify-email — neither PublicOnly nor RequireAuth, so
+                      it works for a guest completing a forgot-password flow
+                      AND for a signed-in session that opened the link (a
+                      confirmed reset revokes that session too). SPA route,
+                      not an API prefix — no nginx allow-list entry needed
+                      (see km-nginx-api-route-allowlist; /auth/password-reset/*
+                      is already covered by the existing /auth prefix). */}
+                  <Route path="/reset-password" element={<ResetPassword />} />
                   <Route
                     element={
                       <RequireAuth>

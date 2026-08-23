@@ -68,8 +68,10 @@ import { DoubleRule } from '../components/DoubleRule';
 import { RecoveryCodesPanel } from '../components/RecoveryCodesPanel';
 import { ResendVerificationButton } from '../components/ResendVerificationButton';
 import { ApiError } from '../services/api';
+import { requestPasswordReset } from '../services/auth';
 import { otpauthUriToDataUrl } from '../lib/qr';
 import { useAuth } from '../hooks/useAuth';
+import { useRetryCountdown } from '../hooks/useRetryCountdown';
 
 type Mode = 'login' | 'register';
 
@@ -88,6 +90,10 @@ export default function Login(): JSX.Element {
   // F-006: set when a register resolves `verification_required` — the account
   // exists but no session was minted; the screen shows "check your email".
   const [registeredEmail, setRegisteredEmail] = useState<string | null>(null);
+  // Phase 2.1: set when the credentials step's "Forgot password?" link is
+  // clicked — swaps in the password-reset request step. Independent of
+  // `pending` (no login attempt has happened yet at this point).
+  const [forgotPassword, setForgotPassword] = useState(false);
 
   return (
     <div className="km-shell">
@@ -111,10 +117,19 @@ export default function Login(): JSX.Element {
               setRegisteredEmail(null);
             }}
           />
+        ) : forgotPassword ? (
+          <ForgotPasswordStep
+            onBack={() => {
+              setForgotPassword(false);
+            }}
+          />
         ) : pending === null ? (
           <CredentialsStep
             onRegistered={(email) => {
               setRegisteredEmail(email);
+            }}
+            onForgotPassword={() => {
+              setForgotPassword(true);
             }}
           />
         ) : pending.kind === 'mfa' ? (
@@ -137,8 +152,10 @@ export default function Login(): JSX.Element {
 
 function CredentialsStep({
   onRegistered,
+  onForgotPassword,
 }: {
   onRegistered: (email: string) => void;
+  onForgotPassword: () => void;
 }): JSX.Element {
   const { login, register } = useAuth();
   const [mode, setMode] = useState<Mode>('login');
@@ -306,7 +323,17 @@ function CredentialsStep({
               A long passphrase beats short complex strings. Anything goes —
               length is what matters.
             </div>
-          ) : null}
+          ) : (
+            // Phase 2.1: only offered on the sign-in leg — a fresh account
+            // has no password to forget yet.
+            <button
+              type="button"
+              className="km-link focusring km-field__hint"
+              onClick={onForgotPassword}
+            >
+              Forgot password?
+            </button>
+          )}
         </div>
 
         {error ? (
@@ -397,6 +424,130 @@ function CheckEmailStep({
         link below.
       </p>
       <ResendVerificationButton email={email} />
+
+      <div className="km-login__switch">
+        <button type="button" className="km-link focusring" onClick={onBack}>
+          Back to sign in
+        </button>
+      </div>
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Step 1c — Forgot password (Phase 2.1)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Shown when the credentials step's "Forgot password?" link is clicked:
+ * collects the account email and calls the non-enumerating
+ * `POST /auth/password-reset/request`. The response is a fixed generic shape
+ * whether or not the email exists, so the success copy is phrased
+ * conditionally ("if an account exists…") — same anti-enumeration posture as
+ * CheckEmailStep's resend affordance and VerifyEmail's ResendForm.
+ */
+function ForgotPasswordStep({ onBack }: { onBack: () => void }): JSX.Element {
+  const [email, setEmail] = useState('');
+  const [sending, setSending] = useState(false);
+  const [sentTo, setSentTo] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const { secondsLeft, start: startBackoff } = useRetryCountdown();
+  const emailId = useId();
+
+  async function handleSubmit(e: FormEvent<HTMLFormElement>): Promise<void> {
+    e.preventDefault();
+    if (sending || secondsLeft > 0) return;
+    const trimmed = email.trim().toLowerCase();
+    if (!trimmed) {
+      setError('Enter your account email to request a reset link.');
+      return;
+    }
+    setError(null);
+    setSending(true);
+    try {
+      await requestPasswordReset(trimmed);
+      setSentTo(trimmed);
+    } catch (err) {
+      // Fixed strings only — never server text. A 429 disables the form for
+      // the server's retry_after window (same pattern as ResendVerificationButton).
+      if (err instanceof ApiError && err.status === 429) {
+        setError('Too many attempts. Please wait a moment and try again.');
+        startBackoff(err.retryAfter);
+      } else {
+        setError('Could not send the email. Check your connection and retry.');
+      }
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <>
+      <h1 className="kr-display km-login__title">
+        <Bilingual kr="비밀번호 찾기" en="Reset your password" />
+      </h1>
+      <p className="km-login__lede">
+        Enter your account email and we&apos;ll send a link to choose a new
+        password.
+      </p>
+      <DoubleRule accent style={{ margin: '18px 0 22px' }} />
+
+      {sentTo !== null ? (
+        <p className="km-field__hint" role="status" aria-live="polite">
+          If an account exists for {sentTo}, a reset link is on its way.
+          Check your inbox (and spam folder).
+        </p>
+      ) : (
+        <form
+          className="km-login__form"
+          onSubmit={(e) => {
+            void handleSubmit(e);
+          }}
+          noValidate
+          aria-busy={sending}
+        >
+          <div className="km-field">
+            <label htmlFor={emailId} className="km-field__label">
+              Email
+            </label>
+            <input
+              id={emailId}
+              className="km-field__input"
+              type="email"
+              autoComplete="email"
+              required
+              value={email}
+              onChange={(e) => {
+                setEmail(e.target.value);
+              }}
+              maxLength={254}
+              placeholder="you@example.com"
+              // eslint-disable-next-line jsx-a11y/no-autofocus
+              autoFocus
+            />
+          </div>
+          {error ? (
+            <div role="alert" className="km-login__error">
+              {error}
+            </div>
+          ) : null}
+          <Button
+            type="submit"
+            variant="gold"
+            size="lg"
+            fullWidth
+            disabled={sending || secondsLeft > 0}
+          >
+            <span role="status" aria-live="polite">
+              {sending
+                ? 'Sending…'
+                : secondsLeft > 0
+                  ? `Retry in ${String(secondsLeft)}s`
+                  : 'Send reset link'}
+            </span>
+          </Button>
+        </form>
+      )}
 
       <div className="km-login__switch">
         <button type="button" className="km-link focusring" onClick={onBack}>

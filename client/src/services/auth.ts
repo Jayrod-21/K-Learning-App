@@ -30,6 +30,8 @@ import type {
   MfaEnrollResult,
   MfaStatus,
   MfaStatusResponse,
+  PasswordResetConfirmResponse,
+  PasswordResetRequestResponse,
   PatchAuthMeBody,
   RecoveryCodesResult,
   RegenerateRecoveryCodesResponse,
@@ -251,6 +253,45 @@ export async function verifyEmail(
  */
 export async function resendVerification(email: string): Promise<void> {
   await api.post<ResendVerificationResponse>('/auth/verify/resend', { email });
+}
+
+// ── Password reset (Phase 2.1) ────────────────────────────────
+
+/**
+ * POST /auth/password-reset/request — ask for a password-reset email.
+ *
+ * The server's response is a fixed generic shape in EVERY case (unknown
+ * email, known email, cooldown-suppressed) — deliberate anti-enumeration, so
+ * the UI must phrase success accordingly ("if an account exists…"), never
+ * "email sent".
+ */
+export async function requestPasswordReset(email: string): Promise<void> {
+  await api.post<PasswordResetRequestResponse>('/auth/password-reset/request', {
+    email,
+  });
+}
+
+/**
+ * POST /auth/password-reset/confirm — spend the emailed token for a new
+ * password.
+ *
+ * On success the server has ALREADY revoked every session for the account
+ * (including any the caller might currently be holding) — there is no
+ * session in the response and this layer never treats a resolved call as a
+ * login. The caller must sign in fresh via {@link login}.
+ *
+ * Throws `ApiError` with `code: 'token_expired' | 'token_invalid'` on
+ * failure; the ResetPassword screen maps those codes to fixed copy (never
+ * server text) — same contract as {@link verifyEmail}.
+ */
+export async function confirmPasswordReset(
+  token: string,
+  password: string,
+): Promise<void> {
+  await api.post<PasswordResetConfirmResponse>('/auth/password-reset/confirm', {
+    token,
+    password,
+  });
 }
 
 /**

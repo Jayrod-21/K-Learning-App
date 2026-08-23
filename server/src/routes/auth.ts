@@ -8,6 +8,8 @@
  *   PATCH /auth/me             — update display_name / email / phone (Pass 3)
  *   POST  /auth/verify         — consume an email-verification token (F-006)
  *   POST  /auth/verify/resend  — re-issue the verification email (F-006)
+ *   POST  /auth/password-reset/request — email a password-reset link (Phase 2.1)
+ *   POST  /auth/password-reset/confirm — spend the link, set a new password (Phase 2.1)
  *
  * Threat model (SECURITY.md):
  *   - Credential stuffing: rate-limited per-IP via authLimiter.
@@ -51,8 +53,20 @@
  *           typo'd address can still be corrected); the next login is gated.
  *   - Account-takeover via session token leak persisting across email change:
  *     out of scope here. The "log me out everywhere" SQL (ADR-002 §"Open
- *     questions") is the recovery path; the Settings UI will surface it when
- *     password change ships.
+ *     questions") is the recovery path.
+ *   - Password reset (Phase 2.1, SECURITY.md): a locked-out user proves
+ *     control of their verified inbox via a hashed, single-use, 1h-expiring
+ *     token (see auth/passwordReset.ts for the token threat model — shorter
+ *     TTL than email verification because a reset token is a full-takeover
+ *     credential, not just an address attestation). `/auth/password-reset/
+ *     request` is non-enumerating (fixed generic response regardless of
+ *     whether the email exists) and per-user cooldown-gated (mail-bomb
+ *     defense, atomic with issuance). `/auth/password-reset/confirm` spends
+ *     the token, overwrites `password_hash`, and revokes EVERY existing
+ *     session for the account — all in ONE transaction — so an attacker's
+ *     session (or the legitimate user's own stale one) cannot survive a
+ *     reset, and there is deliberately no auto-login: the user proves the
+ *     new password by signing in.
  */
 import { Router } from 'express';
 import type { Request, Response } from 'express';
@@ -70,6 +84,7 @@ import {
   clearSessionCookie,
   getActiveSession,
   issueSession,
+  revokeAllUserSessions,
   revokeSessionById,
   setSessionCookie,
 } from '../auth/sessions.js';
@@ -86,6 +101,11 @@ import {
   sendVerificationEmail,
   supersedeVerificationTokens,
 } from '../auth/emailVerification.js';
+import {
+  consumePasswordResetToken,
+  issueAndSendPasswordResetEmail,
+  type ConsumeResetOutcome,
+} from '../auth/passwordReset.js';
 import {
   bumpChallengeAttempts,
   consumeChallenge,
@@ -1208,6 +1228,144 @@ router.post(
           );
         });
       }
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// -----------------------------------------------------------------------------
+// Password reset (Phase 2.1, self-service account recovery). See
+// auth/passwordReset.ts for the token lifecycle + threat model.
+// -----------------------------------------------------------------------------
+
+const PasswordResetRequestSchema = z.object({ email: z.string().email().max(254) });
+
+/**
+ * POST /auth/password-reset/request — request a password-reset email.
+ *
+ * NO USER ENUMERATION (mirrors /auth/verify/resend): the response is a fixed
+ * 200 generic body in EVERY case — unknown email, existing account, cooldown
+ * suppression all look identical to the caller. The mail work runs
+ * fire-and-forget AFTER the response so response timing cannot oracle
+ * account existence either (the residual signal — one extra indexed SELECT on
+ * the exists path — is sub-millisecond noise behind network jitter, same
+ * reasoning as the resend route).
+ *
+ * Abuse posture: authLimiter bounds the per-IP request rate, and the per-USER
+ * DB cooldown inside `issuePasswordResetTokenIfCooldownClear` (composed by
+ * `issueAndSendPasswordResetEmail`) is the real mail-bomb gate — atomic with
+ * the token insert, so a concurrent burst mints at most one token/email per
+ * account per window no matter how many IPs ask.
+ */
+router.post(
+  '/password-reset/request',
+  authLimiter(),
+  validateBody(PasswordResetRequestSchema),
+  async (req, res, next) => {
+    try {
+      const body = req.body as z.infer<typeof PasswordResetRequestSchema>;
+      const email = body.email.toLowerCase();
+      const { rows } = await query<{ id: number }>(
+        `SELECT id FROM users
+           WHERE email = $1 AND deleted_at IS NULL
+           LIMIT 1`,
+        [email],
+      );
+      const row = rows[0];
+      // Fixed generic response FIRST (anti-enumeration, see header) …
+      res.status(200).json({
+        status: 'ok',
+        message: 'if an account exists for that email, a reset link is on its way',
+      });
+      // … then the best-effort issue+send, detached from the response path.
+      // The cooldown decision lives INSIDE issuePasswordResetTokenIfCooldownClear
+      // (atomic with the insert), never in a pre-response probe — which also
+      // keeps the response timing identical whether or not a send happens.
+      if (row) {
+        const userId = row.id;
+        const log = req.log;
+        void issueAndSendPasswordResetEmail(userId, email).catch((mailErr: unknown) => {
+          log.error(
+            { userId, err: (mailErr as Error).message },
+            'password reset email failed',
+          );
+        });
+      }
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+const PasswordResetConfirmSchema = z.object({
+  token: z.string().min(1).max(128),
+  // Same length floor/ceiling as registration — a reset must not be able to
+  // downgrade the account to a weaker password than register would allow.
+  password: z.string().min(PASSWORD_MIN).max(PASSWORD_MAX),
+});
+
+/**
+ * POST /auth/password-reset/confirm — spend a reset token for a new password.
+ *
+ * ONE transaction covers the entire security-relevant unit: the atomic
+ * rowCount-gated token consume, the `users.password_hash` overwrite, and
+ * `revokeAllUserSessions` (reason `password_reset`) — so a crash between any
+ * two of those steps is impossible; either all three land or none do. Every
+ * existing session dies (including one an attacker who locked the legitimate
+ * user out might be holding) and the caller must sign in fresh with the new
+ * password — there is deliberately NO auto-login here.
+ *
+ * Failure disclosure mirrors /auth/verify: `token_expired` for a token whose
+ * window passed, `token_invalid` for everything else (unknown/malformed/
+ * already-consumed/superseded). Distinguishing expired-vs-invalid is safe
+ * because both are reachable ONLY by someone already HOLDING the specific
+ * token — it carries no signal about whether the underlying account exists.
+ */
+router.post(
+  '/password-reset/confirm',
+  authLimiter(),
+  validateBody(PasswordResetConfirmSchema),
+  async (req, res, next) => {
+    try {
+      const body = req.body as z.infer<typeof PasswordResetConfirmSchema>;
+      // Hash BEFORE opening the transaction: argon2 is CPU-bound, not DB I/O,
+      // and the Bar forbids holding a transaction open across non-DB work.
+      // A wasted hash on a doomed (invalid/expired) token is an acceptable
+      // cost — trying to skip it would mean branching hash-vs-no-hash on the
+      // token's validity, which is exactly the kind of timing signal the
+      // login path's `safeDummyVerify` exists to avoid introducing elsewhere.
+      const passwordHash = await hashPassword(body.password);
+      const result = await withTransaction<ConsumeResetOutcome>(async (client) => {
+        const q = clientQuerier(client);
+        const outcome = await consumePasswordResetToken(body.token, q);
+        if (outcome.outcome !== 'valid') return outcome;
+        await q(`UPDATE users SET password_hash = $1 WHERE id = $2`, [
+          passwordHash,
+          outcome.userId,
+        ]);
+        // Security event: kill every existing session for this account,
+        // atomic with the password change (B-045 exec param).
+        await revokeAllUserSessions(outcome.userId, 'password_reset', q);
+        return outcome;
+      });
+
+      if (result.outcome === 'valid') {
+        req.log.info(
+          { userId: result.userId, event: 'password_reset' },
+          'password reset consumed',
+        );
+        res.status(200).json({ status: 'reset' });
+        return;
+      }
+      if (result.outcome === 'expired') {
+        sendError(res, 400, 'token_expired', 'that reset link has expired');
+        return;
+      }
+      // 'invalid' and 'consumed' collapse to the same generic response — see
+      // header (neither reveals anything beyond "this specific link doesn't
+      // work right now", which requires already possessing the link).
+      sendError(res, 400, 'token_invalid', 'that reset link is not valid');
     } catch (err) {
       next(err);
     }
