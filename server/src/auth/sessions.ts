@@ -9,7 +9,7 @@
  */
 import { createHash, randomBytes } from 'node:crypto';
 import type { Response } from 'express';
-import { query, withTransaction } from '../db/pool.js';
+import { query, withTransaction, clientQuerier, type Querier } from '../db/pool.js';
 import { loadConfig } from '../config/index.js';
 
 export interface SessionRecord {
@@ -158,18 +158,31 @@ export async function revokeSessionById(
   );
 }
 
+/**
+ * Revoke every live session for a user. Pass `exec` (a `Querier` — e.g.
+ * `clientQuerier(client)`) to run inside a caller's existing transaction, so
+ * the revoke is atomic with the caller's other writes; omit it to run in the
+ * helper's own transaction. (B-045: `scripts/mfa-reset.ts` needs the revoke in
+ * the SAME transaction as its TOTP/recovery-code deletes — before this
+ * parameter existed it kept a duplicate inline copy to get that atomicity.)
+ */
 export async function revokeAllUserSessions(
   userId: number,
   reason: string,
+  exec?: Querier,
 ): Promise<void> {
-  await withTransaction(async (client) => {
-    await client.query(
+  const run = (q: Querier): Promise<unknown> =>
+    q(
       `UPDATE sessions
           SET revoked_at = now(), revoked_reason = $2
         WHERE user_id = $1 AND revoked_at IS NULL`,
       [userId, reason],
     );
-  });
+  if (exec) {
+    await run(exec);
+    return;
+  }
+  await withTransaction((client) => run(clientQuerier(client)));
 }
 
 /**
