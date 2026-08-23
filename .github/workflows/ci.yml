@@ -63,6 +63,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install real media toolchain (poppler-utils + ffmpeg)
+        # audit §3.3 / §3.5: pdfPageRender.test.ts and audioConcat.live.test.ts
+        # shell out to real `pdftoppm` / `ffmpeg`. Without the binaries the PDF
+        # test self-skips and the audio test stays gated OFF — both green while
+        # rendering nothing. Installing the binaries (and setting FFMPEG_LIVE
+        # below) makes them actually exercise the real render/concat path, the
+        # same tools the production image ships. System-wide install, so the
+        # `./server` working-directory is irrelevant here.
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils ffmpeg
+        working-directory: .
+
       - name: Lint
         # Enforces the no-restricted-imports guardrails in .eslintrc.cjs
         # (only services/claude/client.ts may import @anthropic-ai/sdk;
@@ -73,7 +84,11 @@ jobs:
         run: npm run typecheck
 
       - name: Unit tests
+        # FFMPEG_LIVE=1 opts audioConcat.live.test.ts into the real-ffmpeg path
+        # now that the binary is installed above (audit §3.5).
         run: npm test
+        env:
+          FFMPEG_LIVE: '1'
 
   ingest-checks:
     name: Ingest tooling (Python) — Lint, Type, Test
@@ -118,8 +133,12 @@ jobs:
         # isolation flake, NOT an output/ dependency — verified it passes in
         # isolation). Tracked: FOLLOW_UPS.md F-UP-003. (The other two formerly-
         # excluded files run clean on a checkout and are now included.)
+        # audit §3.4: topik_audio/tests (the TOPIK listening-audio pipeline —
+        # pdftoppm/faster-whisper/Vision are all faked via monkeypatch, so no
+        # real binaries or models are needed) was collected by NEITHER CI job.
+        # Run it alongside the loader tests here (same package install + deps).
         run: |
-          python -m pytest tests -q \
+          python -m pytest tests topik_audio/tests -q \
             --ignore=tests/test_resolve_cross_references_integration.py
 
   db-checks:
@@ -140,6 +159,29 @@ jobs:
         # generated tools/ingest/output/*.json and belongs to the ingest phase,
         # not a clean-checkout migration gate.
         run: python -m pytest db/tests --ignore=db/tests/test_discriminator_coverage.py -q
+
+  audio-stt-checks:
+    name: Audio STT worker (Python) — Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # audit §3.4: tools/audio_stt/tests (the live km-worker's suite) was
+      # collected by NO CI job. Its tests ALWAYS fake faster-whisper and its
+      # conftest guards psycopg — so the heavy ML/GPU pins in
+      # tools/audio_stt/requirements.txt (faster-whisper, ctranslate2) are NOT
+      # needed to run the suite; install only the lean test deps (same pins as
+      # db-checks). The DB-backed worker tests spin their own Postgres via
+      # testcontainers; the pure mapping/blobstore/config tests need no DB.
+      - name: Install test deps (faster-whisper is faked in the suite — no ML/GPU deps)
+        run: pip install "psycopg[binary]==3.2.3" "psycopg-pool>=3.2,<4" "structlog==24.4.0" "testcontainers[postgres]>=4,<5" "pytest>=8,<10"
+
+      - name: Worker tests (testcontainers spins its own Postgres)
+        run: python -m pytest tools/audio_stt/tests -q
 
   docker-build:
     name: Docker — Build Images
