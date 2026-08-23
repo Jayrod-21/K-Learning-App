@@ -29,6 +29,7 @@ import request from 'supertest';
 import type { Express } from 'express';
 import { startPostgres, stopPostgres, type PgHandle } from './helpers/pg.js';
 import { buildTestApp, teardownTestApp, type TestApp } from './helpers/app.js';
+import { resetLimiters } from '../src/middleware/rateLimits.js';
 
 let pg: PgHandle;
 let t: TestApp;
@@ -117,9 +118,18 @@ const PUBLIC_ROUTES = new Set<string>([
   'POST /auth/login/totp', // step 2, authenticated by the challenge token, not a cookie
   'POST /auth/verify', // email verification, authenticated by the emailed token
   'POST /auth/verify/resend', // request a fresh verification email
-  'POST /auth/mfa/enroll', // step 2 of forced enrollment, challenge-token bound
-  'POST /auth/mfa/confirm', // step 2 of forced enrollment, challenge-token bound
   'POST /auth/logout', // idempotent success even without a live session (F-201)
+  //
+  // NOTE: /auth/mfa/enroll and /auth/mfa/confirm are deliberately NOT listed
+  // here, even though they support a challenge-token path that bypasses the
+  // session cookie. Their gate (`conditionalRequireAuth`, auth.ts:232-243)
+  // only skips `requireAuth` when the request body carries a non-empty
+  // `challenge_token`; the unauthenticated probe this suite sends (empty
+  // body, no cookie) has none, so it falls through to the real `requireAuth`
+  // and is rejected with 401 — identical to every other protected route.
+  // They are therefore probed normally below, not allowlisted. The
+  // challenge-token-authenticated path is a separate flow, exercised by
+  // auth.mfa.test.ts.
 ]);
 
 // ── The gate ─────────────────────────────────────────────────────────────────
@@ -150,6 +160,15 @@ describe('protected route auth gate (enumerated router stack)', () => {
         publicHit.add(key);
         continue;
       }
+      // Reset in-memory rate-limit hit stores before every probe. This suite
+      // deliberately sends 150+ unauthenticated requests to every mounted
+      // route in one `it`, several of which share a single per-IP
+      // `authLimiter` budget (RATE_LIMIT_AUTH_MAX=5 in the test env) —
+      // without this reset, probing enough of them in sequence trips 429 on
+      // a later route, which would fail this test for a reason that has
+      // nothing to do with that route's OWN auth gate. Each route's rejection
+      // must be judged in isolation.
+      resetLimiters();
       const url = concretePath(path);
       const res = await request(t.app)[method.toLowerCase() as 'get'](url);
       // Must be an auth rejection — NOT a leak (2xx), NOT a phantom (404),
