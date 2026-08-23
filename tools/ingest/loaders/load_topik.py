@@ -342,10 +342,6 @@ async def _insert_item_batch(
         # source data with no dedicated column, so the `extra` jsonb is exactly
         # the "no data lost on shape drift" catch-all (see the
         # `topik_items.extra` COMMENT in migration 005).
-        # `skill_tag_raw` is deliberately NOT packed here: it has its own column
-        # (written below). Storing it in both places is redundant and invites a
-        # silent divergence between `skill_tag_raw` and `extra->>'skill_tag_raw'`
-        # if the two write paths ever drift.
         extra = {
             k: v
             for k, v in {
@@ -364,7 +360,6 @@ async def _insert_item_batch(
                 it.instruction_group,
                 it.instruction,
                 it.skill_tag,
-                it.skill_tag_raw,
                 prof,
                 it.points,
                 it.stem,
@@ -384,13 +379,13 @@ async def _insert_item_batch(
             INSERT INTO topik_items (
                 topik_test_id, corpus_source_id, corpus, source_id, item_number,
                 section, item_type, instruction_group, instruction,
-                skill_tag, skill_tag_raw, proficiency, points,
+                skill_tag, proficiency, points,
                 stem, underline, prompt, options, answer, model_answer,
                 has_image, image_text, extra)
             VALUES (
                 %s, %s, 'topik'::corpus, %s, %s,
                 %s::topik_section, %s::topik_item_type, %s, %s,
-                %s, %s, %s::proficiency_level, %s,
+                %s, %s::proficiency_level, %s,
                 %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb,
                 %s, %s, %s::jsonb)
             ON CONFLICT (corpus, source_id) DO UPDATE
@@ -401,7 +396,6 @@ async def _insert_item_batch(
                   instruction_group = EXCLUDED.instruction_group,
                   instruction       = EXCLUDED.instruction,
                   skill_tag         = EXCLUDED.skill_tag,
-                  skill_tag_raw     = EXCLUDED.skill_tag_raw,
                   proficiency       = EXCLUDED.proficiency,
                   points            = EXCLUDED.points,
                   stem              = EXCLUDED.stem,

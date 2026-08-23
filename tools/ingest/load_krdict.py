@@ -227,11 +227,11 @@ SQL_FETCH_SOURCE_ID = "SELECT id FROM krdict_source WHERE source_label = %(label
 SQL_UPSERT_ENTRY = """
 INSERT INTO krdict_entries (
     krdict_source_id, source_id, homograph_index,
-    headword, pronunciation, part_of_speech, hanja, register, vocabulary_level,
+    headword, pronunciation, part_of_speech, hanja, vocabulary_level,
     definition_korean, definition_english
 ) VALUES (
     %(krdict_source_id)s, %(source_id)s, %(homograph_index)s,
-    %(headword)s, %(pronunciation)s, %(part_of_speech)s, %(hanja)s, %(register)s,
+    %(headword)s, %(pronunciation)s, %(part_of_speech)s, %(hanja)s,
     %(vocabulary_level)s,
     %(definition_korean)s, %(definition_english)s
 )
@@ -241,7 +241,6 @@ ON CONFLICT (source_id, homograph_index) DO UPDATE SET
     pronunciation       = EXCLUDED.pronunciation,
     part_of_speech      = EXCLUDED.part_of_speech,
     hanja               = EXCLUDED.hanja,
-    register            = EXCLUDED.register,
     vocabulary_level    = EXCLUDED.vocabulary_level,
     definition_korean   = EXCLUDED.definition_korean,
     definition_english  = EXCLUDED.definition_english,
@@ -252,7 +251,6 @@ WHERE
  OR krdict_entries.pronunciation      IS DISTINCT FROM EXCLUDED.pronunciation
  OR krdict_entries.part_of_speech     IS DISTINCT FROM EXCLUDED.part_of_speech
  OR krdict_entries.hanja              IS DISTINCT FROM EXCLUDED.hanja
- OR krdict_entries.register           IS DISTINCT FROM EXCLUDED.register
  OR krdict_entries.vocabulary_level   IS DISTINCT FROM EXCLUDED.vocabulary_level
  OR krdict_entries.definition_korean  IS DISTINCT FROM EXCLUDED.definition_korean
  OR krdict_entries.definition_english IS DISTINCT FROM EXCLUDED.definition_english
@@ -276,11 +274,10 @@ SQL_DELETE_INFLECTIONS_FOR_ENTRY = (
 
 SQL_INSERT_SENSE = """
 INSERT INTO krdict_senses (
-    krdict_entry_id, sense_index, definition_korean, definition_english,
-    sense_domain, sense_register
+    krdict_entry_id, sense_index, definition_korean, definition_english
 ) VALUES (
     %(krdict_entry_id)s, %(sense_index)s, %(definition_korean)s,
-    %(definition_english)s, %(sense_domain)s, %(sense_register)s
+    %(definition_english)s
 )
 RETURNING id;
 """
@@ -392,7 +389,6 @@ def _entry_params(model: KrdictEntryModel, source_pk: int) -> dict:
         "pronunciation": model.pronunciation,
         "part_of_speech": model.part_of_speech,
         "hanja": model.hanja,
-        "register": model.register.value if model.register else None,
         "vocabulary_level": (
             model.vocabulary_level.value if model.vocabulary_level else None
         ),
@@ -465,8 +461,6 @@ def _persist_entry(cur, model: KrdictEntryModel, source_pk: int) -> None:
                 "sense_index": sense.sense_index,
                 "definition_korean": sense.definition_korean,
                 "definition_english": sense.definition_english,
-                "sense_domain": sense.sense_domain,
-                "sense_register": sense.sense_register,
             },
         )
         sense_pk = cur.fetchone()["id"]

@@ -16,8 +16,6 @@ Design rules honored:
       of truth for the allowed set. Models stay format-agnostic so a
       KRDICT taxonomy update doesn't break the parser; the DB CHECK is the
       detection point.
-    * Register on the entry is the closed enum `register_level`; on a sense
-      it's free TEXT (KRDICT inconsistency, see ADR-015).
 """
 
 from __future__ import annotations
@@ -26,19 +24,6 @@ from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
-
-# Mirrors the Postgres `register_level` enum from 001_core_schema.
-# Kept here (rather than imported) so the parser is self-contained.
-class RegisterLevel(str, Enum):
-    """Korean speech-level register, mirroring the `register_level` enum."""
-
-    BANMAL = "반말"
-    HAEYOCHE = "해요체"
-    HAPSYOCHE = "합쇼체"
-    MUNEOCHE = "문어체"
-    HAOCHE = "하오체"
-    HAGECHE = "하게체"
 
 
 class VocabularyLevel(str, Enum):
@@ -122,11 +107,9 @@ class KrdictSenseModel(BaseModel):
     sense_index: int = Field(..., ge=1)
     definition_korean: str = Field(..., min_length=1, max_length=MAX_DEFINITION_LEN)
     definition_english: Optional[str] = Field(default=None, max_length=MAX_DEFINITION_LEN)
-    sense_domain: Optional[str] = Field(default=None, max_length=MAX_LABEL_LEN)
-    sense_register: Optional[str] = Field(default=None, max_length=MAX_LABEL_LEN)
     examples: list[KrdictExampleModel] = Field(default_factory=list)
 
-    @field_validator("definition_english", "sense_domain", "sense_register", mode="before")
+    @field_validator("definition_english", mode="before")
     @classmethod
     def _normalize_optional(cls, v: Optional[str]) -> Optional[str]:
         return _strip_or_none(v)
@@ -166,7 +149,6 @@ class KrdictEntryModel(BaseModel):
     pronunciation: Optional[str] = Field(default=None, max_length=MAX_PRONUNCIATION_LEN)
     part_of_speech: Optional[str] = Field(default=None, max_length=MAX_POS_LEN)
     hanja: Optional[str] = Field(default=None, max_length=MAX_HANJA_LEN)
-    register: Optional[RegisterLevel] = None
     vocabulary_level: Optional[VocabularyLevel] = None
 
     # Children.
@@ -182,22 +164,6 @@ class KrdictEntryModel(BaseModel):
     @classmethod
     def _strip_required_field(cls, v: Optional[str]) -> str:
         return _strip_required(v)
-
-    @field_validator("register", mode="before")
-    @classmethod
-    def _coerce_register(cls, v: object) -> object:
-        # KRDICT XML can emit register as an arbitrary string; only accept
-        # known enum values. Anything else becomes None (logged at the
-        # parser layer) so an unknown register doesn't crash the load.
-        if v is None or isinstance(v, RegisterLevel):
-            return v
-        if not isinstance(v, str):
-            return None
-        s = v.strip()
-        try:
-            return RegisterLevel(s)
-        except ValueError:
-            return None
 
     @field_validator("vocabulary_level", mode="before")
     @classmethod
