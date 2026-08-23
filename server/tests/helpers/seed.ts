@@ -11,6 +11,8 @@ import { createHash, randomUUID } from 'node:crypto';
 /** Register a user via the app, then return the supertest agent + user id. */
 import request from 'supertest';
 import type { Express } from 'express';
+import { issueVerificationToken } from '../../src/auth/emailVerification.js';
+import { generateTotp } from '../../src/auth/totp.js';
 
 /** Deterministic 64-char lowercase hex from any string. */
 function hex64(input: string): string {
@@ -30,18 +32,94 @@ export interface RegisteredAgent {
 }
 
 /**
- * Register a new user via /auth/register and return a session-bound
- * supertest agent. The password is fixed-length to satisfy the auth schema.
+ * Register a new user and return a session-bound supertest agent that has
+ * completed WHATEVER production login flow the app under test is configured
+ * for — email verification and mandatory MFA enrollment included.
+ *
+ * WHY THIS DRIVES THE FULL FLOW: production defaults are
+ * `EMAIL_VERIFICATION_REQUIRED=true` and `MFA_REQUIRED=true` (src/config), and
+ * the test harness now defaults to the same (helpers/app.ts). Under those
+ * gates, `POST /auth/register` mints NO session (it returns
+ * `verification_required`), and `POST /auth/login` mints NO session either (a
+ * fresh account with no confirmed TOTP gets `enrollment_required`). A helper
+ * that stopped at register — as this one used to — would hand back an
+ * UNauthenticated agent, so every route test built on it would exercise an
+ * auth path production never uses. This drives register → verify → login →
+ * enroll → confirm so the returned agent is authenticated exactly the way a
+ * real user is.
+ *
+ * It is ADAPTIVE to the app's configured flags, so suites that build the app
+ * with a gate disabled still work: each step branches on the response's typed
+ * `status`, and a step that production would skip (no verification, no MFA) is
+ * simply not taken. The email-verification token is minted directly via
+ * `issueVerificationToken` (the mail transport is mocked in tests, so the raw
+ * token never rides an email we could read); the TOTP code is produced by the
+ * same `generateTotp` wrapper the confirm route verifies against.
  */
 export async function registerUser(app: Express, pool: Pool): Promise<RegisteredAgent> {
   const agent = request.agent(app);
   const email = nextEmail();
   const password = 'correct horse battery staple';
-  const res = await agent.post('/auth/register').send({ email, password });
-  if (res.status !== 201) {
-    throw new Error(`registerUser failed: ${res.status} ${JSON.stringify(res.body)}`);
+
+  // Step 1 — register. Either mints a session immediately (gate off) or
+  // returns verification_required (gate on).
+  const reg = await agent.post('/auth/register').send({ email, password });
+  if (reg.status !== 201) {
+    throw new Error(`registerUser: register failed: ${reg.status} ${JSON.stringify(reg.body)}`);
   }
-  const userId = (res.body as { user: { id: number } }).user.id;
+  const userId = (reg.body as { user: { id: number } }).user.id;
+
+  // If registration already established a session (EMAIL_VERIFICATION_REQUIRED
+  // off AND no MFA gate to satisfy), we are done — the legacy direct-session
+  // path. Otherwise complete verification + login.
+  if ((reg.body as { status?: string }).status !== 'verification_required') {
+    // pool param is reserved for callers that need it; explicitly mark used.
+    void pool;
+    return { agent, email, userId };
+  }
+
+  // Step 2 — verify email. Mint a fresh token directly (mail is mocked) and
+  // consume it via the real verify route so email_verified_at is stamped by
+  // production code, not a raw UPDATE.
+  const { raw: verifyToken } = await issueVerificationToken(userId, email);
+  const verify = await agent.post('/auth/verify').send({ token: verifyToken });
+  if (verify.status !== 200) {
+    throw new Error(`registerUser: verify failed: ${verify.status} ${JSON.stringify(verify.body)}`);
+  }
+
+  // Step 3 — login. Verified account with no confirmed TOTP → either an
+  // immediate session (MFA_REQUIRED off) or enrollment_required (MFA on).
+  const login = await agent.post('/auth/login').send({ email, password });
+  if (login.status !== 200) {
+    throw new Error(`registerUser: login failed: ${login.status} ${JSON.stringify(login.body)}`);
+  }
+  if ((login.body as { status?: string }).status === 'authenticated') {
+    void pool;
+    return { agent, email, userId };
+  }
+  if ((login.body as { status?: string }).status !== 'enrollment_required') {
+    throw new Error(
+      `registerUser: unexpected login status: ${JSON.stringify(login.body)}`,
+    );
+  }
+
+  // Step 4/5 — forced MFA enrollment: enroll a TOTP factor, then confirm it
+  // with a generated code. The confirm response sets the session cookie the
+  // returned agent carries.
+  const challengeToken = (login.body as { challenge_token: string }).challenge_token;
+  const enroll = await agent.post('/auth/mfa/enroll').send({ challenge_token: challengeToken });
+  if (enroll.status !== 200) {
+    throw new Error(`registerUser: mfa enroll failed: ${enroll.status} ${JSON.stringify(enroll.body)}`);
+  }
+  const secret = (enroll.body as { secret: string }).secret;
+  const code = await generateTotp(secret);
+  const confirm = await agent
+    .post('/auth/mfa/confirm')
+    .send({ challenge_token: challengeToken, code });
+  if (confirm.status !== 200) {
+    throw new Error(`registerUser: mfa confirm failed: ${confirm.status} ${JSON.stringify(confirm.body)}`);
+  }
+
   // pool param is reserved for callers that need it; explicitly mark used.
   void pool;
   return { agent, email, userId };

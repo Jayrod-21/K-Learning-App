@@ -78,6 +78,10 @@ beforeAll(async () => {
   t = buildTestApp({
     connectionString: pg.connectionString,
     emailVerificationRequired: true,
+    // mfaRequired:false isolates the verification gate — post-verify login
+    // must mint a session directly, not divert into MFA enrollment (now on by
+    // default, audit §3.1). The verify×MFA interplay has its own app below.
+    mfaRequired: false,
   });
   installCaptureTransport();
 });
@@ -587,6 +591,10 @@ describe('EMAIL_VERIFICATION_REQUIRED=false (operator kill-switch)', () => {
     const off = buildTestApp({
       connectionString: pg.connectionString,
       emailVerificationRequired: false,
+      // mfaRequired:false so this kill-switch test sees the legacy direct
+      // session (register→session, unverified login succeeds) without the
+      // now-default MFA enrollment gate (audit §3.1).
+      mfaRequired: false,
     });
     installCaptureTransport();
     try {
