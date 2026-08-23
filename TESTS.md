@@ -25,9 +25,11 @@ validate → switch to prod**. A red hard suite blocks the build.
 | 2 | Server | `npm ci && npm run lint && npm run typecheck && npm test` (in `server/`) | `node:22-slim` container | Lint (incl. no-restricted-imports guardrails) clean, no TS errors, all vitest tests pass |
 | 3 | DB migrations | `python -m pytest db/tests --ignore=db/tests/test_discriminator_coverage.py -q` | `python:3.12` + Docker socket (`--network host`) | testcontainers spins `postgres:16-alpine`; all migration up/down + real-migration tests pass. (Discriminator/enum-coverage runs in the ingest phase — it needs generated ingest output.) |
 | 4 | Kiwi service | `python -m pytest --no-slow -q` (in `services/kiwi/`) | `python:3.12` container | API + lemmatizer tests pass against the fake Kiwi engine (no model download) |
-| 5 | Secret scan | grep for `ANTHROPIC_API_KEY=sk-` / `SUPABASE_SERVICE_KEY=eyJ` in source | host | No API-key literals committed in source (HARD fail if found) |
+| 5 | Ingest tooling | `python -m pytest tests topik_audio/tests -q --ignore=tests/test_resolve_cross_references_integration.py` (in `tools/ingest/`) | `python:3.12` + Docker socket | Corpus-loader tests + the TOPIK listening-audio pipeline (`topik_audio/tests`) pass; `pdftoppm`/`faster-whisper`/Vision are faked, so no real binaries/models are needed. testcontainers spins `postgres:16-alpine`. |
+| 6 | Audio STT worker | `python -m pytest tools/audio_stt/tests -q` (repo root) | `python:3.12` + Docker socket | The live km-worker's suite: pure mapping/blobstore/config tests + DB-backed worker-loop tests. `faster-whisper` is always faked (no ML/GPU deps); testcontainers spins Postgres for the DB-backed tests. |
+| 7 | Secret scan | grep for `ANTHROPIC_API_KEY=sk-` / `SUPABASE_SERVICE_KEY=eyJ` in source | host | No API-key literals committed in source (HARD fail if found) |
 
-**Hard gates:** 1–5 must all pass. A failure exits non-zero and blocks deploy.
+**Hard gates:** 1–7 must all pass. A failure exits non-zero and blocks deploy.
 
 ## Soft gates (reported, non-blocking — mirror CI's `|| true`)
 
@@ -39,10 +41,12 @@ validate → switch to prod**. A red hard suite blocks the build.
 
 ## Not run by this gate (run elsewhere, by design)
 
-- **`tools/ingest/tests/`** — these are DB-loader tests that exercise the corpus
-  ingest against a real Postgres. They run during the **ingest phase** against
-  `km-db` (`Deploy/load-corpora.sh` / `load-krdict.sh` context), not in the
-  pre-build gate. CI likewise runs only ruff + pip-audit on `tools/ingest`.
+- **`tools/ingest/tests/` + `tools/ingest/topik_audio/tests/`** — DB-loader and
+  TOPIK-audio-pipeline tests. These now RUN in CI as gate #5 (the
+  `ingest-checks` job runs `python -m pytest tests topik_audio/tests`, spinning
+  their own Postgres via testcontainers) — they are no longer ingest-phase-only.
+  One file stays excluded (`test_resolve_cross_references_integration.py`, a
+  test-isolation flake tracked as `FOLLOW_UPS.md` F-UP-003).
 - **Kiwi `slow` tests** — the real-Kiwi (100 MB model) integration tests. Run
   with `pytest --require-kiwi` inside the built `km-kiwi` image if needed.
 - **Post-build smoke** — `docker run` + `curl /health` on the built `km-server`
