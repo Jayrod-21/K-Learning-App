@@ -2311,6 +2311,21 @@ export interface ResendVerificationResponse {
   status: 'ok';
 }
 
+/** `POST /auth/password-reset/request` envelope (Phase 2.1) — deliberately a
+ *  fixed generic shape in EVERY case, whether or not the email exists
+ *  (anti-enumeration; see the server route). */
+export interface PasswordResetRequestResponse {
+  status: 'ok';
+  message: string;
+}
+
+/** `POST /auth/password-reset/confirm` success envelope (Phase 2.1). No
+ *  session is minted here — a reset revokes every existing session, and the
+ *  caller proves the new password by signing in. */
+export interface PasswordResetConfirmResponse {
+  status: 'reset';
+}
+
 /** `register()` outcome the Login screen branches on. */
 export type RegisterOutcome =
   | 'authenticated'

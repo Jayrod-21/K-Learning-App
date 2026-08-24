@@ -119,6 +119,11 @@ const PUBLIC_ROUTES = new Set<string>([
   'POST /auth/verify', // email verification, authenticated by the emailed token
   'POST /auth/verify/resend', // request a fresh verification email
   'POST /auth/logout', // idempotent success even without a live session (F-201)
+  // Account recovery (Phase 2.1) — pre-auth by design: a locked-out user has
+  // no session. `request` is non-enumerating (always 200); `confirm` is
+  // authenticated by the emailed reset token in the body, not a cookie.
+  'POST /auth/password-reset/request',
+  'POST /auth/password-reset/confirm',
   //
   // NOTE: /auth/mfa/enroll and /auth/mfa/confirm are deliberately NOT listed
   // here, even though they support a challenge-token path that bypasses the

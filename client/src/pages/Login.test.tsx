@@ -37,10 +37,14 @@ vi.mock('../lib/qr', () => ({
 
 // F-006: the ResendVerificationButton (used by the check-email + unverified
 // notice steps) calls services/auth.resendVerification directly. Stub it so
-// the resend flow is assertable without a network layer.
+// the resend flow is assertable without a network layer. Phase 2.1: the
+// forgot-password step calls services/auth.requestPasswordReset directly,
+// same pattern.
 const resendMock = vi.hoisted(() => vi.fn(async () => undefined));
+const requestPasswordResetMock = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('../services/auth', () => ({
   resendVerification: resendMock,
+  requestPasswordReset: requestPasswordResetMock,
 }));
 
 import Login from './Login';
@@ -253,6 +257,76 @@ describe('Login — F-006 email_unverified login', () => {
     await waitFor(() => {
       expect(resendMock).toHaveBeenCalledWith('unverified@example.com');
     });
+  });
+});
+
+// ─── Phase 2.1: forgot-password request step ───────────────────
+
+describe('Login — Phase 2.1 forgot password', () => {
+  it('the sign-in step offers "Forgot password?" but the register step does not', async () => {
+    render(<Login />);
+    expect(
+      screen.getByRole('button', { name: 'Forgot password?' }),
+    ).toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /Create one/ }));
+    expect(
+      screen.queryByRole('button', { name: 'Forgot password?' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('clicking "Forgot password?" swaps in the request step and submits the email', async () => {
+    render(<Login />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Forgot password?' }));
+
+    expect(
+      await screen.findByRole('heading', { level: 1, name: /Reset your password/ }),
+    ).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText('Email'), 'Locked@Example.com');
+    await user.click(screen.getByRole('button', { name: 'Send reset link' }));
+
+    await waitFor(() => {
+      expect(requestPasswordResetMock).toHaveBeenCalledWith('locked@example.com');
+    });
+    // Non-enumerating success copy — never "email sent to your account".
+    expect(
+      await screen.findByText(/If an account exists for locked@example.com/),
+    ).toBeInTheDocument();
+  });
+
+  it('"Back to sign in" returns to the credentials step', async () => {
+    render(<Login />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Forgot password?' }));
+    await screen.findByRole('heading', { level: 1, name: /Reset your password/ });
+
+    await user.click(screen.getByRole('button', { name: 'Back to sign in' }));
+    expect(
+      await screen.findByRole('heading', { level: 1, name: /Welcome/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('a 429 disables the form for the server retry_after window (fixed copy, no server text)', async () => {
+    requestPasswordResetMock.mockRejectedValueOnce(
+      new ApiError('rate limited', { status: 429, code: 'rate_limited', retryAfter: 30 }),
+    );
+    render(<Login />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Forgot password?' }));
+    await screen.findByRole('heading', { level: 1, name: /Reset your password/ });
+
+    await user.type(screen.getByLabelText('Email'), 'ratelimited@example.com');
+    await user.click(screen.getByRole('button', { name: 'Send reset link' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/Too many attempts/);
+    expect(alert).not.toHaveTextContent('rate limited');
+    expect(
+      screen.getByRole('button', { name: /Retry in 30s/ }),
+    ).toBeDisabled();
   });
 });
 
