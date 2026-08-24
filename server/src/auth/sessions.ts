@@ -77,7 +77,7 @@ export async function issueSession(
  */
 export async function getActiveSession(rawToken: string): Promise<{
   session: SessionRecord;
-  user: { id: number; email: string };
+  user: { id: number; email: string; role: 'user' | 'admin' };
 } | null> {
   if (!rawToken) return null;
   // Reject obviously malformed token shapes BEFORE we hit the DB. base64url
@@ -94,10 +94,11 @@ export async function getActiveSession(rawToken: string): Promise<{
     last_seen_at: Date;
     revoked_at: Date | null;
     email: string;
+    role: 'user' | 'admin';
     deleted_at: Date | null;
   }>(
     `SELECT s.id, s.user_id, s.expires_at, s.last_seen_at, s.revoked_at,
-            u.email::text AS email, u.deleted_at
+            u.email::text AS email, u.role::text AS role, u.deleted_at
        FROM sessions s
        JOIN users u ON u.id = s.user_id
       WHERE s.token_hash = $1
@@ -142,7 +143,7 @@ export async function getActiveSession(rawToken: string): Promise<{
       last_seen_at: row.last_seen_at,
       revoked_at: row.revoked_at,
     },
-    user: { id: userId, email: row.email },
+    user: { id: userId, email: row.email, role: row.role },
   };
 }
 

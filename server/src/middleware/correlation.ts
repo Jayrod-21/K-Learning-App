@@ -37,8 +37,11 @@ declare global {
     interface Request {
       correlationId: string;
       log: Logger;
-      // Populated by requireAuth — undefined on public routes.
-      user?: { id: number; email: string };
+      // Populated by requireAuth — undefined on public routes. `role` comes
+      // from the server-side session projection (auth/sessions.ts
+      // getActiveSession) ONLY — never trust a client-supplied role claim
+      // (header/body/query). requireAdmin (middleware/auth.ts) gates on it.
+      user?: { id: number; email: string; role: 'user' | 'admin' };
       session?: { id: number; user_id: number };
     }
   }
