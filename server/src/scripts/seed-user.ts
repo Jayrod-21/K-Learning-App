@@ -18,14 +18,33 @@
  *                        transport (F-006); with no SMTP configured, the mock
  *                        transport logs the verify URL to the console, which
  *                        the operator can open directly.
+ *   SEED_USER_ROLE      — 'user' or 'admin' (Phase 2.2 admin-role foundation).
+ *                        Default: 'user'. Any other value is a hard failure
+ *                        (fails loud, per the security stance below) rather
+ *                        than silently seeding some unrecognized role.
  *
- * Idempotent: ON CONFLICT (email) DO NOTHING. Re-running reports "exists" and
- * does NOT rotate the password (use a dedicated password-reset path for that).
+ * Idempotent: ON CONFLICT (email) DO NOTHING — EXCEPT for role. A re-run with
+ * SEED_USER_ROLE=admin against an ALREADY-EXISTING account upgrades that
+ * account's role to admin (ON CONFLICT ... DO UPDATE SET role = ... WHEN the
+ * requested role is 'admin', a strict superset of the prior no-op). This is
+ * the deliberate, documented choice over the alternative (report "exists,
+ * role unchanged" and leave a would-be admin as a plain user): silently
+ * leaving SEED_USER_ROLE=admin without effect is the more dangerous failure
+ * mode for an operator running seed-admin.sh who reasonably expects "pass
+ * admin, get admin" to hold on every run, idempotent or not. A run with
+ * SEED_USER_ROLE=user (the default) NEVER downgrades an existing admin back
+ * to user — that would be its own kind of surprising, destructive side
+ * effect for a script whose header advertises pure idempotence; demoting an
+ * admin is a deliberate separate action, not a seed-script side effect.
+ * The password is NEVER rotated on conflict either way (use a dedicated
+ * password-reset path for that).
  *
  * Security:
- *   - Never logs the password (only the email + a created/exists verdict).
- *   - Fails loud (non-zero exit) on missing/short inputs rather than seeding a
- *     weak or partial account.
+ *   - Never logs the password (only the email + a created/exists/upgraded
+ *     verdict).
+ *   - Fails loud (non-zero exit) on missing/short inputs, or an unrecognized
+ *     SEED_USER_ROLE, rather than seeding a weak, partial, or ambiguously-
+ *     privileged account.
  *   - Uses the same Argon2id hasher as /auth/register (no bespoke crypto).
  *   - The verification token is issued by the same hashed-at-rest machinery
  *     as /auth/register (auth/emailVerification.ts); the raw token is never
@@ -37,14 +56,29 @@ import { query, closePool } from '../db/pool.js';
 import { getLogger } from '../logging.js';
 
 const MIN_PASSWORD_LEN = 12;
+const VALID_ROLES = ['user', 'admin'] as const;
+type SeedRole = (typeof VALID_ROLES)[number];
 
-async function main(): Promise<void> {
+export function parseRole(raw: string | undefined): SeedRole {
+  const value = (raw ?? 'user').trim().toLowerCase();
+  if ((VALID_ROLES as readonly string[]).includes(value)) {
+    return value as SeedRole;
+  }
+  throw new Error(
+    `SEED_USER_ROLE must be one of ${VALID_ROLES.join('/')} (got: ${JSON.stringify(raw)})`,
+  );
+}
+
+/** Exported for direct-call testing (tests/scripts/seed-user.test.ts) — not
+ * invoked as a CLI import side effect (guarded below by require.main). */
+export async function main(): Promise<void> {
   const log = getLogger();
   const email = process.env.SEED_USER_EMAIL?.trim().toLowerCase();
   const password = process.env.SEED_USER_PASSWORD;
   const displayName = process.env.SEED_USER_DISPLAY_NAME?.trim() || null;
   const markVerified =
     (process.env.SEED_USER_MARK_VERIFIED ?? '').trim().toLowerCase() === 'true';
+  const role = parseRole(process.env.SEED_USER_ROLE);
 
   if (!email) {
     throw new Error('SEED_USER_EMAIL is required');
@@ -57,19 +91,34 @@ async function main(): Promise<void> {
   }
 
   const passwordHash = await hashPassword(password);
-  const { rows } = await query<{ id: number }>(
-    `INSERT INTO users (email, password_hash, display_name, email_verified_at)
-     VALUES ($1, $2, $3, CASE WHEN $4 THEN now() ELSE NULL END)
-     ON CONFLICT (email) DO NOTHING
-     RETURNING id`,
-    [email, passwordHash, displayName, markVerified],
+  // ON CONFLICT upgrades role to 'admin' when requested (see header) but
+  // never downgrades an existing admin when role='user' is the (default)
+  // request — GREATEST over the enum's implicit ordering ('user' < 'admin')
+  // would work too, but an explicit CASE keeps the intent readable at the
+  // SQL site rather than resting on ENUM declaration order.
+  const { rows } = await query<{ id: number; role: SeedRole; xmax: string }>(
+    `INSERT INTO users (email, password_hash, display_name, email_verified_at, role)
+     VALUES ($1, $2, $3, CASE WHEN $4 THEN now() ELSE NULL END, $5::user_role)
+     ON CONFLICT (email) DO UPDATE
+       SET role = CASE WHEN $5::user_role = 'admin' THEN 'admin'::user_role ELSE users.role END
+     RETURNING id, role::text AS role, xmax::text AS xmax`,
+    [email, passwordHash, displayName, markVerified, role],
   );
 
-  if (rows[0]) {
-    const userId = Number(rows[0].id);
-    log.info({ userId, email }, 'seed-user: account created');
+  const row = rows[0];
+  if (!row) throw new Error('seed-user: insert/upsert returned no rows');
+  const userId = Number(row.id);
+  // xmax = '0' on a fresh INSERT; a nonzero xmax means the ON CONFLICT DO
+  // UPDATE branch fired (row already existed) — the standard Postgres tell
+  // for "which arm of an upsert actually ran" without a second round-trip.
+  const wasInsert = row.xmax === '0';
+
+  if (wasInsert) {
+    log.info({ userId, email, role: row.role }, 'seed-user: account created');
     // eslint-disable-next-line no-console
-    console.error(`seed-user: created account for ${email} (id=${String(userId)})`);
+    console.error(
+      `seed-user: created account for ${email} (id=${String(userId)}, role=${row.role})`,
+    );
     if (markVerified) {
       // eslint-disable-next-line no-console
       console.error('seed-user: email pre-verified (SEED_USER_MARK_VERIFIED=true) — no email sent');
@@ -94,9 +143,13 @@ async function main(): Promise<void> {
       }
     }
   } else {
-    log.info({ email }, 'seed-user: account already exists (no-op)');
+    log.info({ userId, email, role: row.role }, 'seed-user: account already exists');
     // eslint-disable-next-line no-console
-    console.error(`seed-user: account for ${email} already exists — no changes`);
+    console.error(
+      role === 'admin'
+        ? `seed-user: account for ${email} already exists — role upgraded to admin (password unchanged)`
+        : `seed-user: account for ${email} already exists — no changes (role=${row.role})`,
+    );
   }
 }
 

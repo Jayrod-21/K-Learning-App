@@ -8,7 +8,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import { loadConfig } from '../config/index.js';
 import { getActiveSession } from '../auth/sessions.js';
-import { UnauthorizedError } from './errors.js';
+import { ForbiddenError, UnauthorizedError } from './errors.js';
 
 export async function requireAuth(
   req: Request,
@@ -34,6 +34,39 @@ export async function requireAuth(
   } catch (err) {
     next(err);
   }
+}
+
+/**
+ * requireAdmin middleware (Phase 2.2 — admin-role foundation).
+ *
+ * MUST be composed AFTER requireAuth in a route's middleware chain (e.g.
+ * `[requireAuth, requireAdmin]`) so `req.user` is already populated. It never
+ * assumes that ordering was respected, though: if `req.user` is missing it
+ * treats the request as unauthenticated (401), the same defense-in-depth
+ * posture `getUserId` takes below — a route mounted without requireAuth
+ * fails safe at the boundary instead of leaking past an admin gate.
+ *
+ * SECURITY INVARIANT: role comes ONLY from `req.user.role`, which is the
+ * server-side session projection populated by requireAuth from
+ * `getActiveSession` (auth/sessions.ts, itself sourced from `users.role` in
+ * Postgres). This middleware never reads a role from client input — no
+ * header, body, or query param is ever consulted — so a client cannot
+ * self-escalate by sending e.g. `X-Role: admin` or `{ role: 'admin' }`.
+ */
+export function requireAdmin(
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+): void {
+  if (!req.user) {
+    next(new UnauthorizedError('authentication required'));
+    return;
+  }
+  if (req.user.role !== 'admin') {
+    next(new ForbiddenError('admin privileges required'));
+    return;
+  }
+  next();
 }
 
 /**
