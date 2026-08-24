@@ -106,6 +106,7 @@ import {
   issueAndSendPasswordResetEmail,
   type ConsumeResetOutcome,
 } from '../auth/passwordReset.js';
+import { consumeInviteCode, validateInviteCode } from '../auth/inviteCodes.js';
 import {
   bumpChallengeAttempts,
   consumeChallenge,
@@ -127,6 +128,22 @@ class ChallengeAlreadyConsumed extends Error {
   constructor() {
     super('challenge already consumed');
     this.name = 'ChallengeAlreadyConsumed';
+  }
+}
+
+/**
+ * Internal sentinel: thrown inside the register transaction when the
+ * AUTHORITATIVE invite-code consume (Phase 2.3) fails — either the cheap
+ * pre-check above went stale (a racing redemption exhausted/revoked the code
+ * between the two calls) or, defensively, the pre-check was somehow skipped.
+ * Rolls the surrounding `withTransaction` back (nothing to undo yet at that
+ * point — the users INSERT hasn't run) and is caught locally to respond
+ * `invite_invalid`. Never escapes the route handler.
+ */
+class InviteInvalidError extends Error {
+  constructor() {
+    super('invite code invalid at consume');
+    this.name = 'InviteInvalidError';
   }
 }
 
@@ -341,6 +358,13 @@ const RegisterSchema = z.object({
   email: z.string().email().regex(EMAIL_REGEX).max(254),
   password: z.string().min(PASSWORD_MIN).max(PASSWORD_MAX),
   display_name: z.string().min(1).max(80).optional(),
+  // Phase 2.3 (D1 invite-only self-signup): only consulted when
+  // cfg.INVITE_REQUIRED is true (see the handler below) — with the gate off
+  // this field is accepted but silently ignored, never consumed. Bounded to
+  // 200 chars (a raw code is ~43 chars; the ceiling is generous headroom,
+  // not a meaningful format constraint — the real shape gate lives in
+  // auth/inviteCodes.ts).
+  invite_code: z.string().min(1).max(200).optional(),
 });
 
 const LoginSchema = z.object({
@@ -366,28 +390,94 @@ router.post(
         return;
       }
       const body = req.body as z.infer<typeof RegisterSchema>;
+      const email = body.email.toLowerCase();
+
+      // Phase 2.3 invite gate (D1), orthogonal to REGISTRATION_ENABLED above:
+      // that flag is open/closed; this one additionally requires a valid,
+      // unconsumed invite code once registration IS open. Runs BEFORE the
+      // Argon2 hash below (like the REGISTRATION_ENABLED gate) so a missing
+      // or bad code costs nothing. When INVITE_REQUIRED is false, any
+      // provided code is simply never looked at — registration stays open.
+      if (cfg.INVITE_REQUIRED) {
+        if (!body.invite_code) {
+          sendError(res, 403, 'invite_required', 'an invite code is required to register');
+          return;
+        }
+        // Cheap non-consuming pre-check (auth/inviteCodes.ts): a bad code is
+        // rejected before spending Argon2 CPU. This is NOT the authoritative
+        // gate — it can go stale between here and the atomic consume below
+        // (e.g. a racing redemption exhausting the code) — see
+        // validateInviteCode's docstring. ONE non-enumerating code
+        // (`invite_invalid`) for every rejection reason: not-found, expired,
+        // revoked, exhausted, and email-mismatch are all indistinguishable
+        // to the caller.
+        const check = await validateInviteCode(body.invite_code, email);
+        if (!check.ok) {
+          sendError(res, 403, 'invite_invalid', 'invalid or expired invite code');
+          return;
+        }
+      }
+
       const passwordHash = await hashPassword(body.password);
       let userId: number;
       try {
-        const { rows } = await query<{ id: number }>(
-          `INSERT INTO users (email, password_hash, display_name)
-           VALUES ($1, $2, $3)
-           RETURNING id`,
-          [body.email.toLowerCase(), passwordHash, body.display_name ?? null],
-        );
-        const r = rows[0];
-        if (!r) throw new Error('register insert returned no rows');
-        // id arrives as a safe-integer number via the int8 parser (db/pool.ts).
-        userId = r.id;
+        userId = await withTransaction(async (client) => {
+          const tx = clientQuerier(client);
+          // AUTHORITATIVE atomic consume, run in the SAME transaction as the
+          // users INSERT immediately below — this is the load-bearing
+          // correctness property of the whole feature (see
+          // auth/inviteCodes.ts's consumeInviteCode docstring): if the
+          // INSERT subsequently fails (most commonly 23505 on a duplicate
+          // email, caught below), this whole transaction rolls back and the
+          // consume's `uses` increment rolls back WITH it — a failed
+          // registration attempt can never burn a single-use code. The
+          // invite_redemptions audit row is written after the INSERT (it
+          // needs the new user_id), still inside this same transaction.
+          let inviteCodeId: number | null = null;
+          if (cfg.INVITE_REQUIRED) {
+            // body.invite_code is guaranteed present — the gate above
+            // returned 403 otherwise.
+            const consumed = await consumeInviteCode(body.invite_code as string, email, tx);
+            if (!consumed.ok) throw new InviteInvalidError();
+            inviteCodeId = consumed.id;
+          }
+
+          const { rows } = await tx<{ id: number }>(
+            `INSERT INTO users (email, password_hash, display_name)
+             VALUES ($1, $2, $3)
+             RETURNING id`,
+            [email, passwordHash, body.display_name ?? null],
+          );
+          const r = rows[0];
+          if (!r) throw new Error('register insert returned no rows');
+          // id arrives as a safe-integer number via the int8 parser (db/pool.ts).
+          const newUserId = r.id;
+
+          if (inviteCodeId !== null) {
+            await tx(
+              `INSERT INTO invite_redemptions (invite_code_id, user_id) VALUES ($1, $2)`,
+              [inviteCodeId, newUserId],
+            );
+          }
+          return newUserId;
+        });
       } catch (err) {
+        if (err instanceof InviteInvalidError) {
+          // The authoritative consume lost the race the cheap pre-check
+          // couldn't see (or, defensively, the pre-check was bypassed). Same
+          // non-enumerating code as the pre-check rejection above.
+          sendError(res, 403, 'invite_invalid', 'invalid or expired invite code');
+          return;
+        }
         // 23505 = unique_violation. Surface a deliberately vague conflict;
-        // do NOT leak which field collided.
+        // do NOT leak which field collided. The transaction above already
+        // rolled back — including the invite consume, per the atomicity
+        // note above — so this failed attempt did NOT burn the code.
         if ((err as { code?: string }).code === '23505') {
           throw new ConflictError('account already exists');
         }
         throw err;
       }
-      const email = body.email.toLowerCase();
 
       // F-006: issue the verification token + send the email. BEST-EFFORT —
       // a mail outage must never fail the registration (the account exists;

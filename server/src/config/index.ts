@@ -411,6 +411,24 @@ const EnvSchema = z.object({
   EMAIL_VERIFICATION_RESEND_COOLDOWN_SEC: z.coerce.number().int().positive().default(60),
 
   // ---------------------------------------------------------------------------
+  // Invite codes (Phase 2.3 — invite-only self-signup, D1). See
+  // server/src/auth/inviteCodes.ts for the token lifecycle + threat model.
+  // ---------------------------------------------------------------------------
+  // Orthogonal to REGISTRATION_ENABLED: that flag is open/closed (is
+  // self-signup reachable at all); this flag is "does reaching it require a
+  // valid invite code". Both can be toggled independently — e.g.
+  // REGISTRATION_ENABLED=true + INVITE_REQUIRED=true is the intended D1
+  // production posture (self-signup exists, but only for invite holders),
+  // while REGISTRATION_ENABLED=false makes INVITE_REQUIRED moot (nobody
+  // reaches the register route at all). Default FALSE so existing dev/test
+  // register flows (which don't provision an invite code) keep working
+  // unchanged; the prod compose flips this true alongside
+  // REGISTRATION_ENABLED=true. Strict envBool — same landmine as
+  // REGISTRATION_ENABLED (z.coerce.boolean() would silently parse the
+  // string "false" as true).
+  INVITE_REQUIRED: envBool(false),
+
+  // ---------------------------------------------------------------------------
   // Mail transport (F-006) — provider-agnostic SMTP, NEVER a hardcoded vendor.
   // Unset SMTP_HOST ⇒ the mock/log transport (dev + tests): the message is
   // logged (including the verification URL — the dev escape hatch) and nothing

@@ -162,6 +162,13 @@ function CredentialsStep({
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
+  // Phase 2.3 (D1 invite-only self-signup): always collected in register
+  // mode — whether it's actually REQUIRED is a server-side posture
+  // (INVITE_REQUIRED) this screen has no way to know in advance, and an
+  // open deployment simply ignores an empty/omitted value (see
+  // AuthProvider.register). Kept simple per the brief: no client-side
+  // enablement probe, no conditional rendering — the server enforces.
+  const [inviteCode, setInviteCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   // F-006: set when a login is rejected with the typed `email_unverified`
   // code — renders the unverified notice + resend affordance instead of a
@@ -177,6 +184,7 @@ function CredentialsStep({
   const emailId = useId();
   const passwordId = useId();
   const nameId = useId();
+  const inviteCodeId = useId();
   const errorId = useId();
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>): Promise<void> {
@@ -192,6 +200,7 @@ function CredentialsStep({
           email.trim(),
           password,
           displayName.trim() || undefined,
+          inviteCode.trim() || undefined,
         );
         if (outcome === 'verification_required') {
           // F-006: account created, no session — advance to "check your
@@ -270,6 +279,25 @@ function CredentialsStep({
                 setDisplayName(e.target.value);
               }}
               maxLength={80}
+            />
+          </div>
+        ) : null}
+
+        {mode === 'register' ? (
+          <div className="km-field">
+            <label htmlFor={inviteCodeId} className="km-field__label">
+              Invite code
+            </label>
+            <input
+              id={inviteCodeId}
+              className="km-field__input"
+              type="text"
+              autoComplete="off"
+              value={inviteCode}
+              onChange={(e) => {
+                setInviteCode(e.target.value);
+              }}
+              maxLength={200}
             />
           </div>
         ) : null}
@@ -930,6 +958,16 @@ function messageFor(err: unknown, mode: Mode): string {
   if (err.status === 401) return 'Email or password is incorrect.';
   if (err.status === 403 && err.code === 'registration_closed') {
     return 'Registration is closed.';
+  }
+  // Phase 2.3 (D1 invite-only self-signup): ONE non-enumerating message for
+  // `invite_invalid` — never distinguish not-found/expired/revoked/
+  // exhausted/email-mismatch here either (see routes/auth.ts's register
+  // handler for why the server itself already collapses those).
+  if (err.status === 403 && err.code === 'invite_required') {
+    return 'An invite code is required to register.';
+  }
+  if (err.status === 403 && err.code === 'invite_invalid') {
+    return 'That invite code is invalid or expired.';
   }
   if (err.status === 409 && mode === 'register') {
     return 'An account with these details already exists.';

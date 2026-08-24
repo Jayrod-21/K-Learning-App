@@ -56,6 +56,12 @@ export interface BuildOptions {
    * mock (SMTP_HOST is cleared in buildTestApp), so NO test touches real SMTP.
    */
   emailVerificationRequired?: boolean;
+  /**
+   * Phase 2.3 invite-only self-signup (D1) gate. Defaults FALSE — mirrors
+   * production's default and keeps every pre-existing suite (which registers
+   * with no invite code) working unchanged; the invite suites opt in.
+   */
+  inviteRequired?: boolean;
 }
 
 /**
@@ -430,6 +436,7 @@ export function buildTestApp(opts: BuildOptions): TestApp {
     MFA_REQUIRED: opts.mfaRequired ?? true,
     REGISTRATION_ENABLED: opts.registrationEnabled ?? true,
     EMAIL_VERIFICATION_REQUIRED: opts.emailVerificationRequired ?? true,
+    INVITE_REQUIRED: opts.inviteRequired ?? false,
   });
 
   // Capture the pool currently installed as the global so teardown can restore
