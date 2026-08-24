@@ -38,7 +38,7 @@ import { randomUUID } from 'node:crypto';
 import type { Logger } from 'pino';
 import { isRunnerActiveColor, loadConfig } from '../config/index.js';
 import { query, withTransaction } from '../db/pool.js';
-import { AppError } from '../middleware/errors.js';
+import { AppError, SpendCeilingExceededError } from '../middleware/errors.js';
 import { getClaudeProxy } from './claudeProxy.js';
 import {
   getImageGenProvider,
@@ -46,6 +46,7 @@ import {
   ImageGenUpstreamError,
 } from './imageGen.js';
 import { deleteBlob, extForMime, saveBlob } from './imageStore.js';
+import { assertUnderSpendCeiling } from './spendCeiling.js';
 import { parseStoryTurns } from './storyAudio.js';
 
 /** 503 for a keyless deploy (story illustrations dormant — no
@@ -222,6 +223,31 @@ export async function runStoryImageTick(log: Logger): Promise<StoryImageTickResu
   const sceneCount = Math.min(4, Math.max(2, claimed.imageCount));
   log.info({ jobId, storyId, sceneCount }, 'storyImage: job claimed');
 
+  // Phase 2.6 global spend ceiling — checked AFTER claim, BEFORE the OpenAI
+  // image spend below. The prompt-authoring Claude call (§3a) is already
+  // gated internally (it flows through runJsonRoute — services/claude/
+  // index.ts), but the ceiling is checked explicitly here too so a
+  // ceiling-reached job never even authors a (cached, $0-on-retry, but still
+  // work) prompt set before failing. The job is already 'running', so a
+  // refusal here settles it 'failed' rather than leave it stuck. Mirrors
+  // storyAudio.ts's identical placement/reasoning.
+  try {
+    await assertUnderSpendCeiling();
+  } catch (err) {
+    if (err instanceof SpendCeilingExceededError) {
+      log.warn(
+        { jobId, storyId },
+        'storyImage: spend ceiling reached — refusing to generate',
+      );
+      await settleFailed(
+        jobId,
+        'spend_ceiling_reached: daily generation budget reached — try again later',
+      );
+      return 'failed';
+    }
+    throw err;
+  }
+
   // 3. Prompt set + per-scene generation + blobs (minutes-long external
   //    calls; no tx held). ALL-OR-NOTHING: a failure ANYWHERE in here fails
   //    the job and unlinks every blob written so far — a story never ends up
@@ -310,11 +336,20 @@ export async function runStoryImageTick(log: Logger): Promise<StoryImageTickResu
           sceneRows.map((s) => s.height),
         ],
       );
+      // cost_estimate_usd (Phase 2.6): the OpenAI image spend ONLY —
+      // sceneRows.length images were ACTUALLY generated above (the model can
+      // return a different, schema-legal 2-4 count than requested; the
+      // ledger's `image_count` column stays the enqueue snapshot per
+      // 069/081's stance, so cost is computed from the real count, not that
+      // column). The prompt-authoring Claude spend is recorded separately in
+      // claude_usage by the proxy — deliberately NOT added here (see the
+      // migration 096 header's no-double-count note).
+      const costEstimateUsd = sceneRows.length * cfg.OPENAI_IMAGE_USD_PER_IMAGE;
       const settled = await client.query(
         `UPDATE story_image_jobs
-            SET status = 'done', finished_at = now()
+            SET status = 'done', finished_at = now(), cost_estimate_usd = $2
           WHERE id = $1 AND status = 'running'`,
-        [jobId],
+        [jobId, costEstimateUsd],
       );
       if (settled.rowCount === 0) {
         throw new Error('storyImage: job was reaped mid-run — discarding generated images');

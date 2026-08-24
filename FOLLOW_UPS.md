@@ -470,3 +470,22 @@ shared component, if the viewer's surface is ever vertically scrollable under
 `touch-action: pan-y`. Fix = port the 'h'-locked cancel-commit (settle off the
 stored last-move delta), or better, dedupe the page onto the shared
 `SwipeCarousel`.
+
+## B-047 · Spend-ceiling cache hardening — two efficiency notes (from Phase 2.6 /fixpass, 2026-08-23, P3)
+
+From the 2.6 (global spend ceiling) independent review. Both are design-acknowledged
+scaling notes, NOT correctness or security defects — filed rather than gated on:
+
+1. `server/src/services/spendCeiling.ts` — the module-level memoized total is a bare
+   mutable global with no in-flight dedupe. On a cache-miss window (TTL just expired,
+   N concurrent requests) each request independently runs its own `getGlobalSpendUsdSince`
+   before any writes `_cache` — a redundant (but cheap + correct) 3-SUM fan-out. Only
+   matters on a busy sync Claude hot path, especially with `SPEND_CEILING_CACHE_TTL_MS=0`
+   (every request pays 3 SUMs). Fix if hot-path cost ever bites: an in-flight-promise
+   dedupe (single shared recompute), or just a code comment marking the fan-out accepted.
+2. `getSpendCeilingStatus()` (the `GET /admin/spend` readout) is uncached BY DESIGN
+   (brief: "operator must see real numbers"). If ever polled by a monitoring dashboard
+   at a tight interval, each poll is 3 live SUM queries. Bounded today by `cheapLimiter`
+   (120/min per IP). Scaling note only.
+
+Non-issue at invite-only single-digit-user scale; revisit if/when concurrency grows.

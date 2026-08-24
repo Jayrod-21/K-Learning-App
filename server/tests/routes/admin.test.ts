@@ -18,10 +18,12 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
+import { randomUUID } from 'node:crypto';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
 import { registerUser } from '../helpers/seed.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
+import { _setConfigForTesting } from '../../src/config/index.js';
 
 let pg: PgHandle;
 let t: TestApp;
@@ -45,6 +47,43 @@ beforeEach(async () => {
 
 async function promoteToAdmin(userId: number): Promise<void> {
   await pg.pool.query(`UPDATE users SET role = 'admin' WHERE id = $1`, [userId]);
+}
+
+// ---- Phase 2.6 spend-ceiling seed helpers ----------------------------------
+
+async function seedStory(userId: number): Promise<number> {
+  const { rows } = await pg.pool.query<{ id: number }>(
+    `INSERT INTO generated_stories (user_id, title, body_ko, level)
+     VALUES ($1, 'T', '본문', 'basic') RETURNING id`,
+    [userId],
+  );
+  return rows[0]!.id;
+}
+
+async function seedClaudeUsage(cost: number): Promise<void> {
+  await pg.pool.query(
+    `INSERT INTO claude_usage (request_id, route, model, cost_estimate_usd, latency_ms)
+     VALUES ($1, 'enrich'::claude_route, 'claude-haiku-4-5'::claude_model, $2, 5)`,
+    [randomUUID(), cost],
+  );
+}
+
+async function seedDoneAudioJob(userId: number, storyId: number, cost: number): Promise<void> {
+  await pg.pool.query(
+    `INSERT INTO story_audio_jobs
+        (generated_story_id, user_id, status, char_count, cost_estimate_usd, finished_at)
+     VALUES ($1, $2, 'done', 100, $3, now())`,
+    [storyId, userId, cost],
+  );
+}
+
+async function seedDoneImageJob(userId: number, storyId: number, cost: number): Promise<void> {
+  await pg.pool.query(
+    `INSERT INTO story_image_jobs
+        (generated_story_id, user_id, status, image_count, cost_estimate_usd, finished_at)
+     VALUES ($1, $2, 'done', 3, $3, now())`,
+    [storyId, userId, cost],
+  );
 }
 
 describe('GET /admin/users — auth required', () => {
@@ -117,5 +156,61 @@ describe('GET /admin/users — admin required', () => {
     await pg.pool.query(`UPDATE users SET role = 'user' WHERE id = $1`, [userId]);
     const second = await agent.get('/admin/users');
     expect(second.status).toBe(403);
+  });
+});
+
+describe('GET /admin/spend — auth required', () => {
+  it('no session -> 401', async () => {
+    const res = await request(t.app).get('/admin/spend');
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('unauthorized');
+  });
+});
+
+describe('GET /admin/spend — admin required', () => {
+  it('a non-admin (ordinary user) session -> 403', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/admin/spend');
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('forbidden');
+  });
+
+  it('an admin session sees the correct spend math over seeded rows, with no secret fields', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await promoteToAdmin(userId);
+    _setConfigForTesting({ SPEND_CEILING_DAILY_USD: 10 });
+
+    const storyId = await seedStory(userId);
+    await seedClaudeUsage(3);
+    await seedDoneAudioJob(userId, storyId, 2);
+    await seedDoneImageJob(userId, storyId, 1);
+
+    const res = await agent.get('/admin/spend');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      enabled: true,
+      ceiling_usd: 10,
+      window: 'utc_day',
+      spent_usd: { total: 6, claude: 3, tts: 2, images: 1 },
+      remaining_usd: 4,
+    });
+
+    // No secrets ride along — structural check over the whole payload
+    // (admin.test.ts's own convention for GET /admin/users, above).
+    const json = JSON.stringify(res.body);
+    expect(json).not.toContain('password_hash');
+    expect(json).not.toContain('$argon2id$');
+  });
+
+  it('reports enabled=false when the ceiling is unset (default 0), regardless of seeded spend', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await promoteToAdmin(userId);
+    _setConfigForTesting({ SPEND_CEILING_DAILY_USD: 0 });
+    await seedClaudeUsage(50);
+
+    const res = await agent.get('/admin/spend');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ enabled: false, ceiling_usd: 0, remaining_usd: 0 });
+    expect(res.body.spent_usd.claude).toBe(50);
   });
 });

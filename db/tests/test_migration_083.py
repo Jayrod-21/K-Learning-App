@@ -87,6 +87,7 @@ EXPECTED_JOB_COLUMNS = {
     "user_id",
     "status",
     "image_count",
+    "cost_estimate_usd",
     "error",
     "started_at",
     "finished_at",

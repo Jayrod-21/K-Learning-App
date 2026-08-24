@@ -3,6 +3,7 @@
  * foundation).
  *
  *   GET /admin/users → list users (SAFE fields only)
+ *   GET /admin/spend → global daily spend-ceiling status (Phase 2.6)
  *
  * SECURITY (this whole router is a privileged surface):
  *   - AuthZ: every route is gated `[requireAuth, requireAdmin]`
@@ -28,6 +29,7 @@ import { Router } from 'express';
 import { requireAdmin, requireAuth } from '../middleware/auth.js';
 import { cheapLimiter } from '../middleware/rateLimits.js';
 import { query } from '../db/pool.js';
+import { getSpendCeilingStatus } from '../services/spendCeiling.js';
 
 const router = Router();
 
@@ -57,6 +59,22 @@ router.get('/users', cheapLimiter(), requireAuth, requireAdmin, async (_req, res
       [USERS_LIST_LIMIT],
     );
     res.status(200).json({ users: rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /admin/spend — global (all-users) daily spend-ceiling status
+ * (Phase 2.6). Exact/uncached (getSpendCeilingStatus, unlike the
+ * memoized assertUnderSpendCeiling gate) — an operator checking this needs
+ * the real number, not a stale one. No secrets: dollar figures and the
+ * configured ceiling only, nothing about individual users' calls.
+ */
+router.get('/spend', cheapLimiter(), requireAuth, requireAdmin, async (_req, res, next) => {
+  try {
+    const status = await getSpendCeilingStatus();
+    res.status(200).json(status);
   } catch (err) {
     next(err);
   }

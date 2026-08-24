@@ -97,6 +97,26 @@ export class WritingGradeInProgressError extends AppError {
   }
 }
 
+/**
+ * The global daily spend ceiling (Phase 2.6 — server/src/services/
+ * spendCeiling.ts) has been reached: combined Claude + ElevenLabs TTS +
+ * OpenAI image spend for the current UTC day is at or over the operator-
+ * configured SPEND_CEILING_DAILY_USD. 503, not 429/403: this is a
+ * service-wide temporary condition (the WHOLE app is out of budget for the
+ * day, not this caller specifically) — 429 would misleadingly suggest a
+ * per-caller pace problem the caller could fix by slowing down, and 403
+ * would misleadingly suggest a permissions problem. The errorHandler's
+ * generic AppError branch maps this to {status, code, message} with no
+ * internal detail (no spend figures, no ceiling value) — those are
+ * operator-only, surfaced via GET /admin/spend, never on an error response.
+ */
+export class SpendCeilingExceededError extends AppError {
+  public constructor(message = 'daily generation budget reached — please try again later') {
+    super(503, 'spend_ceiling_reached', message);
+    this.name = 'SpendCeilingExceededError';
+  }
+}
+
 export class PayloadTooLargeError extends AppError {
   public constructor(message: string) {
     super(413, 'payload_too_large', message);

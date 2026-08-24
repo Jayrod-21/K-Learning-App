@@ -131,7 +131,6 @@ import {
   computeCostUsd,
   type UsageStore,
 } from './usage';
-
 // Re-export the types B3 needs.
 export type {
   CallMetadata,
@@ -232,6 +231,20 @@ export interface ClaudeProxyDeps {
   readonly usage?: UsageStore;
   /** Override rate limiter (tests). */
   readonly rateLimiter?: RateLimiter;
+  /**
+   * Optional pre-spend gate, invoked at the top of every metered call
+   * (`runJsonRoute` + the conversation stream) BEFORE any cache lookup,
+   * rate-limit consume, or SDK call. The app composition root
+   * (`services/claudeProxy.ts` `buildClaudeProxy`) injects the Phase 2.6
+   * global spend ceiling (`assertUnderSpendCeiling`) here; it throws
+   * `SpendCeilingExceededError` (-> 503) once the day's combined metered
+   * spend reaches the operator's ceiling. Omitted in unit tests and the
+   * offline preseed CLI, where it defaults to a no-op — this keeps the Claude
+   * module decoupled from the MAIN server config (this gate reads it; the
+   * Claude module has its own isolated config and must not require the main
+   * one to load).
+   */
+  readonly spendGate?: () => Promise<void>;
 }
 
 export interface CallContext {
@@ -381,8 +394,11 @@ export function createClaudeProxy(deps: ClaudeProxyDeps): ClaudeProxy {
   const usage: UsageStore = deps.usage ?? new PostgresUsageStore(deps.pool, logger);
   const rateLimiter: RateLimiter =
     deps.rateLimiter ?? new TokenBucketLimiter(cfg.rateLimitPerMinute);
+  // Default the pre-spend gate to a no-op so unit tests (and the offline
+  // preseed CLI) that don't inject one never pull in the main server config.
+  const spendGate: () => Promise<void> = deps.spendGate ?? (() => Promise.resolve());
 
-  return new ClaudeProxyImpl(cfg, client, cache, usage, rateLimiter, logger);
+  return new ClaudeProxyImpl(cfg, client, cache, usage, rateLimiter, logger, spendGate);
 }
 
 // ---- Implementation -------------------------------------------------------
@@ -401,6 +417,8 @@ class ClaudeProxyImpl implements ClaudeProxy {
     private readonly usage: UsageStore,
     private readonly rateLimiter: RateLimiter,
     private readonly logger: Logger,
+    // Pre-spend gate — see ClaudeProxyDeps.spendGate. No-op by default.
+    private readonly spendGate: () => Promise<void>,
   ) {}
 
   async enrich(
@@ -907,6 +925,13 @@ class ClaudeProxyImpl implements ClaudeProxy {
     // Arrow IIFE — `this` is captured lexically, no `self` alias needed.
     void (async (): Promise<void> => {
       try {
+        // Phase 2.6 global spend ceiling — checked before anything else in
+        // this worker (cache lookup, rate-limit consume, the SDK stream).
+        // Same gate/semantics as runJsonRoute's; a throw here is caught by
+        // this try block like any other proxy error and surfaces via the
+        // `final` promise rejection / the SSE 'error' event.
+        await this.spendGate();
+
         // Cache lookup first.
         const hit = await this.cache.get(cacheKey).catch((e) => {
           this.logger.warn({ errMsg: errMsg(e) }, 'conversation cache lookup failed');
@@ -1099,6 +1124,12 @@ class ClaudeProxyImpl implements ClaudeProxy {
     outputSchema: z.ZodType<TResult, z.ZodTypeDef, unknown>;
     parser: (raw: import('./client').MessageResponse) => unknown;
   }): Promise<ProxyResult<TResult>> {
+    // Phase 2.6 global spend ceiling — checked FIRST, before the cache lookup
+    // or any network call. A no-op when SPEND_CEILING_DAILY_USD is unset (the
+    // default); throws SpendCeilingExceededError (-> 503) when today's
+    // combined Claude+TTS+image spend has reached the operator's ceiling.
+    await this.spendGate();
+
     const cfg = this.cfg;
     const requestId = p.ctx.requestId ?? randomUUID();
     const bucketKey =
