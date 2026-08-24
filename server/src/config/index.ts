@@ -462,6 +462,42 @@ const EnvSchema = z.object({
   // JSON calls). See mediaLimiter in middleware/rateLimits.
   RATE_LIMIT_MEDIA_MAX: z.coerce.number().int().positive().default(600),
 
+  // ---------------------------------------------------------------------------
+  // Global spend ceiling (Phase 2.6) — a GLOBAL (all-users-combined) daily
+  // dollar circuit breaker across the three metered external APIs (Claude,
+  // ElevenLabs TTS, OpenAI images), on top of (not instead of) the per-user
+  // daily caps above. See server/src/services/spendCeiling.ts.
+  // ---------------------------------------------------------------------------
+  // The ceiling, summed over the current UTC day. 0 = DISABLED (the default) —
+  // an operator opts in explicitly; this must never silently start blocking an
+  // existing deploy. Nonnegative (not positive): 0 is the meaningful "off".
+  SPEND_CEILING_DAILY_USD: z.coerce.number().nonnegative().default(0),
+  // In-process memo TTL for the summed running total. The Claude sync
+  // chokepoint (runJsonRoute / generateConversation) checks the ceiling on
+  // EVERY call, so recomputing 3 SUMs from scratch each time would add real
+  // latency to the hot path; this caches the total for a short window instead.
+  // 0 = always recompute (exact, no cache — useful for tests and for an
+  // operator who wants zero staleness). Tradeoff: a nonzero TTL means spend
+  // that landed just after the last recompute isn't reflected until the next
+  // one, so the ceiling can be intentionally overshot by up to one TTL window's
+  // worth of concurrent spend — acceptable for a runaway-cost backstop, not
+  // acceptable for a hard billing guarantee.
+  SPEND_CEILING_CACHE_TTL_MS: z.coerce.number().int().nonnegative().default(15000),
+  // ElevenLabs TTS per-1000-characters USD rate — used ONLY to compute the
+  // spend-ceiling cost estimate written to story_audio_jobs.cost_estimate_usd
+  // at settle-to-done (char_count / 1000 * this rate). This is NOT what
+  // ElevenLabs actually bills the account; the OPERATOR MUST VERIFY this
+  // against their actual ElevenLabs plan's real per-character pricing. The
+  // default is a conservative estimate, not a quote.
+  ELEVENLABS_USD_PER_1K_CHARS: z.coerce.number().nonnegative().default(0.30),
+  // OpenAI gpt-image-1 per-image USD rate (at the size used — see
+  // services/imageGen.ts) — used ONLY to compute the spend-ceiling cost
+  // estimate written to story_image_jobs.cost_estimate_usd at settle-to-done
+  // (image_count * this rate). The OPERATOR MUST VERIFY this against current
+  // gpt-image-1 pricing at the size actually requested. The default is an
+  // estimate, not a quote.
+  OPENAI_IMAGE_USD_PER_IMAGE: z.coerce.number().nonnegative().default(0.04),
+
   // Logging
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])

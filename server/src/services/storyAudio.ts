@@ -50,10 +50,11 @@ import type { Logger } from 'pino';
 import { z } from 'zod';
 import { isRunnerActiveColor, loadConfig } from '../config/index.js';
 import { query, withTransaction } from '../db/pool.js';
-import { AppError } from '../middleware/errors.js';
+import { AppError, SpendCeilingExceededError } from '../middleware/errors.js';
 import { getMp3Concat } from './audioConcat.js';
 import { deleteBlob, saveBlob } from './audioStore.js';
 import { StoryTurnSchema, type StoryTurn } from './claude/models.js';
+import { assertUnderSpendCeiling } from './spendCeiling.js';
 import {
   getTtsProvider,
   TtsNotConfiguredError,
@@ -446,6 +447,31 @@ export async function runStoryAudioTick(log: Logger): Promise<StoryAudioTickResu
 
   const { jobId, storyId, userId, title, bodyKo } = claimed;
 
+  // Phase 2.6 global spend ceiling — checked AFTER claim, BEFORE any TTS
+  // spend (the job is already 'running', so a refusal here must settle it
+  // 'failed' rather than leave it stuck — the story's one-live-job slot would
+  // otherwise be bricked until the stale-run reaper eventually claims it back
+  // STORY_TTS_STALE_RUN_MINUTES later). A distinct, greppable message prefix
+  // (`spend_ceiling_reached:`) differentiates this from a genuine synthesis
+  // failure in the `error` column. Any OTHER error here is a bug, not a
+  // ceiling verdict — it propagates and fails the tick (the reaper's job).
+  try {
+    await assertUnderSpendCeiling();
+  } catch (err) {
+    if (err instanceof SpendCeilingExceededError) {
+      log.warn(
+        { jobId, storyId },
+        'storyAudio: spend ceiling reached — refusing to synthesize',
+      );
+      await settleFailed(
+        jobId,
+        'spend_ceiling_reached: daily generation budget reached — try again later',
+      );
+      return 'failed';
+    }
+    throw err;
+  }
+
   // 3. Synthesize (minutes-long external calls; no tx held). Multi-voice
   //    when the story carries a usable turns array, else the v1 narrator
   //    read — old/flat/malformed-turns stories keep working unchanged. A
@@ -535,11 +561,16 @@ export async function runStoryAudioTick(log: Logger): Promise<StoryAudioTickResu
         // spend (sum of turn-text lengths — can differ from the enqueue-time
         // body_ko snapshot); the single-narrator path passes NULL and keeps
         // the snapshot, which already equals its exact spend.
+        // cost_estimate_usd (Phase 2.6): computed from that SAME settled
+        // char_count (the ledger snapshot) * the operator-configured
+        // ElevenLabs rate, in this one UPDATE — never a separate write, so
+        // the job's char_count and cost_estimate_usd can never disagree.
         `UPDATE story_audio_jobs
             SET status = 'done', audio_source_id = $2, finished_at = now(),
-                char_count = COALESCE($3, char_count)
+                char_count = COALESCE($3, char_count),
+                cost_estimate_usd = COALESCE($3, char_count) / 1000.0 * $4::numeric
           WHERE id = $1 AND status = 'running'`,
-        [jobId, sourceId, actualCharCount],
+        [jobId, sourceId, actualCharCount, cfg.ELEVENLABS_USD_PER_1K_CHARS],
       );
       if (settled.rowCount === 0) {
         throw new Error('storyAudio: job was reaped mid-run — discarding synthesis result');

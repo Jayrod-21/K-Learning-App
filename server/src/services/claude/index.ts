@@ -131,6 +131,9 @@ import {
   computeCostUsd,
   type UsageStore,
 } from './usage';
+// Phase 2.6 global spend-ceiling gate. ONE-WAY import: spendCeiling.ts never
+// imports back from services/claude/** (it would cycle) — see its module doc.
+import { assertUnderSpendCeiling } from '../spendCeiling.js';
 
 // Re-export the types B3 needs.
 export type {
@@ -907,6 +910,13 @@ class ClaudeProxyImpl implements ClaudeProxy {
     // Arrow IIFE — `this` is captured lexically, no `self` alias needed.
     void (async (): Promise<void> => {
       try {
+        // Phase 2.6 global spend ceiling — checked before anything else in
+        // this worker (cache lookup, rate-limit consume, the SDK stream).
+        // Same gate/semantics as runJsonRoute's; a throw here is caught by
+        // this try block like any other proxy error and surfaces via the
+        // `final` promise rejection / the SSE 'error' event.
+        await assertUnderSpendCeiling();
+
         // Cache lookup first.
         const hit = await this.cache.get(cacheKey).catch((e) => {
           this.logger.warn({ errMsg: errMsg(e) }, 'conversation cache lookup failed');
@@ -1099,6 +1109,12 @@ class ClaudeProxyImpl implements ClaudeProxy {
     outputSchema: z.ZodType<TResult, z.ZodTypeDef, unknown>;
     parser: (raw: import('./client').MessageResponse) => unknown;
   }): Promise<ProxyResult<TResult>> {
+    // Phase 2.6 global spend ceiling — checked FIRST, before the cache lookup
+    // or any network call. A no-op when SPEND_CEILING_DAILY_USD is unset (the
+    // default); throws SpendCeilingExceededError (-> 503) when today's
+    // combined Claude+TTS+image spend has reached the operator's ceiling.
+    await assertUnderSpendCeiling();
+
     const cfg = this.cfg;
     const requestId = p.ctx.requestId ?? randomUUID();
     const bucketKey =
