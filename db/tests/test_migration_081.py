@@ -76,6 +76,7 @@ EXPECTED_JOB_COLUMNS = {
     "user_id",
     "status",
     "char_count",
+    "cost_estimate_usd",
     "audio_source_id",
     "error",
     "started_at",
