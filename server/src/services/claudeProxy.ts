@@ -13,6 +13,7 @@
  */
 import type { Pool } from 'pg';
 import type { Logger } from 'pino';
+import { assertUnderSpendCeiling } from './spendCeiling.js';
 import {
   createClaudeProxy as createClaudeProxyImpl,
   maxClaudeCallDurationMs,
@@ -114,8 +115,13 @@ export function setClaudeProxy(proxy: ClaudeProxy): void {
  * Construct the real proxy bound to the given pool and (optionally) logger.
  */
 export function buildClaudeProxy(deps: { pool: Pool; logger?: Logger }): ClaudeProxy {
+  // Inject the Phase 2.6 global spend-ceiling gate ONLY at the live-app
+  // composition root. The Claude module itself stays decoupled from the main
+  // server config (this gate reads it) so its unit tests — which build the
+  // proxy without a full server env — never require the main config to load.
+  const base = { pool: deps.pool, spendGate: assertUnderSpendCeiling };
   return createClaudeProxyImpl(
-    deps.logger ? { pool: deps.pool, logger: deps.logger } : { pool: deps.pool },
+    deps.logger ? { ...base, logger: deps.logger } : base,
   );
 }
 
