@@ -1252,15 +1252,17 @@ const PasswordResetRequestSchema = z.object({ email: z.string().email().max(254)
  * the exists path — is sub-millisecond noise behind network jitter, same
  * reasoning as the resend route).
  *
- * Abuse posture: authLimiter bounds the per-IP request rate, and the per-USER
- * DB cooldown inside `issuePasswordResetTokenIfCooldownClear` (composed by
- * `issueAndSendPasswordResetEmail`) is the real mail-bomb gate — atomic with
- * the token insert, so a concurrent burst mints at most one token/email per
- * account per window no matter how many IPs ask.
+ * Abuse posture: cheapLimiter bounds the per-IP request rate (mirrors
+ * /auth/verify/resend — the auth limiter's skipSuccessfulRequests would
+ * never count an always-200 route, so authLimiter here would be a no-op),
+ * and the per-USER DB cooldown inside `issuePasswordResetTokenIfCooldownClear`
+ * (composed by `issueAndSendPasswordResetEmail`) is the real mail-bomb gate —
+ * atomic with the token insert, so a concurrent burst mints at most one
+ * token/email per account per window no matter how many IPs ask.
  */
 router.post(
   '/password-reset/request',
-  authLimiter(),
+  cheapLimiter(),
   validateBody(PasswordResetRequestSchema),
   async (req, res, next) => {
     try {
@@ -1321,6 +1323,13 @@ const PasswordResetConfirmSchema = z.object({
  * already-consumed/superseded). Distinguishing expired-vs-invalid is safe
  * because both are reachable ONLY by someone already HOLDING the specific
  * token — it carries no signal about whether the underlying account exists.
+ *
+ * Limiter choice: authLimiter (NOT cheapLimiter, unlike /request above) is
+ * correct here — this route is NOT always-200. Guessing a token fails with a
+ * 400 (`token_invalid`/`token_expired`) far more often than a real user
+ * hits the 200 path, so `skipSuccessfulRequests` still counts the brute-force
+ * attempts that matter; only a genuinely unthrottleable always-2xx route
+ * needs cheapLimiter instead.
  */
 router.post(
   '/password-reset/confirm',

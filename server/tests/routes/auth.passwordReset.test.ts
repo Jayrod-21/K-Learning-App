@@ -178,6 +178,26 @@ describe('POST /auth/password-reset/request — non-enumeration + issuance', () 
     expect(tokens.rows).toHaveLength(1); // no second token
   });
 
+  it('is bounded by the cheap per-IP bucket (BLOCKER fix: authLimiter would never count this always-200 route)', async () => {
+    // This route always returns 200 (non-enumeration, see file header), so
+    // authLimiter's skipSuccessfulRequests would never count a single
+    // request toward the per-IP ceiling — a real, unlimited-volume mail-bomb
+    // / enumeration-by-volume surface. It now mounts cheapLimiter, which
+    // counts ALL requests per-IP regardless of status. RATE_LIMIT_CHEAP_MAX
+    // is 120 in the test env — same pattern as the /logout flood test.
+    let got429 = false;
+    for (let i = 0; i < 130; i++) {
+      const res = await requestReset('flood-target@example.com');
+      expect(res.status === 200 || res.status === 429).toBe(true);
+      if (res.status === 429) {
+        expect(res.body.error.code).toBe('rate_limited');
+        got429 = true;
+        break;
+      }
+    }
+    expect(got429).toBe(true);
+  });
+
   it('past the cooldown: issues a fresh token and invalidates the prior one', async () => {
     await register('fresh@example.com');
     const before = sent.length;
@@ -286,6 +306,43 @@ describe('POST /auth/password-reset/confirm — reset + session revoke + single-
     const login = await request(t.app)
       .post('/auth/login')
       .send({ email: 'stale@example.com', password: PASSWORD });
+    expect(login.status).toBe(200);
+  });
+
+  it('an invalidated (superseded) token cannot be consumed; the superseding token still can', async () => {
+    await register('superseded@example.com');
+    const before = sent.length;
+    await requestReset('superseded@example.com');
+    const firstMsg = await waitForNextMail(before);
+    const tokenA = tokenFrom(firstMsg);
+
+    // Bypass the cooldown (DB-side, no sleeping) so a second request mints a
+    // REAL second token, which supersedes the first via
+    // `supersedeResetTokens` (stamps token A's `invalidated_at`).
+    await pg.pool.query(
+      `UPDATE password_reset_tokens SET created_at = now() - interval '10 minutes'`,
+    );
+    const afterFirst = sent.length;
+    await requestReset('superseded@example.com');
+    const secondMsg = await waitForNextMail(afterFirst);
+    const tokenB = tokenFrom(secondMsg);
+    expect(tokenB).not.toBe(tokenA);
+
+    // SECURITY: the atomic consume UPDATE's WHERE gates on
+    // `invalidated_at IS NULL` (not just `consumed_at IS NULL`) — token A is
+    // invalidated (superseded), never consumed, and must still be rejected.
+    const failA = await confirmReset(tokenA, NEW_PASSWORD);
+    expect(failA.status).toBe(400);
+    expect(failA.body.error.code).toBe('token_invalid');
+
+    // The surviving, superseding token still works.
+    const okB = await confirmReset(tokenB, NEW_PASSWORD);
+    expect(okB.status).toBe(200);
+    expect(okB.body.status).toBe('reset');
+
+    const login = await request(t.app)
+      .post('/auth/login')
+      .send({ email: 'superseded@example.com', password: NEW_PASSWORD });
     expect(login.status).toBe(200);
   });
 

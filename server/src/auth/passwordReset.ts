@@ -190,9 +190,6 @@ interface TokenRow {
   id: number;
   user_id: number;
   token_hash: string;
-  consumed_at: Date | null;
-  invalidated_at: Date | null;
-  expired: boolean;
 }
 
 /**
@@ -226,8 +223,7 @@ export async function consumePasswordResetToken(
   if (!raw || !RAW_TOKEN_SHAPE.test(raw)) return { outcome: 'invalid' };
   const tokenHash = hashToken(raw);
   const { rows } = await q<TokenRow>(
-    `SELECT id, user_id, token_hash, consumed_at, invalidated_at,
-            (expires_at <= now()) AS expired
+    `SELECT id, user_id, token_hash
        FROM password_reset_tokens
       WHERE token_hash = $1
       LIMIT 1`,
@@ -248,25 +244,43 @@ export async function consumePasswordResetToken(
   );
   if (!u.rows[0]) return { outcome: 'invalid' }; // deleted/vanished user
 
-  if (row.consumed_at !== null || row.invalidated_at !== null) {
-    return { outcome: 'consumed' };
-  }
-  if (row.expired) return { outcome: 'expired' };
-
-  // Atomic single-use consume. A racing concurrent confirm serializes here:
+  // Atomic single-use consume: consumed_at, invalidated_at, AND expires_at
+  // are ALL re-checked in THIS statement's WHERE — not just at the SELECT
+  // above. A pre-check-then-UPDATE would leave a TOCTOU window: a concurrent
+  // supersede (a fresh request for the same user, `supersedeResetTokens`) or
+  // an expiry that lands between the SELECT and the UPDATE could otherwise
+  // still be raced through. Folding all three conditions into the UPDATE
+  // means the moment a token is superseded, expires, or is consumed, the
+  // very statement that would consume it stops matching — there is no gap.
+  // A racing concurrent confirm of the SAME token serializes here too:
   // exactly one caller flips consumed_at (rowCount 1) and proceeds to change
-  // the password; the loser sees rowCount 0 and must report 'consumed' —
-  // by the time it would apply its own password write, the winner already
-  // did, and applying a second one would silently discard the winner's intent.
+  // the password; every other caller (a true double-submit, OR one that lost
+  // to a fresher issuance/expiry) sees rowCount 0.
   const consumed = await q(
     `UPDATE password_reset_tokens
         SET consumed_at = now()
-      WHERE id = $1 AND consumed_at IS NULL`,
+      WHERE id = $1
+        AND consumed_at IS NULL
+        AND invalidated_at IS NULL
+        AND expires_at > now()`,
     [row.id],
   );
-  if (consumed.rowCount !== 1) return { outcome: 'consumed' };
+  if (consumed.rowCount === 1) return { outcome: 'valid', userId: row.user_id };
 
-  return { outcome: 'valid', userId: row.user_id };
+  // The UPDATE's WHERE didn't match — the consume decision above is already
+  // final; this is classification-only, for the route's expired-vs-invalid
+  // disclosure split (safe: both are reachable only by someone already
+  // HOLDING the token — see docstring). Re-read rather than trust the
+  // pre-UPDATE `row`/`row.expired` snapshot, since the reason for the miss
+  // may have changed between the SELECT and the UPDATE.
+  const { rows: post } = await q<{ expired: boolean }>(
+    `SELECT (expires_at <= now()) AS expired
+       FROM password_reset_tokens
+      WHERE id = $1`,
+    [row.id],
+  );
+  if (post[0]?.expired) return { outcome: 'expired' };
+  return { outcome: 'consumed' };
 }
 
 /**

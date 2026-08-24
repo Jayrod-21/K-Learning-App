@@ -1368,8 +1368,13 @@ lost-TOTP-and-recovery-codes lockout).
   exists (identical reasoning to §19.2's verify error split).
 
 ### 22.3 Anti-abuse (mail-bombing)
-- **Defense:** `authLimiter` bounds the per-IP request rate on both routes,
-  and a per-USER DB cooldown (60 s) is the real mail-bomb gate — it is
+- **Defense:** `POST /auth/password-reset/request` is always-200 (§22.2), so
+  it uses `cheapLimiter` (not `authLimiter`) to bound the per-IP request rate
+  — `authLimiter`'s `skipSuccessfulRequests` would never count an always-200
+  route, exactly as `/auth/verify/resend` (§19.2). `POST
+  /auth/password-reset/confirm` legitimately fails 4xx far more often than it
+  succeeds under any brute-force attempt, so it correctly keeps `authLimiter`.
+  A per-USER DB cooldown (60 s) is the real mail-bomb gate on `/request` — it is
   **atomic with issuance**: the probe runs inside the same per-user-locked
   transaction as the token insert (`issuePasswordResetTokenIfCooldownClear`),
   so a concurrent request burst serializes and mints exactly once — at most
