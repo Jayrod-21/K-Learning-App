@@ -113,4 +113,18 @@ describe('claude_route enum ⇄ RouteName drift guard', () => {
     );
     expect(rows[0]?.present).toBe(true);
   });
+
+  it("102's 'generate_reading_item' value is present in the migrated enum (F-220 slice 2)", async () => {
+    // Mirrors the 053/055/057 pins above: an explicit probe for migration
+    // 102's ADD VALUE, independent of ROUTE_NAMES — if the code-side entry
+    // were ever reverted alongside a bad migration revert, this still fails
+    // loudly with the migration name attached, rather than relying solely on
+    // the general set-equality assertion at the top of this file.
+    const { rows } = await pg.pool.query<{ present: boolean }>(
+      `SELECT 'generate_reading_item' = ANY(
+                ARRAY(SELECT e::text FROM unnest(enum_range(NULL::claude_route)) AS e)
+              ) AS present`,
+    );
+    expect(rows[0]?.present).toBe(true);
+  });
 });
