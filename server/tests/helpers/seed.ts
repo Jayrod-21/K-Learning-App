@@ -812,27 +812,40 @@ export async function seedBookUpload(
   opts: {
     title?: string;
     type?: 'vocab' | 'grammar' | 'both' | 'dialogue' | 'literature' | 'comic';
-    status?: 'processing' | 'ready' | 'failed';
+    status?: 'pending' | 'processing' | 'ready' | 'failed';
     byteSize?: number;
     pageCount?: number | null;
     createdAt?: Date;
+    /** Phase 2.5 async ingest columns (099) — a 'pending'/'processing' row
+     *  seeded for a runner test typically needs `rawBlobRef` pointing at a
+     *  REAL file under BOOK_UPLOAD_STORAGE_DIR (write one first) so the
+     *  runner's claim can actually open it. */
+    rawBlobRef?: string | null;
+    startedAt?: Date | null;
+    finishedAt?: Date | null;
+    error?: string | null;
   } = {},
 ): Promise<number> {
   const title = opts.title ?? `seed-book-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const { rows } = await pool.query<{ id: string }>(
     `INSERT INTO book_uploads
-       (user_id, title, type, status, byte_size, page_count, created_at)
+       (user_id, title, type, status, byte_size, page_count, created_at,
+        raw_blob_ref, started_at, finished_at, error)
      VALUES ($1, $2, $3::book_upload_type, $4::book_upload_status, $5, $6,
-             COALESCE($7, now()))
+             COALESCE($7, now()), $8, $9, $10, $11)
      RETURNING id`,
     [
       userId,
       title,
       opts.type ?? 'vocab',
-      opts.status ?? 'processing',
+      opts.status ?? 'ready',
       opts.byteSize ?? 1024,
       opts.pageCount ?? null,
       opts.createdAt ?? null,
+      opts.rawBlobRef ?? null,
+      opts.startedAt ?? null,
+      opts.finishedAt ?? null,
+      opts.error ?? null,
     ],
   );
   return Number(rows[0]!.id);

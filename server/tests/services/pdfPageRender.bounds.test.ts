@@ -49,7 +49,12 @@ vi.mock('node:fs/promises', () => ({
   rm: fsMocks.rm,
 }));
 
-import { MAX_PDF_PAGES, renderPdfPagesToJpeg } from '../../src/services/pdfPageRender.js';
+import {
+  MAX_PDF_PAGES,
+  renderPdfPagesToJpeg,
+  streamPdfPagesToJpeg,
+  streamPdfPagesToJpegFromFile,
+} from '../../src/services/pdfPageRender.js';
 
 type ExecCallback = (err: unknown, result?: { stdout: string; stderr: string }) => void;
 
@@ -256,5 +261,145 @@ describe('renderPdfPagesToJpeg — zero-page rejection (pre-existing behavior, s
     fsMocks.readdir.mockResolvedValue([]);
 
     await expect(renderPdfPagesToJpeg(FAKE_PDF)).rejects.toThrow(/no pages/);
+  });
+});
+
+describe('streamPdfPagesToJpeg (Phase 2.5 — bounded-memory generator)', () => {
+  it('is CALLER-PACED — each page comes back from its own explicit next() call, in order, reading+deleting exactly ONE file per pull', async () => {
+    setExecBehavior({ pdfinfo: 'ok', pdfinfoPages: 3, pdftoppm: 'ok' });
+    fsMocks.readdir.mockResolvedValue(pageFiles(3));
+
+    const gen = streamPdfPagesToJpeg(FAKE_PDF);
+
+    const first = await gen.next();
+    expect(first.done).toBe(false);
+    expect(first.value?.toString()).toBe(`content-of-${WORK_DIR}/page-1.jpg`);
+    // Only page-1 has been read/unlinked so far — page-2/3 are untouched
+    // until the caller asks for them (the bounded-memory contract: at most
+    // one page in flight, never "render everything up front").
+    expect(calls.filter((c) => c.includes('page-'))).toEqual([
+      `read:${WORK_DIR}/page-1.jpg`,
+      `unlink:${WORK_DIR}/page-1.jpg`,
+    ]);
+
+    const second = await gen.next();
+    expect(second.value?.toString()).toBe(`content-of-${WORK_DIR}/page-2.jpg`);
+    expect(calls.filter((c) => c.includes('page-'))).toEqual([
+      `read:${WORK_DIR}/page-1.jpg`,
+      `unlink:${WORK_DIR}/page-1.jpg`,
+      `read:${WORK_DIR}/page-2.jpg`,
+      `unlink:${WORK_DIR}/page-2.jpg`,
+    ]);
+
+    const third = await gen.next();
+    expect(third.value?.toString()).toBe(`content-of-${WORK_DIR}/page-3.jpg`);
+
+    const fourth = await gen.next();
+    expect(fourth.done).toBe(true);
+
+    // Scratch dir cleaned up exactly once, after the last page.
+    expect(fsMocks.rm).toHaveBeenCalledTimes(1);
+  });
+
+  it('cleans up the scratch dir even when the caller stops early (one page pulled, then abandoned)', async () => {
+    setExecBehavior({ pdfinfo: 'ok', pdfinfoPages: 3, pdftoppm: 'ok' });
+    fsMocks.readdir.mockResolvedValue(pageFiles(3));
+
+    const gen = streamPdfPagesToJpeg(FAKE_PDF);
+    const first = await gen.next();
+    expect(first.done).toBe(false);
+    await gen.return();
+
+    expect(fsMocks.rm).toHaveBeenCalledWith(
+      WORK_DIR,
+      expect.objectContaining({ recursive: true, force: true }),
+    );
+    // Pages 2/3 were never touched — the early stop didn't force the rest of
+    // the book through the pipeline just to clean up.
+    expect(calls.filter((c) => c.includes('page-2') || c.includes('page-3'))).toEqual([]);
+  });
+
+  it('rejects on the first pull (before yielding anything) when the true page count exceeds the cap', async () => {
+    setExecBehavior({ pdfinfo: 'ok', pdfinfoPages: MAX_PDF_PAGES + 500, pdftoppm: 'ok' });
+
+    const gen = streamPdfPagesToJpeg(FAKE_PDF);
+    await expect(gen.next()).rejects.toThrow(
+      new RegExp(`${MAX_PDF_PAGES + 500} pages.*over.*${MAX_PDF_PAGES}`),
+    );
+    expect(fsMocks.rm).toHaveBeenCalledWith(WORK_DIR, expect.objectContaining({ recursive: true, force: true }));
+  });
+
+  it('produces the SAME pages, in the SAME order, as the array-returning renderPdfPagesToJpeg', async () => {
+    setExecBehavior({ pdfinfo: 'ok', pdfinfoPages: 3, pdftoppm: 'ok' });
+    fsMocks.readdir.mockResolvedValue(pageFiles(3));
+    const streamed: Buffer[] = [];
+    for await (const page of streamPdfPagesToJpeg(FAKE_PDF)) {
+      streamed.push(page);
+    }
+
+    vi.clearAllMocks();
+    calls.length = 0;
+    fsMocks.mkdtemp.mockResolvedValue(WORK_DIR);
+    fsMocks.writeFile.mockResolvedValue(undefined);
+    fsMocks.rm.mockResolvedValue(undefined);
+    fsMocks.unlink.mockImplementation((p: string) => {
+      calls.push(`unlink:${p}`);
+      return Promise.resolve(undefined);
+    });
+    fsMocks.readFile.mockImplementation((p: string) => {
+      calls.push(`read:${p}`);
+      return Promise.resolve(Buffer.from(`content-of-${p}`));
+    });
+    setExecBehavior({ pdfinfo: 'ok', pdfinfoPages: 3, pdftoppm: 'ok' });
+    fsMocks.readdir.mockResolvedValue(pageFiles(3));
+    const arrayed = await renderPdfPagesToJpeg(FAKE_PDF);
+
+    expect(streamed.map((b) => b.toString())).toEqual(arrayed.map((b) => b.toString()));
+  });
+});
+
+describe('streamPdfPagesToJpegFromFile (Phase 2.5 — the runner entry point, mocked)', () => {
+  it('NEVER writes the input file (renders directly from the given path) — no writeFile call at all', async () => {
+    setExecBehavior({ pdfinfo: 'ok', pdfinfoPages: 2, pdftoppm: 'ok' });
+    fsMocks.readdir.mockResolvedValue(pageFiles(2));
+
+    const pages: Buffer[] = [];
+    for await (const page of streamPdfPagesToJpegFromFile('/raw/7/some-upload.bin')) {
+      pages.push(page);
+    }
+    expect(pages.length).toBe(2);
+    expect(fsMocks.writeFile).not.toHaveBeenCalled();
+
+    // pdftoppm was invoked directly against the caller's path, not a copy.
+    const pdftoppmCall = execFileMock.mock.calls.find((c) => c[0] === 'pdftoppm');
+    const argv = pdftoppmCall![1] as string[];
+    expect(argv).toContain('/raw/7/some-upload.bin');
+  });
+
+  it('never unlinks the caller\'s input path — only the OUTPUT work dir\'s page files + the work dir itself', async () => {
+    setExecBehavior({ pdfinfo: 'ok', pdfinfoPages: 2, pdftoppm: 'ok' });
+    fsMocks.readdir.mockResolvedValue(pageFiles(2));
+
+    for await (const _page of streamPdfPagesToJpegFromFile('/raw/7/some-upload.bin')) {
+      // drain
+    }
+    const unlinkedPaths = fsMocks.unlink.mock.calls.map((c) => c[0] as string);
+    expect(unlinkedPaths).not.toContain('/raw/7/some-upload.bin');
+    expect(unlinkedPaths.every((p) => p.startsWith(WORK_DIR))).toBe(true);
+  });
+
+  it('is CALLER-PACED like the buffer-based generator (one file read+deleted per next())', async () => {
+    setExecBehavior({ pdfinfo: 'ok', pdfinfoPages: 3, pdftoppm: 'ok' });
+    fsMocks.readdir.mockResolvedValue(pageFiles(3));
+
+    const gen = streamPdfPagesToJpegFromFile('/raw/7/some-upload.bin');
+    await gen.next();
+    expect(calls.filter((c) => c.includes('page-'))).toEqual([
+      `read:${WORK_DIR}/page-1.jpg`,
+      `unlink:${WORK_DIR}/page-1.jpg`,
+    ]);
+    await gen.return();
+    // Never touched page-2/3 — the caller stopped after one.
+    expect(calls.filter((c) => c.includes('page-2') || c.includes('page-3'))).toEqual([]);
   });
 });

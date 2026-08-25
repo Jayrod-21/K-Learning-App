@@ -87,6 +87,34 @@ const EnvSchema = z.object({
   // creates a new row that counts toward this cap.
   BOOK_UPLOAD_DAILY_CAP: z.coerce.number().int().positive().default(10),
 
+  // ---------------------------------------------------------------------------
+  // Book-ingest runner (Phase 2.5 — async book-upload pipeline, the OOM fix).
+  // POST /uploads now just writes the raw zip/PDF to disk and enqueues a
+  // 'pending' book_uploads row; THIS runner (server/src/services/
+  // bookIngestRunner.ts) does the actual streaming decode, in-process, the
+  // same shape as the story-TTS/image runners above (unref'd poll interval,
+  // FOR UPDATE SKIP LOCKED claim, stale-'processing' reap, blue/green gate).
+  // ---------------------------------------------------------------------------
+  // How often the runner polls book_uploads for 'pending' work. In-process
+  // (not km-worker — the worker doesn't mount km_book_uploads at all); the
+  // interval is unref'd so it never holds the process open.
+  BOOK_INGEST_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
+
+  // A 'processing' row older than this is presumed crashed (server restart/
+  // OOM mid-decode) and reaped 'failed' at the next poll. Sized well past a
+  // realistic worst-case decode (a 2000-page PDF at ~seconds/page, or a
+  // 2 GiB zip) — deliberately more generous than STORY_TTS_STALE_RUN_MINUTES
+  // (15) since a full book decode is slower than one TTS call. 'pending' is
+  // never reaped — it is the healthy backlog (storyAudio's reap contract).
+  BOOK_INGEST_STALE_RUN_MINUTES: z.coerce.number().int().positive().default(20),
+
+  // Manual kill switch for the book-ingest runner's claim+process half, layered
+  // UNDER the automatic active-color check (isRunnerActiveColor). Default true
+  // so any deployment that doesn't opt into DEPLOY_COLOR (local dev, tests, a
+  // hypothetical single-color deploy) behaves exactly as before — mirrors
+  // STORY_RUNNERS_ENABLED's exact posture/reasoning.
+  BOOK_INGEST_RUNNERS_ENABLED: envBool(true),
+
   // Per-user DAILY cap on extraction-OCR PAGES (F-108 — U2 extraction). Each
   // page in an extraction run is one Claude Vision call, so this — not a
   // per-run count — is the cost lever. Exceeding it returns 429 BEFORE any

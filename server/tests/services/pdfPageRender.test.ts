@@ -13,9 +13,16 @@
  * see server/Dockerfile).
  */
 import { execFile } from 'node:child_process';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
-import { renderPdfPagesToJpeg } from '../../src/services/pdfPageRender.js';
+import {
+  renderPdfPagesToJpeg,
+  streamPdfPagesToJpeg,
+  streamPdfPagesToJpegFromFile,
+} from '../../src/services/pdfPageRender.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -66,5 +73,88 @@ describe('renderPdfPagesToJpeg (real pdftoppm)', () => {
       return;
     }
     await expect(renderPdfPagesToJpeg(NOT_A_PDF)).rejects.toThrow(/could not be read/);
+  });
+});
+
+describe('streamPdfPagesToJpeg (Phase 2.5 — real pdftoppm, bounded-memory generator)', () => {
+  it('yields the SAME real JPEG bytes as renderPdfPagesToJpeg, or self-skips if poppler-utils is absent', async () => {
+    if (!(await hasPdftoppm())) {
+      // eslint-disable-next-line no-console
+      console.warn('pdftoppm not found on PATH — skipping real-poppler smoke test');
+      return;
+    }
+    const pages: Buffer[] = [];
+    for await (const page of streamPdfPagesToJpeg(TINY_PDF)) {
+      pages.push(page);
+    }
+    expect(pages.length).toBe(1);
+    expect(pages[0]![0]).toBe(0xff);
+    expect(pages[0]![1]).toBe(0xd8);
+    expect(pages[0]![2]).toBe(0xff);
+  });
+
+  it('rejects a corrupt/non-PDF buffer with a ValidationError on the first pull, or self-skips if poppler-utils is absent', async () => {
+    if (!(await hasPdftoppm())) {
+      // eslint-disable-next-line no-console
+      console.warn('pdftoppm not found on PATH — skipping real-poppler smoke test');
+      return;
+    }
+    const gen = streamPdfPagesToJpeg(NOT_A_PDF);
+    await expect(gen.next()).rejects.toThrow(/could not be read/);
+  });
+});
+
+describe('streamPdfPagesToJpegFromFile (Phase 2.5 — THE ingest runner entry point, real pdftoppm)', () => {
+  it('renders directly from a file path (never materializing the PDF as a Buffer) and NEVER touches the caller\'s input file', async () => {
+    if (!(await hasPdftoppm())) {
+      // eslint-disable-next-line no-console
+      console.warn('pdftoppm not found on PATH — skipping real-poppler smoke test');
+      return;
+    }
+    const dir = await mkdtemp(join(tmpdir(), 'km-pdf-raw-test-'));
+    const inputPath = join(dir, 'raw-upload.bin'); // deliberately NOT named input.pdf
+    try {
+      await writeFile(inputPath, TINY_PDF);
+      const pages: Buffer[] = [];
+      for await (const page of streamPdfPagesToJpegFromFile(inputPath)) {
+        pages.push(page);
+      }
+      expect(pages.length).toBe(1);
+      expect(pages[0]![0]).toBe(0xff);
+      expect(pages[0]![1]).toBe(0xd8);
+      expect(pages[0]![2]).toBe(0xff);
+
+      // The caller's raw file is untouched — the runner owns deleting it,
+      // not this function (see the module header).
+      const stillThere = await access(inputPath).then(
+        () => true,
+        () => false,
+      );
+      expect(stillThere).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it('rejects a corrupt/non-PDF file on the first pull, and still never deletes the caller\'s input file, or self-skips if poppler-utils is absent', async () => {
+    if (!(await hasPdftoppm())) {
+      // eslint-disable-next-line no-console
+      console.warn('pdftoppm not found on PATH — skipping real-poppler smoke test');
+      return;
+    }
+    const dir = await mkdtemp(join(tmpdir(), 'km-pdf-raw-test-'));
+    const inputPath = join(dir, 'raw-upload.bin');
+    try {
+      await writeFile(inputPath, NOT_A_PDF);
+      const gen = streamPdfPagesToJpegFromFile(inputPath);
+      await expect(gen.next()).rejects.toThrow(/could not be read/);
+      const stillThere = await execFileAsync('test', ['-f', inputPath]).then(
+        () => true,
+        () => false,
+      );
+      expect(stillThere).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
   });
 });

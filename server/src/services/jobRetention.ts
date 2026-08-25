@@ -1,6 +1,7 @@
 /**
  * jobRetention — best-effort retention sweeps for the ephemeral job-ledger
- * tables (`audio_transcription_jobs`, `story_audio_jobs`, `story_image_jobs`).
+ * tables (`audio_transcription_jobs`, `story_audio_jobs`, `story_image_jobs`,
+ * and — Phase 2.5 — terminal-`failed` `book_uploads` rows).
  *
  * WHY THIS EXISTS: each of these tables is a per-request WORK LEDGER — it
  * records that a transcription / audio-synthesis / image-generation job was
@@ -117,6 +118,37 @@ export function sweepStoryImageJobs(userId: number, log: Logger): Promise<number
     `DELETE FROM story_image_jobs
       WHERE user_id = $1
         AND status IN ('done', 'failed')
+        AND finished_at < now() - make_interval(days => $2)`,
+    userId,
+    log,
+  );
+}
+
+/**
+ * Sweep this user's terminal `failed` `book_uploads` older than the
+ * retention window (Phase 2.5 — async ingest, services/bookIngestRunner.ts).
+ * Trigger: the "My Uploads" library read (GET /uploads).
+ *
+ * ONLY `status = 'failed'` — a `ready` upload is the user's actual content
+ * (the whole point of the feature), never swept regardless of age; a
+ * `pending`/`processing` row is live work a runner tick could still claim or
+ * settle. `finished_at` is stamped only at settle (ready or failed), so a
+ * still-in-flight row is doubly excluded the same way the other sweeps'
+ * `finished_at < now() - …` predicate excludes their own in-flight rows.
+ * `raw_blob_ref` is always NULL by the time a row is 'failed' — every path to
+ * 'failed' (settleFailed's direct settle, AND the stale-run reaper) deletes
+ * the raw file and clears the column before this sweep can ever see the row
+ * — and a failed row's `book_pages` are likewise always empty by then
+ * (cleared the same way, blob files included — see bookIngestRunner.ts's
+ * `clearPagesAndBlobs`), so this DELETE needs no filesystem cleanup of its
+ * own and cascades nothing.
+ */
+export function sweepFailedBookUploads(userId: number, log: Logger): Promise<number> {
+  return runSweep(
+    'book_uploads',
+    `DELETE FROM book_uploads
+      WHERE user_id = $1
+        AND status = 'failed'
         AND finished_at < now() - make_interval(days => $2)`,
     userId,
     log,

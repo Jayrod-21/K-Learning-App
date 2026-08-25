@@ -62,10 +62,18 @@ const UPLOADS_NAV = navItem('uploads');
 /** Parent-tab name source — nav.ts owns the pair (F-043: "Library"). */
 const LIBRARY_NAV = navItem('review');
 
+/** Poll cadence while any upload is `pending`/`processing` (Phase 2.5 — the
+ *  async ingest runner decodes off the request path; see the polling effect
+ *  below). Matches useStoryAudio's STORY_AUDIO_POLL_MS order of magnitude —
+ *  a book decode is typically seconds, not the sub-second cadence a chat UI
+ *  would want. */
+const UNSETTLED_UPLOAD_POLL_MS = 3000;
+
 const STATUS_META: Record<
   BookUploadStatus,
   { en: string; kr: string; tone: PillTone }
 > = {
+  pending: { en: 'Queued', kr: '대기 중', tone: 'default' },
   processing: { en: 'Processing', kr: '처리 중', tone: 'default' },
   ready: { en: 'Ready', kr: '완료', tone: 'green' },
   failed: { en: 'Failed', kr: '실패', tone: 'red' },
@@ -139,6 +147,28 @@ export default function Uploads(): JSX.Element {
       ctrlRef.current?.abort();
     };
   }, [load]);
+
+  // Phase 2.5 — async book-upload pipeline: a fresh upload lands `pending`
+  // and the in-server runner decodes it off the request path (services/
+  // bookIngestRunner.ts), so this list needs to keep refreshing while any
+  // row is still `pending`/`processing` — otherwise a book would sit showing
+  // "Processing" forever until the user manually reloads the page. Re-runs
+  // the same `load()` the mount effect and the retry button already use
+  // (simplest correct polling: refetch the whole list, not a per-row merge)
+  // every UNSETTLED_POLL_MS while at least one row hasn't reached a terminal
+  // state; stops itself the moment the last one settles.
+  const hasUnsettledUpload = rows.some(
+    (r) => r.status === 'pending' || r.status === 'processing',
+  );
+  useEffect(() => {
+    if (!hasUnsettledUpload) return;
+    const id = window.setInterval(() => {
+      load();
+    }, UNSETTLED_UPLOAD_POLL_MS);
+    return () => {
+      window.clearInterval(id);
+    };
+  }, [hasUnsettledUpload, load]);
 
   const remove = useCallback(
     async (upload: BookUpload): Promise<void> => {

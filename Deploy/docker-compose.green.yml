@@ -147,6 +147,10 @@ services:
       # automatic DEPLOY_COLOR/ACTIVE_COLOR_FILE gate below; default true so
       # this flag changes nothing unless an operator deliberately sets it.
       - STORY_RUNNERS_ENABLED=${STORY_RUNNERS_ENABLED:-true}
+      # Phase 2.5 — same kill-switch posture for the async book-ingest runner
+      # (config/index.ts's BOOK_INGEST_RUNNERS_ENABLED), layered UNDER the
+      # same automatic active-color gate.
+      - BOOK_INGEST_RUNNERS_ENABLED=${BOOK_INGEST_RUNNERS_ENABLED:-true}
       # In-container path the mounted active-color file is read from (see the
       # matching volumes: entry below — a DIRECTORY mount, not a file mount;
       # the file lives inside it). Fixed — both colors use the same

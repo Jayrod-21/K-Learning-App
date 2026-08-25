@@ -244,6 +244,11 @@ import {
 import type { BookUpload, ExtractionRun, Page } from '../types/domain';
 import './UploadViewer.css';
 
+/** Poll cadence while this upload is `pending`/`processing` (Phase 2.5 —
+ *  the async ingest runner decodes off the request path). Matches
+ *  Uploads.tsx's UNSETTLED_UPLOAD_POLL_MS. */
+const UPLOAD_META_POLL_MS = 3000;
+
 /** Zoom is a multiplier of the container width — 1 = exact fit-width. */
 const FIT_ZOOM = 1;
 const MIN_ZOOM = 0.5;
@@ -715,6 +720,24 @@ export default function UploadViewer(): JSX.Element {
       metaCtrlRef.current?.abort();
     };
   }, [loadMeta]);
+
+  // Phase 2.5 — async book-upload pipeline: a book navigated to right after
+  // upload (or still mid-decode from an earlier session) lands here
+  // `pending`/`processing` — poll `loadMeta` until the in-server runner
+  // (services/bookIngestRunner.ts) settles it `ready`/`failed`, so the
+  // "still processing" card below flips to the real viewer (or the real
+  // error) without the user having to tap Retry themselves. Mirrors
+  // Uploads.tsx's list-level polling effect.
+  const isUnsettled = meta?.status === 'pending' || meta?.status === 'processing';
+  useEffect(() => {
+    if (!isUnsettled) return;
+    const pollId = window.setInterval(() => {
+      loadMeta();
+    }, UPLOAD_META_POLL_MS);
+    return () => {
+      window.clearInterval(pollId);
+    };
+  }, [isUnsettled, loadMeta]);
 
   // Abort any still-pending reorder-related requests on unmount.
   useEffect(() => {
@@ -1236,8 +1259,13 @@ export default function UploadViewer(): JSX.Element {
         <ErrorCard
           message={
             meta?.status === 'failed'
-              ? 'This upload failed to process and has no viewable pages.'
-              : 'This upload is still processing — check back shortly.'
+              ? // Server-authored, bounded, whitelisted copy (Phase 2.5 —
+                // bookIngestRunner.ts's `failureMessage`) — safe to show
+                // verbatim, same posture as story-audio/-image failures.
+                // Falls back to fixed copy defensively (the field is
+                // optional on the wire).
+                (meta.error ?? 'This upload failed to process and has no viewable pages.')
+              : 'Processing your book… this page will update automatically.'
           }
           onRetry={loadMeta}
         />

@@ -91,6 +91,9 @@ interface BookUploadWire {
   status: BookUpload['status'];
   page_count: number | null;
   byte_size: number;
+  /** Bounded, server-authored failure message; null unless `status` is
+   *  `'failed'` (Phase 2.5). */
+  error: string | null;
   created_at: string;
 }
 
@@ -123,6 +126,7 @@ function toBookUpload(wire: BookUploadWire): BookUpload {
     status: wire.status,
     ...(wire.page_count !== null ? { pageCount: wire.page_count } : {}),
     byteSize: wire.byte_size,
+    ...(wire.error !== null ? { error: wire.error } : {}),
     createdAt: wire.created_at,
   };
 }
