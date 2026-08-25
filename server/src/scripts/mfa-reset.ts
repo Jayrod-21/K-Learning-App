@@ -25,14 +25,18 @@ import { withTransaction, closePool, clientQuerier } from '../db/pool.js';
 import { revokeAllUserSessions } from '../auth/sessions.js';
 import { getLogger } from '../logging.js';
 
-async function main(): Promise<void> {
-  const log = getLogger();
-  const email = (process.env.MFA_RESET_EMAIL ?? process.argv[2])?.trim().toLowerCase();
-  if (!email) {
-    throw new Error('email required: set MFA_RESET_EMAIL or pass it as the first argument');
-  }
-
-  await withTransaction(async (client) => {
+/**
+ * The transactional core: clear `userId`'s TOTP factor + recovery codes and
+ * revoke every live session, all in ONE transaction (so a partial reset can
+ * never persist). Idempotent — a user with no factor is a no-op DELETE that
+ * still revokes sessions. Throws on an unknown email (fails loud, per the
+ * module's security stance) without touching any other user's rows.
+ *
+ * Exported for direct-call testing (tests/scripts/mfa-reset.test.ts) — `main`
+ * below is a thin CLI wrapper around this.
+ */
+export async function resetMfaForEmail(email: string): Promise<{ userId: number }> {
+  return withTransaction(async (client) => {
     const { rows } = await client.query<{ id: number }>(
       `SELECT id FROM users WHERE email = $1 LIMIT 1`,
       [email],
@@ -51,10 +55,24 @@ async function main(): Promise<void> {
     // reusing the shared helper instead of an inline copy.
     await revokeAllUserSessions(userId, 'mfa_reset', clientQuerier(client));
 
-    log.info({ userId, email }, 'mfa-reset: factor + recovery codes cleared, sessions revoked');
-    // eslint-disable-next-line no-console
-    console.error(`mfa-reset: cleared TOTP + recovery codes and revoked sessions for ${email} (id=${userId})`);
+    return { userId };
   });
+}
+
+/** Exported for direct-call testing — not invoked as a CLI import side effect
+ *  (guarded below by require.main), mirrors scripts/seed-user.ts's `main`. */
+export async function main(): Promise<void> {
+  const log = getLogger();
+  const email = (process.env.MFA_RESET_EMAIL ?? process.argv[2])?.trim().toLowerCase();
+  if (!email) {
+    throw new Error('email required: set MFA_RESET_EMAIL or pass it as the first argument');
+  }
+
+  const { userId } = await resetMfaForEmail(email);
+
+  log.info({ userId, email }, 'mfa-reset: factor + recovery codes cleared, sessions revoked');
+  // eslint-disable-next-line no-console
+  console.error(`mfa-reset: cleared TOTP + recovery codes and revoked sessions for ${email} (id=${userId})`);
 }
 
 // Run only when invoked directly as a CLI (node ... mfa-reset.ts), NOT when the
