@@ -12,7 +12,7 @@
  */
 import { Router } from 'express';
 import { z } from 'zod';
-import { requireAuth } from '../middleware/auth.js';
+import { getUserId, requireAuth } from '../middleware/auth.js';
 import { cheapLimiter } from '../middleware/rateLimits.js';
 import { validateQuery } from '../middleware/validate.js';
 import { query } from '../db/pool.js';
@@ -33,6 +33,14 @@ interface KrdictRow {
   // tables, not as jsonb columns here.
   definition_korean: string | null;
   definition_english: string | null;
+  /**
+   * Phase 2.8 gloss overlay: true when `definition_english` above is the
+   * CALLER'S OWN `user_gloss_overrides` row rather than the shared corpus
+   * default — WordPopover's "Edit definition" affordance uses this to
+   * decide whether to offer Reset. Computed server-side
+   * (`ugo.gloss IS NOT NULL`); never a client-supplied flag.
+   */
+  overridden: boolean;
 }
 
 /** One example sentence as the wire DTO carries it. */
@@ -186,6 +194,9 @@ router.get(
       const word = (
         req as typeof req & { validatedQuery: z.infer<typeof DefineQuerySchema> }
       ).validatedQuery.word;
+      // Phase 2.8 gloss overlay — this route runs requireAuth (above) before
+      // the handler, so req.user is always populated here.
+      const userId = getUserId(req);
 
       if (!(await krdictAvailable())) {
         // B2 hasn't shipped yet. Return an honest 503 rather than 500.
@@ -201,13 +212,24 @@ router.get(
 
       let rows: KrdictRow[];
       try {
+        // Phase 2.8 gloss overlay: LEFT JOIN the caller's own override on
+        // (user_id, lemma=headword) — the SAME headword the entry itself
+        // carries (already NFC at rest, per the corpus-normalization audit
+        // behind this feature), so no per-row normalization is needed here.
+        // This is the "tap anything" surface the WordPopover edit
+        // affordance targets: `definition_english` is COALESCEd (override
+        // wins) and `overridden` tells the client whether Reset should show.
         const result = await query<KrdictRow>(
-          `SELECT id, headword, part_of_speech, definition_korean, definition_english
-             FROM krdict_entries
-            WHERE headword = $1
-            ORDER BY id ASC
+          `SELECT ke.id, ke.headword, ke.part_of_speech, ke.definition_korean,
+                  COALESCE(ugo.gloss, ke.definition_english) AS definition_english,
+                  (ugo.gloss IS NOT NULL) AS overridden
+             FROM krdict_entries ke
+             LEFT JOIN user_gloss_overrides ugo
+                    ON ugo.user_id = $2 AND ugo.lemma = ke.headword
+            WHERE ke.headword = $1
+            ORDER BY ke.id ASC
             LIMIT 10`,
-          [word],
+          [word, userId],
         );
         rows = result.rows;
       } catch (err) {

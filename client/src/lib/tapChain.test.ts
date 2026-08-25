@@ -51,6 +51,29 @@ describe('buildWordPopover', () => {
     expect(pop.en).toBe(GLOSS_UNAVAILABLE);
     expect(pop.krdictEntryId).toBeUndefined();
   });
+
+  // Phase 2.8 — the `overridden` flag rides straight off the /define entry
+  // (the server already resolved the COALESCE); this proves it survives the
+  // fold into WordPopoverData rather than getting dropped on the way.
+  it('carries the /define entry overridden=true through to the popover', () => {
+    const overriddenResult: DefineResult = {
+      word: '먹다',
+      entries: [{ ...DEFINE_먹다.entries[0]!, definition_english: 'my own gloss', overridden: true }],
+    };
+    const pop = buildWordPopover('먹다', overriddenResult, null);
+    expect(pop.en).toBe('my own gloss');
+    expect(pop.overridden).toBe(true);
+  });
+
+  it('carries overridden=false through when the gloss is the shared default', () => {
+    const pop = buildWordPopover('먹다', DEFINE_먹다, null);
+    expect(pop.overridden).toBe(false);
+  });
+
+  it('leaves overridden unset when /define returned no entries at all', () => {
+    const pop = buildWordPopover('먹다', { word: '먹다', entries: [] }, null);
+    expect(pop.overridden).toBeUndefined();
+  });
 });
 
 /** A realistic `/define` envelope for the staged-chain tests (F-209). */
@@ -64,6 +87,7 @@ const DEFINE_먹다: DefineResult = {
       definition_korean: '음식을 입에 넣고 삼키다.',
       definition_english: 'to eat',
       examples: [{ korean: '밥을 먹다', english: 'to eat a meal' }],
+      overridden: false,
     },
   ],
 };

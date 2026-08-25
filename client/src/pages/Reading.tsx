@@ -823,7 +823,15 @@ function useMineable(): {
     (word: string) => minedIds.has(word),
     [minedIds],
   );
-  const { popData, popLoading, popEnriching, onTapWord, onClose } = useTapWord({
+  const {
+    popData,
+    popLoading,
+    popEnriching,
+    onTapWord,
+    onClose,
+    onEditGloss,
+    onResetGloss,
+  } = useTapWord({
     isMined,
   });
 
@@ -884,11 +892,37 @@ function useMineable(): {
     [toast],
   );
 
+  /**
+   * Phase 2.8 — thin toast-on-failure wrappers around `useTapWord`'s gloss
+   * mutators. The hook itself only owns the popover-state patch (mirrors
+   * `onAdd`'s split: page-local toast/UX, hook-local state); rethrowing
+   * keeps `WordPopover`'s inline editor open on failure (see its own
+   * `onEditGloss`/`onResetGloss` doc) instead of silently closing on error.
+   */
+  const handleEditGloss = useCallback(
+    (d: WordPopoverData, gloss: string): Promise<void> =>
+      onEditGloss(d, gloss).catch((err: unknown) => {
+        toast({ message: "Couldn't save your definition — try again", tone: 'error' });
+        throw err instanceof Error ? err : new Error('gloss save failed');
+      }),
+    [onEditGloss, toast],
+  );
+  const handleResetGloss = useCallback(
+    (d: WordPopoverData): Promise<void> =>
+      onResetGloss(d).catch((err: unknown) => {
+        toast({ message: "Couldn't reset the definition — try again", tone: 'error' });
+        throw err instanceof Error ? err : new Error('gloss reset failed');
+      }),
+    [onResetGloss, toast],
+  );
+
   const popover = popData ? (
     <WordPopover
       data={popData}
       onClose={handleClose}
       onAdd={handleAdd}
+      onEditGloss={handleEditGloss}
+      onResetGloss={handleResetGloss}
       isLoading={popLoading}
       isEnriching={popEnriching}
     />

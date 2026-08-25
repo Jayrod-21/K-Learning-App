@@ -53,6 +53,7 @@ const DefineResponseSchema = z.object({
           english: z.string().nullable(),
         }),
       ),
+      overridden: z.boolean(),
     }),
   ),
 });
@@ -260,5 +261,83 @@ describe('GET /define — rate limit', () => {
       }
     }
     expect(got429).toBe(true);
+  });
+});
+
+// ── Phase 2.8: user-scoped gloss override overlay ──────────────────────────
+
+describe('GET /define — gloss override overlay (Phase 2.8)', () => {
+  it('shows the shared default (overridden=false) before any override exists', async () => {
+    await seedKrdictEntry(pg.pool, { headword: '사과', definitionEn: 'apple' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/define?word=사과');
+    expect(res.status).toBe(200);
+    expect(res.body.entries[0].definition_english).toBe('apple');
+    expect(res.body.entries[0].overridden).toBe(false);
+  });
+
+  it('round-trip: PUT /vocab/gloss-override then GET /define reflects it, with overridden=true', async () => {
+    await seedKrdictEntry(pg.pool, { headword: '사과', definitionEn: 'apple' });
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const put = await agent
+      .put('/vocab/gloss-override')
+      .send({ lemma: '사과', gloss: 'apple (my own note)' });
+    expect(put.status).toBe(200);
+    expect(put.body).toEqual({ lemma: '사과', gloss: 'apple (my own note)' });
+
+    const res = await agent.get('/define?word=사과');
+    expect(res.status).toBe(200);
+    expect(res.body.entries[0].definition_english).toBe('apple (my own note)');
+    expect(res.body.entries[0].overridden).toBe(true);
+  });
+
+  it('DELETE /vocab/gloss-override reverts /define to the shared default', async () => {
+    await seedKrdictEntry(pg.pool, { headword: '사과', definitionEn: 'apple' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    await agent.put('/vocab/gloss-override').send({ lemma: '사과', gloss: 'my note' });
+
+    const del = await agent.delete('/vocab/gloss-override').send({ lemma: '사과' });
+    expect(del.status).toBe(200);
+    expect(del.body).toEqual({ cleared: true });
+
+    const res = await agent.get('/define?word=사과');
+    expect(res.body.entries[0].definition_english).toBe('apple');
+    expect(res.body.entries[0].overridden).toBe(false);
+  });
+
+  it("does not leak user A's override into user B's /define read (user-scoped)", async () => {
+    await seedKrdictEntry(pg.pool, { headword: '사과', definitionEn: 'apple' });
+    const { agent: agentA } = await registerUser(t.app, pg.pool);
+    const { agent: agentB } = await registerUser(t.app, pg.pool);
+    await agentA.put('/vocab/gloss-override').send({ lemma: '사과', gloss: "A's own note" });
+
+    const resB = await agentB.get('/define?word=사과');
+    expect(resB.body.entries[0].definition_english).toBe('apple');
+    expect(resB.body.entries[0].overridden).toBe(false);
+
+    const resA = await agentA.get('/define?word=사과');
+    expect(resA.body.entries[0].definition_english).toBe("A's own note");
+    expect(resA.body.entries[0].overridden).toBe(true);
+  });
+
+  it('PUT /vocab/gloss-override unauthenticated → 401', async () => {
+    const res = await request(t.app)
+      .put('/vocab/gloss-override')
+      .send({ lemma: '사과', gloss: 'apple' });
+    expect(res.status).toBe(401);
+  });
+
+  it('DELETE /vocab/gloss-override unauthenticated → 401', async () => {
+    const res = await request(t.app)
+      .delete('/vocab/gloss-override')
+      .send({ lemma: '사과' });
+    expect(res.status).toBe(401);
+  });
+
+  it('PUT rejects an empty gloss (validation)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.put('/vocab/gloss-override').send({ lemma: '사과', gloss: '' });
+    expect(res.status).toBe(400);
   });
 });

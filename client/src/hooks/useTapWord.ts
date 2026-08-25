@@ -50,6 +50,8 @@ import {
   resolveBasePopover,
   resolveEnrichment,
 } from '../lib/tapChain';
+import { defineEntry } from '../services/define';
+import { deleteGlossOverride, putGlossOverride } from '../services/vocab';
 import type { WordPopoverData } from '../components/WordPopover';
 
 export interface UseTapWordOptions {
@@ -83,6 +85,22 @@ export interface UseTapWordResult {
   onTapWord: (raw: string, sentenceText: string) => void;
   /** Close the open popover and abort any still-in-flight chain call. */
   onClose: () => void;
+  /**
+   * Phase 2.8 — save a gloss override for the open popover's word and
+   * optimistically patch `popData.en`/`overridden` on success. Rejects (does
+   * NOT swallow) on failure so `WordPopover`'s own editor keeps the draft
+   * open for a retry — mirrors `onAdd`'s rollback-on-rejection contract
+   * page-side. Pass directly as `WordPopover`'s `onEditGloss` prop.
+   */
+  onEditGloss: (data: WordPopoverData, gloss: string) => Promise<void>;
+  /**
+   * Phase 2.8 — clear the open popover's override and restore the shared
+   * default gloss. Best-effort refetch of the fresh default via `/define`
+   * (the popover's own resolved state doesn't retain the pre-override
+   * value once merged) — a refetch failure still leaves the override
+   * cleared server-side, just with a stale `en` until the next tap.
+   */
+  onResetGloss: (data: WordPopoverData) => Promise<void>;
 }
 
 /** Tap-anything popover machine — see module header for scope + threat model. */
@@ -188,5 +206,50 @@ export function useTapWord(options: UseTapWordOptions = {}): UseTapWordResult {
     setPopEnriching(false);
   }, []);
 
-  return { popData, popLoading, popEnriching, onTapWord, onClose };
+  // Phase 2.8 — both gloss mutators guard the setPopData patch on `kr`
+  // still matching the CURRENTLY open popover: a slow request racing a
+  // popover close/new-tap must not resurrect stale text into whatever is
+  // open now (same "stale response can't paint over a newer state" posture
+  // the tap chain's own abort discipline enforces, just via a value check
+  // instead of an AbortSignal — these are plain mutations, not part of the
+  // abortable lemmatize→define→enrich chain).
+  const onEditGloss = useCallback(
+    async (data: WordPopoverData, gloss: string): Promise<void> => {
+      const saved = await putGlossOverride(data.kr, gloss);
+      setPopData((prev) =>
+        prev && prev.kr === data.kr ? { ...prev, en: saved.gloss, overridden: true } : prev,
+      );
+    },
+    [],
+  );
+
+  const onResetGloss = useCallback(async (data: WordPopoverData): Promise<void> => {
+    await deleteGlossOverride(data.kr);
+    // Best-effort: fetch the fresh shared default so the popover reflects it
+    // immediately. A failure here does NOT roll back the delete (the
+    // override is already gone server-side) — it just leaves `en` stale
+    // until the word is tapped again, which is an acceptable v1 tradeoff
+    // over re-throwing and confusing "was it cleared?" state.
+    try {
+      const defineResult = await defineEntry(data.kr);
+      const defaultEn = defineResult.entries[0]?.definition_english ?? data.en;
+      setPopData((prev) =>
+        prev && prev.kr === data.kr ? { ...prev, en: defaultEn, overridden: false } : prev,
+      );
+    } catch {
+      setPopData((prev) =>
+        prev && prev.kr === data.kr ? { ...prev, overridden: false } : prev,
+      );
+    }
+  }, []);
+
+  return {
+    popData,
+    popLoading,
+    popEnriching,
+    onTapWord,
+    onClose,
+    onEditGloss,
+    onResetGloss,
+  };
 }

@@ -221,6 +221,29 @@ describe('GET /vocab/lists/:id', () => {
     expect(e2.example_korean).toBeNull();
     expect(e2.example_english).toBeNull();
   });
+
+  // Phase 2.8 gloss override overlay.
+  it("overlays the caller's own gloss override on a list-entry word, and leaves an un-overridden entry untouched", async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const e1 = await seedVocabEntry(pg.pool, { korean: '학교', english: 'school' });
+    const e2 = await seedVocabEntry(pg.pool, { korean: '가다', english: 'to go' });
+    const create = await agent.post('/vocab/lists').send({
+      name_kr: 'L',
+      seed_entry_ids: [e1, e2],
+    });
+    const id = create.body.list.id;
+    await agent
+      .put('/vocab/gloss-override')
+      .send({ lemma: '학교', gloss: 'school (my note)' });
+
+    const res = await agent.get(`/vocab/lists/${id}`);
+    expect(res.status).toBe(200);
+    const entries = res.body.entries as Array<{ korean: string; english: string }>;
+    expect(entries[0]!.korean).toBe('학교');
+    expect(entries[0]!.english).toBe('school (my note)');
+    expect(entries[1]!.korean).toBe('가다');
+    expect(entries[1]!.english).toBe('to go');
+  });
 });
 
 describe('PATCH /vocab/lists/:id', () => {
@@ -646,6 +669,26 @@ describe('GET /vocab/lists/:id/cards/due (F-113)', () => {
     expect(res.body.cards).toHaveLength(1);
     expect(res.body.cards[0].vocab_korean).toBe('학교');
     expect(res.body.cards[0].vocab_entry_id).toBe(e1);
+  });
+
+  // Phase 2.8 gloss override overlay.
+  it("overlays the caller's own gloss override on a list's due card", async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const e1 = await seedVocabEntry(pg.pool, { korean: '학교', english: 'school' });
+    const create = await agent
+      .post('/vocab/lists')
+      .send({ name_kr: 'L', seed_entry_ids: [e1] });
+    const id = create.body.list.id;
+    await pg.pool.query(
+      `INSERT INTO vocab_cards (user_id, face, vocab_entry_id, due_at)
+       VALUES ($1, 'recognition'::card_face, $2, now() - interval '1 minute')`,
+      [userId, e1],
+    );
+    await agent.put('/vocab/gloss-override').send({ lemma: '학교', gloss: 'my note' });
+
+    const res = await agent.get(`/vocab/lists/${id}/cards/due`);
+    expect(res.status).toBe(200);
+    expect(res.body.cards[0].vocab_english).toBe('my note');
   });
 
   it('excludes a not-yet-due card for a list entry', async () => {

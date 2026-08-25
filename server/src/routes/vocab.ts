@@ -19,6 +19,7 @@ import { NotFoundError, UpstreamError, ValidationError } from '../middleware/err
 import { escapeLikePattern } from '../db/like.js';
 import { sourceUploadFenceSql } from '../db/corpusFences.js';
 import { applyCardReview } from '../services/cardReview.js';
+import { deleteGlossOverride, upsertGlossOverride } from '../services/glossOverrides.js';
 import { lemmatize } from '../services/kiwi.js';
 import {
   answerMatchesLemma,
@@ -133,24 +134,38 @@ router.get(
         english: string | null;
         proficiency: string | null;
         theme: string | null;
+        overridden: boolean;
         total: string;
       }>(
-        `SELECT id, corpus, korean, english, proficiency, theme,
+        // Phase 2.8 gloss overlay: LEFT JOIN the caller's own overrides on
+        // (user_id, lemma=ve.korean) — UNIQUE(user_id, lemma) guarantees at
+        // most one match, so no fan-out. english is COALESCEd (ugo wins when
+        // present); `overridden` tells the client whether THIS row is
+        // showing the user's own text vs. the shared default. The shared
+        // vocab_entries.english column itself is never written by this
+        // route or by the override feature (F-199 lesson — see migration
+        // 098's header).
+        `SELECT ve.id, ve.corpus, ve.korean,
+                COALESCE(ugo.gloss, ve.english) AS english,
+                ve.proficiency, ve.theme,
+                (ugo.gloss IS NOT NULL) AS overridden,
                 COUNT(*) OVER ()::text AS total
-           FROM vocab_entries
-          WHERE entry_type = 'word'
+           FROM vocab_entries ve
+           LEFT JOIN user_gloss_overrides ugo
+                  ON ugo.user_id = $8 AND ugo.lemma = ve.korean
+          WHERE ve.entry_type = 'word'
             AND ($1::text IS NULL
-                 OR korean  ILIKE $1 ESCAPE '\\'
-                 OR english ILIKE $1 ESCAPE '\\')
-            AND ($2::corpus IS NULL OR corpus = $2::corpus)
-            AND ($3::proficiency_level IS NULL OR proficiency = $3::proficiency_level)
-            AND ($4::content_domain IS NULL OR domain = $4::content_domain)
-            AND ($5::book_level IS NULL OR book_level = $5::book_level)
+                 OR ve.korean  ILIKE $1 ESCAPE '\\'
+                 OR ve.english ILIKE $1 ESCAPE '\\')
+            AND ($2::corpus IS NULL OR ve.corpus = $2::corpus)
+            AND ($3::proficiency_level IS NULL OR ve.proficiency = $3::proficiency_level)
+            AND ($4::content_domain IS NULL OR ve.domain = $4::content_domain)
+            AND ($5::book_level IS NULL OR ve.book_level = $5::book_level)
             -- F-176: theme is a free-text per-book facet, not a Postgres enum.
             -- Exact match against the ix_vocab_entries_theme_subsection
             -- index's leading column (a composite (theme, subsection) B-tree
             -- fully serves an equality filter on theme alone).
-            AND ($6::text IS NULL OR theme = $6)
+            AND ($6::text IS NULL OR ve.theme = $6)
             -- U3a source filter. When a source id is given, the row must be
             -- tagged with it AND the upload must belong to the requesting user.
             -- The EXISTS guard means a user filtering by an upload they don't
@@ -158,7 +173,7 @@ router.get(
             -- hard-deleted upload's id likewise matches nothing (book_uploads
             -- has no soft-delete column — migration 040 is hard-delete only).
             AND ($7::bigint IS NULL
-                 OR (source_upload_id = $7::bigint
+                 OR (ve.source_upload_id = $7::bigint
                      AND EXISTS (SELECT 1 FROM book_uploads bu
                                   WHERE bu.id = $7::bigint
                                     AND bu.user_id = $8)))
@@ -167,8 +182,8 @@ router.get(
             -- user's browse. Untagged rows (all curated corpora + tap-mined
             -- lemmas, source_upload_id IS NULL) stay shared reference data.
             -- Shared fragment: db/corpusFences.ts (the fence audit surface).
-            AND ${sourceUploadFenceSql('source_upload_id', '$8')}
-          ORDER BY id
+            AND ${sourceUploadFenceSql('ve.source_upload_id', '$8')}
+          ORDER BY ve.id
           LIMIT $9 OFFSET $10`,
         [
           likePattern,
@@ -359,13 +374,17 @@ router.get(
         // c.version is REQUIRED on the wire: the client echoes it back as
         // submitReview's `expected_version` (optimistic concurrency). Without
         // it every rating would post `expected_version: undefined` and 400.
+        // Phase 2.8 gloss overlay: LEFT JOIN the caller's own overrides on
+        // (user_id=$1, lemma=ve.korean) — same $1 the outer WHERE already
+        // scopes cards to, so no extra bind param. COALESCE only touches
+        // `vocab_english`; every other column (grammar/cloze) is untouched.
         `SELECT c.id, c.face, c.due_at, c.stability, c.difficulty, c.fsrs_state, c.version,
                 c.vocab_entry_id, c.grammar_entry_id, c.source_sentence_id, c.topik_item_id,
-                ve.korean          AS vocab_korean,
-                ve.english         AS vocab_english,
-                ve.example_korean  AS vocab_example_korean,
-                ve.example_english AS vocab_example_english,
-                ve.source_book     AS vocab_source_book,
+                ve.korean                      AS vocab_korean,
+                COALESCE(ugo.gloss, ve.english) AS vocab_english,
+                ve.example_korean              AS vocab_example_korean,
+                ve.example_english             AS vocab_example_english,
+                ve.source_book                 AS vocab_source_book,
                 ge.pattern_display AS grammar_pattern_display,
                 ge.summary_en      AS grammar_summary_en,
                 ge.pattern_key     AS grammar_pattern_key,
@@ -377,6 +396,8 @@ router.get(
            FROM vocab_cards c
            LEFT JOIN vocab_entries ve
                   ON ve.id = c.vocab_entry_id
+           LEFT JOIN user_gloss_overrides ugo
+                  ON ugo.user_id = $1 AND ugo.lemma = ve.korean
            LEFT JOIN grammar_entries ge
                   ON ge.id = c.grammar_entry_id
                  AND ge.user_id = c.user_id
@@ -1085,12 +1106,20 @@ router.get(
         // user's PRIVATE upload — another user probing sequential ids must get
         // the same 404 as a missing id. Untagged rows stay shared reference.
         // Shared fragment: db/corpusFences.ts (the fence audit surface).
-        `SELECT id, corpus, source_id, korean, english, pronunciation, hanja,
-                part_of_speech, theme, subsection, proficiency,
-                example_korean, example_english, tips, cross_refs, notes
-           FROM vocab_entries
-          WHERE id = $1
-            AND ${sourceUploadFenceSql('source_upload_id', '$2')}
+        // Phase 2.8 gloss overlay: same COALESCE/`overridden` shape as
+        // GET /vocab/entries above — this IS the entry-detail surface the
+        // edit-affordance's "seeded with the current gloss" state reads from.
+        `SELECT ve.id, ve.corpus, ve.source_id, ve.korean,
+                COALESCE(ugo.gloss, ve.english) AS english,
+                ve.pronunciation, ve.hanja,
+                ve.part_of_speech, ve.theme, ve.subsection, ve.proficiency,
+                ve.example_korean, ve.example_english, ve.tips, ve.cross_refs, ve.notes,
+                (ugo.gloss IS NOT NULL) AS overridden
+           FROM vocab_entries ve
+           LEFT JOIN user_gloss_overrides ugo
+                  ON ugo.user_id = $2 AND ugo.lemma = ve.korean
+          WHERE ve.id = $1
+            AND ${sourceUploadFenceSql('ve.source_upload_id', '$2')}
           LIMIT 1`,
         [id, userId],
       );
@@ -1440,6 +1469,91 @@ router.post(
   },
 );
 
+/* ---------- Phase 2.8: user-scoped gloss override ---------- */
+
+const GlossOverrideBodySchema = z
+  .object({
+    lemma: NonEmptyText.max(100),
+    gloss: NonEmptyText.max(2000),
+  })
+  .strict();
+
+/**
+ * PUT /vocab/gloss-override — set (or replace) the caller's OWN English
+ * gloss for a Korean word (Phase 2.8).
+ *
+ * Writes ONLY `user_gloss_overrides` (migration 098) — NEVER the shared
+ * `vocab_entries.english` / `krdict_entries.definition_english` columns
+ * every OTHER user's gloss reads from (the F-199 lesson; see
+ * services/glossOverrides.ts's header and the migration's). `userId` comes
+ * exclusively from `getUserId(req)` — never the request body — so a caller
+ * can only ever write their own override (IDOR-proof by construction, same
+ * posture as every mutation route in this file). `cheapLimiter` matches the
+ * sibling per-user mutation routes above (`/mine`, `/entries/:id/bank`):
+ * this writes one small per-user row with no upstream/Claude cost.
+ *
+ * Returns the saved `{ lemma, gloss }` — the NORMALIZED lemma (trim + NFC),
+ * which may differ byte-for-byte from what the client sent (e.g. an
+ * NFD-composed clipboard paste) even though it displays identically; the
+ * client should key its optimistic patch off the tapped word's own `kr`
+ * field, not this echo, exactly the way `POST /vocab/mine`'s response
+ * doesn't require the caller to re-read `lemma` back.
+ */
+router.put(
+  '/gloss-override',
+  cheapLimiter(),
+  validateBody(GlossOverrideBodySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const body = req.body as z.infer<typeof GlossOverrideBodySchema>;
+      const saved = await upsertGlossOverride(userId, body.lemma, body.gloss);
+      res.status(200).json(saved);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+const GlossOverrideDeleteBodySchema = z
+  .object({
+    lemma: NonEmptyText.max(100),
+  })
+  .strict();
+
+/**
+ * DELETE /vocab/gloss-override — clear the caller's own override for a word,
+ * reverting every gloss surface back to the shared default (Phase 2.8).
+ *
+ * Body-carried `lemma` (a DELETE with a JSON body is unusual but consistent
+ * with this route's PUT sibling, and avoids re-encoding Korean text as a URL
+ * path/query segment). `userId` from `getUserId(req)` only — the WHERE
+ * clause in `deleteGlossOverride` is scoped to it, so a caller can only ever
+ * clear their OWN override; another user's row for the same lemma is
+ * unaffected (see the user-isolation test in
+ * tests/services/glossOverrides.test.ts).
+ *
+ * `{ cleared: boolean }` rather than a bare 200/404: clearing a lemma that
+ * had no override is not an error (idempotent — mirrors DELETE /vocab/cards/
+ * :cardId's soft-delete posture of "already gone is still success"), but the
+ * client's Reset button wants to know whether there was anything to clear.
+ */
+router.delete(
+  '/gloss-override',
+  cheapLimiter(),
+  validateBody(GlossOverrideDeleteBodySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const body = req.body as z.infer<typeof GlossOverrideDeleteBodySchema>;
+      const cleared = await deleteGlossOverride(userId, body.lemma);
+      res.status(200).json({ cleared });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 /**
  * GET /vocab/saved-from-uploads — the user's saved vocab that carries upload
  * provenance, grouped by source upload (F-107; feeds the F-053 "My Uploads"
@@ -1545,7 +1659,10 @@ router.get('/saved-from-uploads', cheapLimiter(), async (req, res, next) => {
               bu.title        AS upload_title,
               ve.id           AS entry_id,
               ve.korean,
-              ve.english,
+              -- Phase 2.8 gloss overlay: the caller's own override (keyed on
+              -- their own user id, $1 — same param every other predicate in
+              -- this query already scopes to) wins over the shared default.
+              COALESCE(ugo.gloss, ve.english) AS english,
               fs.saved_at,
               -- Full matching-row count alongside the capped page (window
               -- runs before LIMIT — same idiom as GET /vocab/entries above)
@@ -1554,6 +1671,8 @@ router.get('/saved-from-uploads', cheapLimiter(), async (req, res, next) => {
          FROM first_saves fs
          JOIN vocab_entries ve
            ON ve.id = fs.entry_id
+         LEFT JOIN user_gloss_overrides ugo
+           ON ugo.user_id = $1 AND ugo.lemma = ve.korean
          -- Provenance resolution (F-199): the caller's OWN card tag wins;
          -- an untagged save falls back to the entry's F-108 extracted-corpus
          -- tag. The ownership predicate lives ON the join: card tags are
@@ -1783,12 +1902,16 @@ router.get(
         due_at: Date | null;
         total: string;
       }>(
-        `SELECT c.id, v.korean, v.english,
+        // Phase 2.8 gloss overlay: same $1 (already the card owner) scopes
+        // the override lookup — no extra bind param.
+        `SELECT c.id, v.korean, COALESCE(ugo.gloss, v.english) AS english,
                 ${BUCKET_CASE} AS bucket,
                 c.stability::text AS stability, c.reps, c.lapses, c.due_at,
                 count(*) OVER ()::text AS total
            FROM vocab_cards c
            JOIN vocab_entries v ON v.id = c.vocab_entry_id
+           LEFT JOIN user_gloss_overrides ugo
+                  ON ugo.user_id = $1 AND ugo.lemma = v.korean
           WHERE c.user_id = $1 AND c.deleted_at IS NULL ${filter}
           ORDER BY c.stability DESC NULLS LAST, v.korean COLLATE "C", c.id
           LIMIT $2 OFFSET $3`,

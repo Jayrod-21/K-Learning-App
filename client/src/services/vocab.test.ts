@@ -6,6 +6,7 @@ import {
   addListEntries,
   clearDueCards,
   createList,
+  deleteGlossOverride,
   deleteList,
   fetchSavedFromUploads,
   getDueCards,
@@ -16,6 +17,7 @@ import {
   listLists,
   mineWord,
   patchList,
+  putGlossOverride,
   removeCard,
   removeListEntry,
   searchEntries,
@@ -405,6 +407,59 @@ describe('mineWord', () => {
     await expect(mineWord({ lemma: '학교' })).rejects.toMatchObject({
       code: 'canceled',
     });
+  });
+});
+
+describe('putGlossOverride', () => {
+  it('PUTs /vocab/gloss-override with {lemma, gloss} + signal and returns the saved echo', async () => {
+    const spy = vi.spyOn(api, 'put').mockResolvedValueOnce({
+      lemma: '사과',
+      gloss: 'my own note',
+    });
+    const ctrl = new AbortController();
+
+    const out = await putGlossOverride('사과', 'my own note', ctrl.signal);
+
+    expect(spy).toHaveBeenCalledWith(
+      '/vocab/gloss-override',
+      { lemma: '사과', gloss: 'my own note' },
+      { signal: ctrl.signal },
+    );
+    expect(out).toEqual({ lemma: '사과', gloss: 'my own note' });
+  });
+
+  it('omits the config object when no signal is given', async () => {
+    const spy = vi.spyOn(api, 'put').mockResolvedValueOnce({
+      lemma: '사과',
+      gloss: 'note',
+    });
+    await putGlossOverride('사과', 'note');
+    expect(spy).toHaveBeenCalledWith(
+      '/vocab/gloss-override',
+      { lemma: '사과', gloss: 'note' },
+      undefined,
+    );
+  });
+});
+
+describe('deleteGlossOverride', () => {
+  it('DELETEs /vocab/gloss-override with the lemma in the request body + signal', async () => {
+    const spy = vi.spyOn(api, 'delete').mockResolvedValueOnce({ cleared: true });
+    const ctrl = new AbortController();
+
+    const out = await deleteGlossOverride('사과', ctrl.signal);
+
+    expect(spy).toHaveBeenCalledWith('/vocab/gloss-override', {
+      data: { lemma: '사과' },
+      signal: ctrl.signal,
+    });
+    expect(out).toEqual({ cleared: true });
+  });
+
+  it('reports cleared:false without throwing when nothing matched', async () => {
+    vi.spyOn(api, 'delete').mockResolvedValueOnce({ cleared: false });
+    const out = await deleteGlossOverride('없는단어');
+    expect(out).toEqual({ cleared: false });
   });
 });
 

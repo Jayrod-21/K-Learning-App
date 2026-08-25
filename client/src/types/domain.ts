@@ -992,6 +992,10 @@ export interface DefineEntry {
   /** Example sentences in sense/example order. Empty when KRDICT has none
    *  loaded for this entry (B-011: tables may be present but unloaded). */
   examples: DefineExample[];
+  /** Phase 2.8: true when `definition_english` above is the caller's OWN
+   *  gloss override rather than the shared corpus default — drives the
+   *  WordPopover "Edit definition" affordance's Reset control. */
+  overridden: boolean;
 }
 
 /** Envelope returned by `GET /define`. */

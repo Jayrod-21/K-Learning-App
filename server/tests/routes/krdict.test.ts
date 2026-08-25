@@ -350,3 +350,57 @@ describe('GET /krdict/search — DB error', () => {
     }
   });
 });
+
+// ── Phase 2.8: gloss override overlay (both browse and search branches) ────
+
+describe('GET /krdict/search — gloss override overlay (Phase 2.8)', () => {
+  it('browse mode (no q): overlays the override on the matching headword, leaves others untouched', async () => {
+    await seedKrdictEntry(pg.pool, { headword: '가방', definitionEn: 'bag' });
+    await seedKrdictEntry(pg.pool, { headword: '가위', definitionEn: 'scissors' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    await agent.put('/vocab/gloss-override').send({ lemma: '가방', gloss: 'my bag' });
+
+    const res = await agent.get('/krdict/search?initial=ㄱ');
+    expect(res.status).toBe(200);
+    const entries = res.body.entries as Array<{
+      headword: string;
+      definition_english: string;
+    }>;
+    expect(entries.find((e) => e.headword === '가방')?.definition_english).toBe(
+      'my bag',
+    );
+    expect(entries.find((e) => e.headword === '가위')?.definition_english).toBe(
+      'scissors',
+    );
+  });
+
+  it('search mode (q set): overlays the SELECTed gloss but still matches on the shared corpus text', async () => {
+    await seedKrdictEntry(pg.pool, { headword: '사과', definitionEn: 'apple' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    await agent.put('/vocab/gloss-override').send({ lemma: '사과', gloss: 'my apple note' });
+
+    // Still findable by the SHARED gloss text ("apple"), even though an
+    // override is active — the override changes what's SHOWN, not what the
+    // search predicate matches against.
+    const res = await agent.get('/krdict/search?q=apple');
+    expect(res.status).toBe(200);
+    expect(res.body.entries).toHaveLength(1);
+    expect(res.body.entries[0].definition_english).toBe('my apple note');
+  });
+
+  it('another user never sees the first user\'s override in browse or search', async () => {
+    await seedKrdictEntry(pg.pool, { headword: '가방', definitionEn: 'bag' });
+    const { agent: agentA } = await registerUser(t.app, pg.pool);
+    const { agent: agentB } = await registerUser(t.app, pg.pool);
+    await agentA.put('/vocab/gloss-override').send({ lemma: '가방', gloss: "A's note" });
+
+    const browseB = await agentB.get('/krdict/search?initial=ㄱ');
+    expect(
+      (browseB.body.entries as Array<{ definition_english: string }>)[0]!
+        .definition_english,
+    ).toBe('bag');
+
+    const searchB = await agentB.get('/krdict/search?q=가방');
+    expect(searchB.body.entries[0].definition_english).toBe('bag');
+  });
+});
