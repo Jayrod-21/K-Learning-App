@@ -47,35 +47,39 @@ function nextHash(): string {
 }
 
 async function insertItem(overrides: {
-  section?: 'vocab' | 'grammar';
+  section?: 'vocab' | 'grammar' | 'reading';
   level?: string;
   kind?: string;
   status?: 'draft' | 'approved' | 'retired';
   stem?: string;
+  passage?: string | null;
   choices?: readonly { kr: string; en?: string }[];
   answerIndex?: number;
   explain?: string | null;
 }): Promise<number> {
   const section = overrides.section ?? 'vocab';
-  const kind = overrides.kind ?? (section === 'grammar' ? 'pattern' : 'synonym');
+  const kind =
+    overrides.kind ?? (section === 'grammar' ? 'pattern' : section === 'reading' ? 'passage-mc' : 'synonym');
   const choices = overrides.choices ?? [
     { kr: '정답', en: 'correct' },
     { kr: '오답1' },
     { kr: '오답2' },
     { kr: '오답3' },
   ];
+  const passage = overrides.passage ?? (section === 'reading' ? '지문 텍스트입니다.' : null);
   const { rows } = await pg.pool.query<{ id: string }>(
     `INSERT INTO generated_items
-       (section, level, kind, stem, choices, answer_index, explain, source_ref,
+       (section, level, kind, stem, passage, choices, answer_index, explain, source_ref,
         status, created_by, model_id, prompt_hash)
-     VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, 'test-seed-ref',
-             $8, 'test-fixture', 'claude-sonnet-4-6', $9)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, 'test-seed-ref',
+             $9, 'test-fixture', 'claude-sonnet-4-6', $10)
      RETURNING id`,
     [
       section,
       overrides.level ?? 'L3',
       kind,
       overrides.stem ?? 'mock stem',
+      passage,
       JSON.stringify(choices),
       overrides.answerIndex ?? 0,
       overrides.explain ?? 'mock explain',
@@ -163,5 +167,64 @@ describe('pickGeneratedItem', () => {
       expect(result).not.toBeNull();
       expect(result!.sourceRef).toBe(`bank:${String(wantedId)}`);
     }
+  });
+});
+
+describe('pickGeneratedItem — reading (F-220 slice 2)', () => {
+  it('draws an approved reading row, mapped WITH a non-null passage', async () => {
+    const id = await insertItem({
+      section: 'reading',
+      level: 'L3',
+      kind: 'passage-mc',
+      stem: '이 글의 중심 내용은 무엇입니까?',
+      passage: '오늘은 날씨가 맑고 따뜻합니다. 사람들이 공원에서 산책을 합니다.',
+      choices: [
+        { kr: '날씨', en: 'weather' },
+        { kr: '음식' },
+        { kr: '교통' },
+        { kr: '건강' },
+      ],
+      answerIndex: 0,
+      explain: 'the passage is about the weather',
+    });
+
+    const result = await pickGeneratedItem('reading', 'L3', exec);
+    expect(result).not.toBeNull();
+    expect(result!.sourceRef).toBe(`bank:${String(id)}`);
+    expect(result!.kind).toBe('passage-mc');
+    expect(result!.prompt).toBe('이 글의 중심 내용은 무엇입니까?');
+    expect(result!.passage).toBe('오늘은 날씨가 맑고 따뜻합니다. 사람들이 공원에서 산책을 합니다.');
+    expect(result!.correctAnswer).toBe('a');
+  });
+
+  it('vocab/grammar draws never carry a passage (undefined, not null)', async () => {
+    await insertItem({ section: 'vocab', level: 'L3', kind: 'synonym' });
+    const result = await pickGeneratedItem('vocab', 'L3', exec);
+    expect(result).not.toBeNull();
+    expect(result!.passage).toBeUndefined();
+  });
+
+  it('reading draw only matches kind="passage-mc" rows (never synonym/cloze/pattern)', async () => {
+    // Defense-in-depth: a stray non-passage-mc row under section='reading'
+    // (should never happen via the ingest CLI) must not surface.
+    await insertItem({ section: 'reading', level: 'L3', kind: 'synonym', status: 'approved' });
+    const miss = await pickGeneratedItem('reading', 'L3', exec);
+    expect(miss).toBeNull();
+  });
+
+  it('draws only from the requested (section=reading, level) cell, never a vocab/grammar cell', async () => {
+    const wantedId = await insertItem({ section: 'reading', level: 'L4', status: 'approved' });
+    await insertItem({ section: 'reading', level: 'L3', status: 'approved' });
+    await insertItem({ section: 'vocab', level: 'L4', status: 'approved' });
+    await insertItem({ section: 'grammar', level: 'L4', kind: 'pattern', status: 'approved' });
+
+    const result = await pickGeneratedItem('reading', 'L4', exec);
+    expect(result).not.toBeNull();
+    expect(result!.sourceRef).toBe(`bank:${String(wantedId)}`);
+  });
+
+  it('returns null when the reading bank is empty for the cell (falls through to pickTopikRow)', async () => {
+    const result = await pickGeneratedItem('reading', 'L2', exec);
+    expect(result).toBeNull();
   });
 });

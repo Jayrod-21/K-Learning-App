@@ -36,12 +36,16 @@ import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { setTestEnv } from '../services/claude/setup.js';
 import { seedVocabEntry, seedKgiuEntry } from '../helpers/seed.js';
 import { loadConfig } from '../../src/services/claude/config.js';
-import type { DiagnosticItemResult } from '../../src/services/claude/models.js';
+import type {
+  DiagnosticItemResult,
+  DiagnosticReadingItemResult,
+} from '../../src/services/claude/models.js';
 import {
   DEFAULT_PER_CELL,
   ItemBankInputError,
   LEVELS,
   SECTIONS,
+  buildReadingWorkOrderRequest,
   buildWorkOrderRequest,
   countGrammarPatternSeeds,
   countVocabSeeds,
@@ -56,6 +60,7 @@ import {
   type WorkOrderFile,
   type WorkOrderItem,
 } from '../../src/scripts/generate-item-bank.js';
+import { READING_TOPICS, pickReadingTopics } from '../../src/scripts/readingTopics.js';
 
 let pg: PgHandle;
 
@@ -148,6 +153,22 @@ function goodResponse(section: 'vocab' | 'grammar', correctKr = '정답'): Diagn
   };
 }
 
+/** A schema-valid DiagnosticReadingItemResult (F-220 slice 2). */
+function goodReadingResponse(passage = '오늘은 날씨가 좋습니다.', correctKr = '정답'): DiagnosticReadingItemResult {
+  return {
+    passage,
+    prompt: 'mock reading comprehension question',
+    choices: [
+      { kr: correctKr, en: 'correct' },
+      { kr: '오답1', en: '' },
+      { kr: '오답2', en: '' },
+      { kr: '오답3', en: '' },
+    ],
+    answerIndex: 0,
+    explain: 'mock explanation',
+  };
+}
+
 // ---------------------------------------------------------------------------
 // 1. THE $0 GUARANTEE
 // ---------------------------------------------------------------------------
@@ -161,6 +182,8 @@ describe('the $0 guarantee', () => {
     expect(src).not.toMatch(/createClaudeProxy/);
     expect(src).not.toMatch(/getClaudeProxy/);
     expect(src).not.toMatch(/\.generateDiagnosticItem\(/);
+    // F-220 slice 2: the reading branch must be equally $0 — never a live call.
+    expect(src).not.toMatch(/\.generateDiagnosticReadingItem\(/);
   });
 });
 
@@ -223,8 +246,13 @@ describe('parseCliArgs', () => {
 
   it('unknown flags / unknown section / unknown level throw', () => {
     expect(() => parseCliArgs(['--bogus'])).toThrow(ItemBankInputError);
-    expect(() => parseCliArgs(['--section=reading'])).toThrow(ItemBankInputError);
+    expect(() => parseCliArgs(['--section=listening'])).toThrow(ItemBankInputError);
     expect(() => parseCliArgs(['--level=L9'])).toThrow(ItemBankInputError);
+  });
+
+  it('--section=reading is now valid (F-220 slice 2)', () => {
+    const opts = parseCliArgs(['--section=reading']);
+    expect(opts.sections).toEqual(['reading']);
   });
 
   it('exitCodeFor maps ItemBankInputError to 2, anything else to 1', () => {
@@ -547,5 +575,216 @@ describe('runIngest', () => {
     await expect(runIngest(pg.pool, makeOpts({ mode: 'ingest' }), silent)).rejects.toThrow(
       ItemBankInputError,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. F-220 slice 2 — reading section (topic seeding, passage emit/ingest)
+// ---------------------------------------------------------------------------
+
+describe('F-220 slice 2 — reading topics', () => {
+  it('pickReadingTopics never runs short: n > list length still returns n seeds (repetition allowed)', () => {
+    const seeds = pickReadingTopics('L3', READING_TOPICS.length + 5);
+    expect(seeds).toHaveLength(READING_TOPICS.length + 5);
+    for (const s of seeds) expect(READING_TOPICS).toContain(s.seedKorean);
+  });
+
+  it('pickReadingTopics returns DISTINCT topics for n <= list length (variety before any repeat)', () => {
+    const seeds = pickReadingTopics('L3', READING_TOPICS.length);
+    expect(new Set(seeds.map((s) => s.seedKorean)).size).toBe(READING_TOPICS.length);
+  });
+
+  it('COPYRIGHT: the topic list is bare concept words only — no long/prose-shaped entries', () => {
+    // A sentinel that every entry is a short bare word/phrase, never a
+    // paragraph of prose that could have been lifted from a corpus.
+    for (const topic of READING_TOPICS) {
+      expect(topic.length).toBeLessThanOrEqual(10);
+    }
+  });
+});
+
+describe('F-220 slice 2 — reading count/emit/ingest', () => {
+  it('runCount treats reading as repetition-unbounded: achievable == perCell regardless of --per-cell', async () => {
+    const summary = await runCount(
+      pg.pool,
+      makeOpts({ sections: ['reading'], levels: ['L3'], perCell: 5 }),
+      silent,
+    );
+    expect(summary.cells).toHaveLength(1);
+    expect(summary.cells[0]!.achievable).toBe(5);
+    expect(await generatedItemCount()).toBe(0);
+
+    const bigger = await runCount(
+      pg.pool,
+      makeOpts({ sections: ['reading'], levels: ['L3'], perCell: READING_TOPICS.length + 10 }),
+      silent,
+    );
+    // Unlike vocab/grammar (capped at the real pool size), reading's
+    // achievable count is NEVER capped by the topic list length.
+    expect(bigger.cells[0]!.achievable).toBe(READING_TOPICS.length + 10);
+  });
+
+  it('runEmitBatch emits a reading work-order with schema=DiagnosticReadingItemResult and independently-reproducible hashes; zero DB writes', async () => {
+    const outFile = await makeTmpFile('reading-batch.json');
+    const summary = await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['reading'], levels: ['L3'], perCell: 4, outFile }),
+      silent,
+    );
+    expect(summary.emitted).toBe(4);
+
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    expect(file.items).toHaveLength(4);
+    expect(file.meta.readingModel).toBeTruthy();
+
+    const cfg = loadConfig();
+    for (const item of file.items) {
+      expect(item.section).toBe('reading');
+      expect(item.level).toBe('L3');
+      expect(item.schema).toBe('DiagnosticReadingItemResult');
+      expect(item.seedEnglish).toBeUndefined(); // topics never carry a gloss
+      expect(READING_TOPICS).toContain(item.seedKorean); // seedKorean holds the bare topic
+      expect(item.promptHash).toMatch(/^[0-9a-f]{64}$/);
+      const rebuilt = buildReadingWorkOrderRequest(
+        'L3',
+        { seedRef: item.seedRef, seedKorean: item.seedKorean },
+        file.meta.readingModel,
+        cfg,
+      );
+      expect(rebuilt).not.toBeNull();
+      expect(rebuilt!.promptHash).toBe(item.promptHash);
+    }
+    // Distinct topics (perCell 4 <= the ~40-topic list) -> distinct hashes.
+    expect(new Set(file.items.map((i) => i.promptHash)).size).toBe(4);
+
+    expect(await generatedItemCount()).toBe(0);
+  });
+
+  it('runIngest writes reading rows with a non-null passage, kind=passage-mc, and section=reading', async () => {
+    const outFile = await makeTmpFile('reading-emit.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['reading'], levels: ['L4'], perCell: 2, outFile }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const filled = file.items.map((item, i) => ({
+      ...item,
+      response: goodReadingResponse(`읽기 지문 ${String(i)}입니다.`, `정답-${String(i)}`),
+    })) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('reading-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+    const summary = await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);
+    expect(summary.written).toBe(2);
+    expect(summary.skippedInvalid).toBe(0);
+    expect(summary.skippedHashDrift).toBe(0);
+
+    const rows = await pg.pool.query<{
+      status: string;
+      section: string;
+      level: string;
+      kind: string;
+      stem: string;
+      passage: string | null;
+      choices: Array<{ kr: string; en: string }>;
+      answer_index: number;
+    }>(
+      `SELECT status, section, level, kind, stem, passage, choices, answer_index
+         FROM generated_items ORDER BY id`,
+    );
+    expect(rows.rows).toHaveLength(2);
+    for (const [i, row] of rows.rows.entries()) {
+      expect(row.status).toBe('draft');
+      expect(row.section).toBe('reading');
+      expect(row.level).toBe('L4');
+      expect(row.kind).toBe('passage-mc');
+      expect(row.passage).toBe(`읽기 지문 ${String(i)}입니다.`);
+      expect(row.choices[row.answer_index]!.kr).toBe(`정답-${String(i)}`);
+    }
+  });
+
+  it('a vocab/grammar row written alongside reading rows still has passage=NULL', async () => {
+    await seedVocabEntry(pg.pool, { proficiency: 'L3', korean: '단어' });
+    const vocabOut = await makeTmpFile('mixed-vocab.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['vocab'], levels: ['L3'], perCell: 1, outFile: vocabOut }),
+      silent,
+    );
+    const vocabFile = JSON.parse(await readFile(vocabOut, 'utf8')) as WorkOrderFile;
+    const vocabFilled = vocabFile.items.map((item) => ({
+      ...item,
+      response: goodResponse('vocab'),
+    })) as unknown as WorkOrderItem[];
+    const vocabIn = await makeTmpFile('mixed-vocab-filled.json');
+    await writeFile(vocabIn, JSON.stringify({ meta: vocabFile.meta, items: vocabFilled }, null, 2));
+    await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile: vocabIn }), silent);
+
+    const readingOut = await makeTmpFile('mixed-reading.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['reading'], levels: ['L3'], perCell: 1, outFile: readingOut }),
+      silent,
+    );
+    const readingFile = JSON.parse(await readFile(readingOut, 'utf8')) as WorkOrderFile;
+    const readingFilled = readingFile.items.map((item) => ({
+      ...item,
+      response: goodReadingResponse(),
+    })) as unknown as WorkOrderItem[];
+    const readingIn = await makeTmpFile('mixed-reading-filled.json');
+    await writeFile(readingIn, JSON.stringify({ meta: readingFile.meta, items: readingFilled }, null, 2));
+    await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile: readingIn }), silent);
+
+    const rows = await pg.pool.query<{ section: string; passage: string | null }>(
+      `SELECT section, passage FROM generated_items ORDER BY id`,
+    );
+    expect(rows.rows).toHaveLength(2);
+    const vocabRow = rows.rows.find((r) => r.section === 'vocab')!;
+    const readingRow = rows.rows.find((r) => r.section === 'reading')!;
+    expect(vocabRow.passage).toBeNull();
+    expect(readingRow.passage).not.toBeNull();
+  });
+
+  it('rejects a malformed reading response (missing passage) without writing', async () => {
+    const outFile = await makeTmpFile('reading-bad.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['reading'], levels: ['L3'], perCell: 1, outFile }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const badResponse = { ...goodReadingResponse() } as Record<string, unknown>;
+    delete badResponse.passage;
+    const filled = file.items.map((item) => ({ ...item, response: badResponse })) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('reading-bad-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+    await expect(runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent)).rejects.toThrow(
+      ItemBankInputError,
+    );
+    expect(await generatedItemCount()).toBe(0);
+  });
+
+  it('is idempotent: re-ingesting the same filled reading file writes 0 new rows', async () => {
+    const outFile = await makeTmpFile('reading-idem.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['reading'], levels: ['L3'], perCell: 1, outFile }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const filled = file.items.map((item) => ({
+      ...item,
+      response: goodReadingResponse(),
+    })) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('reading-idem-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+    const first = await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);
+    expect(first.written).toBe(1);
+    const second = await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);
+    expect(second.written).toBe(0);
+    expect(second.skippedAlreadyCached).toBe(1);
   });
 });

@@ -38,6 +38,7 @@ function setupProxy(responses: Array<StubResponseSpec | { error: unknown }>) {
     recognize_grammar: 30,
     grade_writing: 5,
     diagnostic_item: 20,
+    generate_reading_item: 20,
     image_ocr: 10,
     generate_conversation: 10,
     generate_grammar_drill: 20,

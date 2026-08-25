@@ -156,6 +156,24 @@ export function makeStubProxy(overrides: Partial<ClaudeProxy> = {}): ClaudeProxy
       },
       metadata: { ...baseMeta, requestId: randomUUID() },
     }),
+    generateDiagnosticReadingItem: async (input) => ({
+      // F-220 slice 2: deterministic valid reading item — a short mock
+      // passage + one 4-choice comprehension question, answerIndex 0. Lets
+      // route/CLI tests exercise the full flow without touching Anthropic.
+      result: {
+        passage: `mock ${input.targetLevel} passage about ${input.topic}.`,
+        prompt: `mock reading comprehension question about ${input.topic}`,
+        choices: [
+          { kr: '정답', en: 'correct' },
+          { kr: '오답 1', en: 'wrong 1' },
+          { kr: '오답 2', en: 'wrong 2' },
+          { kr: '오답 3', en: 'wrong 3' },
+        ],
+        answerIndex: 0,
+        explain: 'mock explanation: the first choice is correct.',
+      },
+      metadata: { ...baseMeta, requestId: randomUUID() },
+    }),
     ocrImage: async () => ({
       // Deterministic OCR result: a fixed caption + 3 content words (no boxes).
       // Lets the /images upload route test assert the persisted caption + words

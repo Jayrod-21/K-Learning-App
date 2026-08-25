@@ -1258,6 +1258,31 @@ async function buildItemForSection(
 ): Promise<ServerItem | null> {
   const band = bandForTheta(theta);
   if (section === 'reading' || section === 'listening') {
+    // F-220 slice 2 — default-OFF draw from the generated, copyright-clean
+    // reading bank (generated_items, migration 101), READING ONLY (listening
+    // stays on the topik path unchanged — audio is a later slice). Mirrors
+    // buildGeneratedItem's vocab/grammar bank check exactly: with the flag
+    // off (the default), this branch never runs and everything below is
+    // byte-identical to before F-220. A `null` (bank empty/unreviewed for
+    // this cell) falls straight through to the unchanged pickTopikRow loop.
+    if (section === 'reading' && loadConfig().DIAGNOSTIC_USE_GENERATED_BANK) {
+      const banked = await pickGeneratedItem('reading', band);
+      if (banked !== null) {
+        return {
+          section: 'reading',
+          sourceKind: 'generated',
+          sourceRef: banked.sourceRef,
+          difficulty: proficiencyToNumber(band),
+          kind: banked.kind,
+          level: banked.level,
+          prompt: banked.prompt,
+          ...(banked.passage !== undefined ? { passage: banked.passage } : {}),
+          choices: banked.choices,
+          correctAnswer: banked.correctAnswer,
+          explain: banked.explain,
+        };
+      }
+    }
     // Try the band, widening inside pickTopikRow; then try building. A row
     // that fails to build (no usable answer/choices, or FIX 1(c)'s
     // passage-less guard) is dormant today (0 live rows hit it — verified
