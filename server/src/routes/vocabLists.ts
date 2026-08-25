@@ -346,6 +346,9 @@ router.get(
         hanja_gloss_en: string | null;
         hanja_level: string | null;
       }>(
+        // Phase 2.8 gloss overlay: LEFT JOIN the caller's own overrides on
+        // (user_id=$4, lemma=v.korean) — vocab-only (grammar/hanja rows have
+        // v NULL, so ugo never matches for them; COALESCE is a no-op there).
         `SELECT COALESCE(e.entry_id, e.kgiu_entry_id, e.hanja_character_id)
                   AS entry_id,
                 CASE WHEN e.entry_id      IS NOT NULL THEN 'vocab'
@@ -354,7 +357,7 @@ router.get(
                 e.position,
                 e.added_at,
                 v.korean,
-                v.english,
+                COALESCE(ugo.gloss, v.english) AS english,
                 v.proficiency::text AS proficiency,
                 v.example_korean,
                 v.example_english,
@@ -366,12 +369,14 @@ router.get(
                 h.level AS hanja_level
            FROM vocab_list_entries e
            LEFT JOIN vocab_entries    v ON v.id = e.entry_id
+           LEFT JOIN user_gloss_overrides ugo
+                  ON ugo.user_id = $4 AND ugo.lemma = v.korean
            LEFT JOIN kgiu_entries     g ON g.id = e.kgiu_entry_id
            LEFT JOIN hanja_characters h ON h.id = e.hanja_character_id
           WHERE e.list_id = $1
           ORDER BY e.position, e.added_at, e.id
           LIMIT $2 OFFSET $3`,
-        [listId, q.entry_limit, q.entry_offset],
+        [listId, q.entry_limit, q.entry_offset, userId],
       );
 
       res.status(200).json({
@@ -815,17 +820,21 @@ router.get(
         vocab_source_book: string | null;
         total: string;
       }>(
+        // Phase 2.8 gloss overlay: same $2 (already the card owner) scopes
+        // the override lookup — no extra bind param.
         `SELECT c.id, c.face, c.due_at, c.stability, c.difficulty, c.fsrs_state, c.version,
                 c.vocab_entry_id, c.grammar_entry_id, c.source_sentence_id, c.topik_item_id,
-                ve.korean          AS vocab_korean,
-                ve.english         AS vocab_english,
-                ve.example_korean  AS vocab_example_korean,
-                ve.example_english AS vocab_example_english,
-                ve.source_book     AS vocab_source_book,
+                ve.korean                      AS vocab_korean,
+                COALESCE(ugo.gloss, ve.english) AS vocab_english,
+                ve.example_korean              AS vocab_example_korean,
+                ve.example_english             AS vocab_example_english,
+                ve.source_book                 AS vocab_source_book,
                 COUNT(*) OVER ()::text AS total
            FROM vocab_list_entries le
            JOIN vocab_cards   c  ON c.vocab_entry_id = le.entry_id
            JOIN vocab_entries ve ON ve.id = c.vocab_entry_id
+           LEFT JOIN user_gloss_overrides ugo
+                  ON ugo.user_id = $2 AND ugo.lemma = ve.korean
           WHERE le.list_id = $1
             AND le.entry_id IS NOT NULL
             AND c.user_id = $2

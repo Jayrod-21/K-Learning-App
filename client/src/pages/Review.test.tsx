@@ -1162,6 +1162,7 @@ describe('Review — examples tile (B-022)', () => {
           examples: [
             { korean: '음악은 영향을 준다.', english: 'Music has an influence.' },
           ],
+          overridden: false,
         },
       ],
     });
@@ -1227,6 +1228,7 @@ describe('Review — examples tile (B-022)', () => {
           examples: [
             { korean: '음악은 영향을 준다.', english: 'Music has an influence.' },
           ],
+          overridden: false,
         },
       ],
     });
@@ -1275,6 +1277,7 @@ describe('Review — examples tile (B-022)', () => {
             examples: [
               { korean: '음악은 영향을 준다.', english: 'Music has an influence.' },
             ],
+            overridden: false,
           },
         ],
       });

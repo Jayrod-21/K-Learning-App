@@ -617,6 +617,50 @@ describe('GET /vocab/entries/:entryId', () => {
     const res = await agent.get('/vocab/entries/abc');
     expect(res.status).toBe(400);
   });
+
+  // Phase 2.8 gloss override overlay.
+  it('carries overridden=false + the shared gloss before any override', async () => {
+    const id = await seedVocabEntry(pg.pool, { korean: '학교', english: 'school' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get(`/vocab/entries/${id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.english).toBe('school');
+    expect(res.body.overridden).toBe(false);
+  });
+
+  it('overlays the caller\'s own override and reports overridden=true', async () => {
+    const id = await seedVocabEntry(pg.pool, { korean: '학교', english: 'school' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    await agent.put('/vocab/gloss-override').send({ lemma: '학교', gloss: 'my school note' });
+    const res = await agent.get(`/vocab/entries/${id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.english).toBe('my school note');
+    expect(res.body.overridden).toBe(true);
+  });
+});
+
+describe('GET /vocab/entries — gloss override overlay (Phase 2.8)', () => {
+  it('overlays the browse list, marking only the overridden row', async () => {
+    await pg.pool.query('TRUNCATE TABLE vocab_entries RESTART IDENTITY CASCADE');
+    await seedVocabEntry(pg.pool, { korean: '학교', english: 'school' });
+    await seedVocabEntry(pg.pool, { korean: '가다', english: 'to go' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    await agent.put('/vocab/gloss-override').send({ lemma: '학교', gloss: 'my school note' });
+
+    const res = await agent.get('/vocab/entries');
+    expect(res.status).toBe(200);
+    const entries = res.body.entries as Array<{
+      korean: string;
+      english: string;
+      overridden: boolean;
+    }>;
+    const school = entries.find((e) => e.korean === '학교');
+    const go = entries.find((e) => e.korean === '가다');
+    expect(school?.english).toBe('my school note');
+    expect(school?.overridden).toBe(true);
+    expect(go?.english).toBe('to go');
+    expect(go?.overridden).toBe(false);
+  });
 });
 
 describe('GET /vocab/cards/due', () => {
@@ -2135,6 +2179,29 @@ describe('vocab — DB error', () => {
   });
 });
 
+describe('GET /vocab/saved-from-uploads — gloss override overlay (Phase 2.8)', () => {
+  it("overlays the caller's own override on a saved-with-provenance word", async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const upload = await seedBookUpload(pg.pool, userId, {
+      title: '내 교재',
+      status: 'ready',
+    });
+    const lemma = `사과${Date.now()}`;
+    const mined = await agent
+      .post('/vocab/mine')
+      .send({ lemma, english: 'apple', source_upload_id: upload });
+    expect(mined.status).toBe(201);
+
+    await agent.put('/vocab/gloss-override').send({ lemma, gloss: 'apple (my note)' });
+
+    const res = await agent.get('/vocab/saved-from-uploads');
+    expect(res.status).toBe(200);
+    const entry = (res.body.groups[0].entries as Array<{ korean: string; english: string }>)[0];
+    expect(entry?.korean).toBe(lemma);
+    expect(entry?.english).toBe('apple (my note)');
+  });
+});
+
 describe('GET /vocab/mastery — F-013 word mastery', () => {
   it('summarises buckets, lists words, and filters by bucket', async () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
@@ -2228,6 +2295,25 @@ describe('GET /vocab/mastery — F-013 word mastery', () => {
     expect(res.status).toBe(200);
     expect(res.body.summary.total).toBe(1);
     expect(res.body.words).toHaveLength(1);
+  });
+
+  // Phase 2.8 gloss override overlay.
+  it("overlays the caller's own override on a mastery-list word", async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const entryId = await seedVocabEntry(pg.pool, { korean: '학교', english: 'school' });
+    await pg.pool.query(
+      `INSERT INTO vocab_cards (user_id, face, vocab_entry_id, due_at)
+       VALUES ($1, 'recognition'::card_face, $2, now())`,
+      [userId, entryId],
+    );
+    await agent.put('/vocab/gloss-override').send({ lemma: '학교', gloss: 'my school note' });
+
+    const res = await agent.get('/vocab/mastery');
+    expect(res.status).toBe(200);
+    const word = (res.body.words as Array<{ korean: string; english: string }>).find(
+      (w) => w.korean === '학교',
+    );
+    expect(word?.english).toBe('my school note');
   });
 });
 
@@ -2983,5 +3069,168 @@ describe('POST /vocab/cloze/seed (F-208)', () => {
       [entryId],
     );
     expect(row.rowCount).toBe(0);
+  });
+});
+
+// ── Phase 2.8: user-scoped gloss override — write routes + overlay ─────────
+
+describe('PUT/DELETE /vocab/gloss-override — auth required', () => {
+  it.each([
+    ['PUT', '/vocab/gloss-override'],
+    ['DELETE', '/vocab/gloss-override'],
+  ])('%s %s unauthenticated → 401', async (method, path) => {
+    const r =
+      method === 'PUT'
+        ? await request(t.app).put(path).send({ lemma: '사과', gloss: 'apple' })
+        : await request(t.app).delete(path).send({ lemma: '사과' });
+    expect(r.status).toBe(401);
+  });
+});
+
+describe('PUT /vocab/gloss-override', () => {
+  it('creates an override and echoes the normalized lemma + trimmed gloss', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .put('/vocab/gloss-override')
+      .send({ lemma: '  사과  ', gloss: '  apple (my note)  ' });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ lemma: '사과', gloss: 'apple (my note)' });
+  });
+
+  it('a second PUT for the same lemma updates (last-write-wins), not duplicates', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await agent.put('/vocab/gloss-override').send({ lemma: '사과', gloss: 'v1' });
+    await agent.put('/vocab/gloss-override').send({ lemma: '사과', gloss: 'v2' });
+    const rows = await pg.pool.query(
+      `SELECT gloss FROM user_gloss_overrides WHERE user_id = $1 AND lemma = '사과'`,
+      [userId],
+    );
+    expect(rows.rowCount).toBe(1);
+    expect(rows.rows[0]!.gloss).toBe('v2');
+  });
+
+  it('rejects a gloss over 2000 characters (400)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .put('/vocab/gloss-override')
+      .send({ lemma: '사과', gloss: 'x'.repeat(2001) });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects an unknown body field (.strict())', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .put('/vocab/gloss-override')
+      .send({ lemma: '사과', gloss: 'apple', user_id: 999 });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('DELETE /vocab/gloss-override', () => {
+  it('clears an existing override and reports cleared:true', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    await agent.put('/vocab/gloss-override').send({ lemma: '사과', gloss: 'apple' });
+    const res = await agent.delete('/vocab/gloss-override').send({ lemma: '사과' });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ cleared: true });
+  });
+
+  it('reports cleared:false when nothing matched (idempotent, not an error)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.delete('/vocab/gloss-override').send({ lemma: '없는단어' });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ cleared: false });
+  });
+
+  it("user B's DELETE cannot clear user A's override (IDOR-proof by construction)", async () => {
+    const { agent: agentA, userId: userIdA } = await registerUser(t.app, pg.pool);
+    const { agent: agentB } = await registerUser(t.app, pg.pool);
+    await agentA.put('/vocab/gloss-override').send({ lemma: '사과', gloss: "A's note" });
+
+    const res = await agentB.delete('/vocab/gloss-override').send({ lemma: '사과' });
+    expect(res.body).toEqual({ cleared: false });
+
+    const stillThere = await pg.pool.query(
+      `SELECT gloss FROM user_gloss_overrides WHERE user_id = $1 AND lemma = '사과'`,
+      [userIdA],
+    );
+    expect(stillThere.rowCount).toBe(1);
+    expect(stillThere.rows[0]!.gloss).toBe("A's note");
+  });
+});
+
+describe('gloss override read-overlay — cross-surface round trip (Phase 2.8)', () => {
+  it('GET /vocab/cards/due reflects the override, and clears back to the shared default on DELETE', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const entryId = await seedVocabEntry(pg.pool, { korean: '사과', english: 'apple' });
+    // Bank via the real route (exercises that path, and lands the card with
+    // `due_at = now()` so it shows up in the due queue immediately).
+    await agent.post(`/vocab/entries/${String(entryId)}/bank`);
+
+    const before = await agent.get('/vocab/cards/due');
+    const cardBefore = (
+      before.body.cards as Array<{ vocab_korean: string; vocab_english: string }>
+    ).find((c) => c.vocab_korean === '사과');
+    expect(cardBefore?.vocab_english).toBe('apple');
+
+    const put = await agent
+      .put('/vocab/gloss-override')
+      .send({ lemma: '사과', gloss: 'apple (custom)' });
+    expect(put.status).toBe(200);
+
+    const after = await agent.get('/vocab/cards/due');
+    const cardAfter = (
+      after.body.cards as Array<{ vocab_korean: string; vocab_english: string }>
+    ).find((c) => c.vocab_korean === '사과');
+    expect(cardAfter?.vocab_english).toBe('apple (custom)');
+
+    await agent.delete('/vocab/gloss-override').send({ lemma: '사과' });
+    const afterDelete = await agent.get('/vocab/cards/due');
+    const cardAfterDelete = (
+      afterDelete.body.cards as Array<{ vocab_korean: string; vocab_english: string }>
+    ).find((c) => c.vocab_korean === '사과');
+    expect(cardAfterDelete?.vocab_english).toBe('apple');
+  });
+
+  it('THE round trip: an override written once shows up identically through /define AND /vocab/cards/due (proves consistent lemma normalization across surfaces)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // Same headword seeded in BOTH corpora — /define reads krdict_entries,
+    // /vocab/cards/due reads vocab_entries; a single override row must serve
+    // both because the join key (lemma) is the same normalized text either
+    // way, never a corpus-specific id.
+    await seedKrdictEntry(pg.pool, { headword: '사과', definitionEn: 'apple (krdict)' });
+    const entryId = await seedVocabEntry(pg.pool, { korean: '사과', english: 'apple (vocab)' });
+    await agent.post(`/vocab/entries/${String(entryId)}/bank`);
+
+    // Write the override with an NFD-decomposed lemma (a plausible IME/
+    // clipboard artifact) — normalizeLemma must fold it to the SAME NFC key
+    // the corpus columns use, or one (or both) read surfaces below would
+    // silently miss the join and keep showing the shared default.
+    const nfdLemma = '사과'.normalize('NFD');
+    expect(nfdLemma).not.toBe('사과'); // sanity: the fixture is really byte-different
+    const put = await agent
+      .put('/vocab/gloss-override')
+      .send({ lemma: nfdLemma, gloss: 'my apple' });
+    expect(put.status).toBe(200);
+    expect(put.body.lemma).toBe('사과'); // echoed back NFC-normalized
+
+    // Exactly ONE row was written (not two keyed differently by form).
+    const rows = await pg.pool.query(
+      `SELECT lemma FROM user_gloss_overrides WHERE user_id = $1`,
+      [userId],
+    );
+    expect(rows.rowCount).toBe(1);
+    expect(rows.rows[0]!.lemma).toBe('사과');
+
+    const defineRes = await agent.get('/define?word=사과');
+    expect(defineRes.status).toBe(200);
+    expect(defineRes.body.entries[0].definition_english).toBe('my apple');
+    expect(defineRes.body.entries[0].overridden).toBe(true);
+
+    const dueRes = await agent.get('/vocab/cards/due');
+    const card = (
+      dueRes.body.cards as Array<{ vocab_korean: string; vocab_english: string }>
+    ).find((c) => c.vocab_korean === '사과');
+    expect(card?.vocab_english).toBe('my apple');
   });
 });

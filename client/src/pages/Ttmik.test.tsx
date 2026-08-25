@@ -1609,6 +1609,7 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
           definition_korean: null,
           definition_english: 'hello (polite)',
           examples: [],
+          overridden: false,
         },
       ],
     });
@@ -1677,6 +1678,7 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
           definition_korean: null,
           definition_english: 'hello (polite)',
           examples: [],
+          overridden: false,
         },
       ],
     });

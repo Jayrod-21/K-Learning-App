@@ -11,7 +11,7 @@
  * its own copy of the same a11y plumbing alongside Sheet's.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { WordPopover, type WordPopoverData } from './WordPopover';
 import { GLOSS_UNAVAILABLE } from '../lib/tapChain';
@@ -333,5 +333,142 @@ describe('WordPopover', () => {
     expect(screen.queryByText('Example')).not.toBeInTheDocument();
     // The gloss still renders in full.
     expect(screen.getByText('to eat')).toBeInTheDocument();
+  });
+});
+
+// ─── Phase 2.8 — gloss override edit affordance ─────────────────────────────
+
+describe('WordPopover — gloss override edit affordance (Phase 2.8)', () => {
+  it('hides "Edit definition" entirely when the caller did not wire onEditGloss', () => {
+    render(<WordPopover data={VOCAB} onClose={() => undefined} />);
+    expect(
+      screen.queryByRole('button', { name: 'Edit definition' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('never shows "Edit definition" on a grammar popover (v1 scope — words only)', () => {
+    render(
+      <WordPopover
+        data={GRAMMAR}
+        onClose={() => undefined}
+        onEditGloss={vi.fn()}
+      />,
+    );
+    expect(
+      screen.queryByRole('button', { name: 'Edit definition' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('opens the editor seeded with the current gloss, saves, and closes', async () => {
+    const user = userEvent.setup();
+    const onEditGloss = vi.fn().mockResolvedValue(undefined);
+    render(
+      <WordPopover
+        data={VOCAB}
+        onClose={() => undefined}
+        onEditGloss={onEditGloss}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Edit definition' }));
+    const textarea = screen.getByLabelText('Your definition');
+    expect(textarea).toHaveValue('remote work');
+
+    await user.clear(textarea);
+    await user.type(textarea, 'work done from home (my own note)');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(onEditGloss).toHaveBeenCalledWith(
+      VOCAB,
+      'work done from home (my own note)',
+    );
+    // The editor closes on a resolved save.
+    expect(
+      await screen.findByRole('button', { name: 'Edit definition' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText('Your definition')).not.toBeInTheDocument();
+  });
+
+  it('Cancel discards the draft without calling onEditGloss', async () => {
+    const user = userEvent.setup();
+    const onEditGloss = vi.fn();
+    render(
+      <WordPopover
+        data={VOCAB}
+        onClose={() => undefined}
+        onEditGloss={onEditGloss}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Edit definition' }));
+    await user.clear(screen.getByLabelText('Your definition'));
+    await user.type(screen.getByLabelText('Your definition'), 'a different draft');
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(onEditGloss).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText('Your definition')).not.toBeInTheDocument();
+    // Re-opening seeds fresh from data.en again — the discarded draft is gone.
+    await user.click(screen.getByRole('button', { name: 'Edit definition' }));
+    expect(screen.getByLabelText('Your definition')).toHaveValue('remote work');
+  });
+
+  it('leaves the editor open (does not close) when the save rejects, so the user can retry', async () => {
+    const user = userEvent.setup();
+    const onEditGloss = vi.fn().mockRejectedValue(new Error('network'));
+    render(
+      <WordPopover
+        data={VOCAB}
+        onClose={() => undefined}
+        onEditGloss={onEditGloss}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Edit definition' }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    // The rejection is expected — assert the editor's post-rejection state
+    // (still open, Save re-enabled) instead of letting it surface as an
+    // unhandled rejection.
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Save' })).not.toBeDisabled();
+    });
+    expect(screen.getByLabelText('Your definition')).toBeInTheDocument();
+    expect(onEditGloss).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows Reset only when data.overridden is true, and Reset calls onResetGloss', async () => {
+    const user = userEvent.setup();
+    const onResetGloss = vi.fn().mockResolvedValue(undefined);
+    const overridden: WordPopoverData = { ...VOCAB, overridden: true };
+    render(
+      <WordPopover
+        data={overridden}
+        onClose={() => undefined}
+        onEditGloss={vi.fn()}
+        onResetGloss={onResetGloss}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Edit definition' }));
+    const resetButton = screen.getByRole('button', { name: 'Reset to default' });
+    await user.click(resetButton);
+
+    expect(onResetGloss).toHaveBeenCalledWith(overridden);
+    expect(screen.queryByLabelText('Your definition')).not.toBeInTheDocument();
+  });
+
+  it('does not render Reset when data.overridden is false', async () => {
+    const user = userEvent.setup();
+    render(
+      <WordPopover
+        data={VOCAB}
+        onClose={() => undefined}
+        onEditGloss={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Edit definition' }));
+    expect(
+      screen.queryByRole('button', { name: 'Reset to default' }),
+    ).not.toBeInTheDocument();
   });
 });

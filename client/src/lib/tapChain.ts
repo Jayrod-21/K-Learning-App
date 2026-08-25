@@ -216,6 +216,13 @@ export function buildWordPopover(
     // stable, homograph-safe dedup key. Absent only when `/define` returned
     // no entries (the fallback popover keys on the lemma instead).
     ...(first ? { krdictEntryId: first.id } : {}),
+    // Phase 2.8: `overridden` rides straight off the /define entry — the
+    // server already resolved it (COALESCE + `ugo.gloss IS NOT NULL`), so
+    // the client never re-derives it. Absent (not `false`) when there's no
+    // KRDICT entry at all — the editor still opens on a fallback popover
+    // (its `en` is the sentinel literal), but Reset simply has nothing to
+    // offer since there's no server-known "default" to compare against.
+    ...(first ? { overridden: first.overridden } : {}),
     ex_kr: primary?.kr ?? '',
     ex_en: primary?.en ?? '',
     ...(extra.length > 0 ? { extra } : {}),

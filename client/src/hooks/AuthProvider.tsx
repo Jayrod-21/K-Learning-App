@@ -47,6 +47,7 @@ import {
   type ReactNode,
 } from 'react';
 import { ApiError, api } from '../services/api';
+import { clearLocalCaches } from '../lib/clearLocalCaches';
 import {
   login as loginRequest,
   loginTotp,
@@ -81,6 +82,17 @@ export function AuthProvider({
   children: ReactNode;
 }): JSX.Element {
   const [state, setState] = useState<AuthState>(INITIAL_STATE);
+  // Phase 2.9: mirrors `state.status` for `probe`'s 401 handler below, which
+  // has an intentionally stable (`[]`-deps) identity and so cannot read
+  // `state` directly without going stale. Lets that handler tell "we WERE
+  // authenticated and just lost the session" apart from "this is an
+  // ordinary guest visit that never had one" — only the former should clear
+  // the shared-device caches (see the call site for why the distinction
+  // matters).
+  const statusRef = useRef<AuthStatus>(state.status);
+  useEffect(() => {
+    statusRef.current = state.status;
+  }, [state.status]);
   // The interstitial 2FA challenge (PART C2). Memory-only — see the
   // threat-model header. `null` outside a pending login. The challenge token
   // it carries is read by the new MFA methods below and NEVER persisted.
@@ -138,6 +150,17 @@ export function AuthProvider({
     } catch (err) {
       if (ctrl.signal.aborted) return;
       if (err instanceof ApiError && err.status === 401) {
+        // Phase 2.9 cache-bleed fix: only clear when this 401 represents a
+        // genuine session LOSS (we were `authenticated` a moment ago and the
+        // cookie is now gone/invalid — expiry, revoke, or a stale probe
+        // outlasting an explicit logout elsewhere). Deliberately NOT on the
+        // ordinary guest-visit 401 (no session ever existed): that path fires
+        // on every anonymous page load/reload, and clearing then would wipe
+        // a not-yet-signed-in visitor's own just-set theme/accent/text-size
+        // choice on the login screen — a real regression, not a fix.
+        if (statusRef.current === 'authenticated') {
+          clearLocalCaches();
+        }
         setState({ status: 'guest', user: null });
         return;
       }
@@ -344,6 +367,12 @@ export function AuthProvider({
     // otherwise stick the Login screen on the code/enroll step after a logout.
     setPending(null);
     setState({ status: 'guest', user: null });
+    // Phase 2.9 cache-bleed fix: an explicit logout is the clearest possible
+    // signal that this browser may now be handed to someone else — clear
+    // every per-user km.* cache UNCONDITIONALLY (unlike the 401-probe path
+    // above, there's no "was this really a session?" ambiguity to guard
+    // against here; the user just clicked Log out).
+    clearLocalCaches();
     await probe();
   }, [probe, toastCtx]);
 

@@ -95,6 +95,14 @@ export interface WordPopoverData {
   notes?: string;
   /** Contrast / "don't confuse with" — shown in the drawer. */
   contrast?: string;
+  /**
+   * Phase 2.8: true when `en` above is the CALLER'S OWN gloss override
+   * (`user_gloss_overrides`) rather than the shared corpus default. Drives
+   * the "Edit definition" affordance's Reset control. Vocab only — grammar
+   * popovers never set this (a grammar pattern title isn't an overridable
+   * gloss in v1).
+   */
+  overridden?: boolean;
 }
 
 export interface WordPopoverProps {
@@ -104,6 +112,22 @@ export interface WordPopoverProps {
   onClose: () => void;
   /** Fires once when the learner taps Add — button then locks to "Added". */
   onAdd?: (data: WordPopoverData) => void | Promise<void>;
+  /**
+   * Phase 2.8: fires when the learner saves an edited gloss from the inline
+   * editor. Receives the ORIGINAL popover `data` plus the trimmed draft
+   * text — the caller (not this component) is responsible for the
+   * optimistic `data.en`/`overridden` patch (mirrors `onAdd`'s contract:
+   * this component only drives the editor's own open/closed + draft-text
+   * state). Omit to hide the "Edit definition" affordance entirely (e.g. a
+   * mock/preview popover with no backing route).
+   */
+  onEditGloss?: (data: WordPopoverData, gloss: string) => void | Promise<void>;
+  /**
+   * Phase 2.8: fires when the learner taps Reset on an overridden gloss —
+   * reverts to the shared corpus default. Only ever reachable when
+   * `data.overridden` is true (the control doesn't render otherwise).
+   */
+  onResetGloss?: (data: WordPopoverData) => void | Promise<void>;
   /**
    * Slow-path loading affordance. When true, the popover renders an inline
    * spinner placeholder in place of the gloss + example body while the
@@ -140,11 +164,16 @@ export function WordPopover({
   data,
   onClose,
   onAdd,
+  onEditGloss,
+  onResetGloss,
   isLoading = false,
   isEnriching = false,
 }: WordPopoverProps): JSX.Element {
   const [drawer, setDrawer] = useState(false);
   const [added, setAdded] = useState(false);
+  const [editingGloss, setEditingGloss] = useState(false);
+  const [draftGloss, setDraftGloss] = useState(data.en);
+  const [savingGloss, setSavingGloss] = useState(false);
   const isGrammar = data.kind === 'grammar';
 
   // F-209 KRDICT-miss flash fix: in the BASE phase, a lemma with no KRDICT
@@ -171,6 +200,52 @@ export function WordPopover({
       void (result as Promise<void>).then(undefined, () => {
         setAdded(false);
       });
+    }
+  };
+
+  // Phase 2.8 — the inline gloss editor. `onEditGloss` gates the whole
+  // affordance (a caller with no wired route simply never shows it, same
+  // posture as `onAdd` being optional); the editor never opens for grammar
+  // popovers (a pattern title isn't an overridable single-word gloss) or
+  // while the base body hasn't painted yet.
+  const canEditGloss = Boolean(onEditGloss) && !isGrammar && !isLoading;
+
+  const openEditGloss = (): void => {
+    setDraftGloss(data.en);
+    setEditingGloss(true);
+  };
+
+  const closeEditGloss = (): void => {
+    setEditingGloss(false);
+    setSavingGloss(false);
+  };
+
+  const handleSaveGloss = (): void => {
+    const trimmed = draftGloss.trim();
+    if (trimmed === '' || savingGloss) return;
+    setSavingGloss(true);
+    const result = onEditGloss?.(data, trimmed);
+    if (result && typeof (result as Promise<void>).then === 'function') {
+      void (result as Promise<void>).then(
+        () => closeEditGloss(),
+        () => setSavingGloss(false), // leave the editor open so the user can retry
+      );
+    } else {
+      closeEditGloss();
+    }
+  };
+
+  const handleResetGloss = (): void => {
+    if (savingGloss) return;
+    setSavingGloss(true);
+    const result = onResetGloss?.(data);
+    if (result && typeof (result as Promise<void>).then === 'function') {
+      void (result as Promise<void>).then(
+        () => closeEditGloss(),
+        () => setSavingGloss(false),
+      );
+    } else {
+      closeEditGloss();
     }
   };
 
@@ -351,7 +426,73 @@ export function WordPopover({
                 <Icon name="info" size={18} />
               </button>
             ) : null}
+            {/* Phase 2.8: "Edit definition" — hidden entirely when the
+                caller didn't wire onEditGloss (mirrors hasDrawer's presence
+                gate). Toggled off while the editor is already open (Cancel
+                inside the editor closes it instead). */}
+            {canEditGloss && !editingGloss ? (
+              <button
+                type="button"
+                className="km-btn km-btn--ghost km-btn--md focusring km-popover__edit-gloss"
+                aria-label="Edit definition"
+                onClick={openEditGloss}
+              >
+                <Icon name="pen" size={16} />
+              </button>
+            ) : null}
           </div>
+
+          {/* Phase 2.8: inline gloss editor. Seeded with the CURRENT gloss
+              (override or default — whatever `data.en` shows); Reset only
+              renders when `data.overridden` (nothing to revert otherwise).
+              `onResetGloss` degrades to a no-op close if the caller only
+              wired `onEditGloss` (e.g. a surface that supports editing but
+              not yet showing the overridden flag). */}
+          {editingGloss ? (
+            <div className="km-popover__gloss-editor" data-testid="word-popover-gloss-editor">
+              <label className="km-eyebrow km-popover__eyebrow" htmlFor="km-popover-gloss-input">
+                Your definition
+              </label>
+              <textarea
+                id="km-popover-gloss-input"
+                className="km-field__input focusring km-popover__gloss-input"
+                value={draftGloss}
+                onChange={(e) => {
+                  setDraftGloss(e.target.value);
+                }}
+                rows={3}
+                maxLength={2000}
+              />
+              <div className="km-popover__gloss-editor-actions">
+                <button
+                  type="button"
+                  className="km-btn km-btn--gold km-btn--sm focusring"
+                  onClick={handleSaveGloss}
+                  disabled={draftGloss.trim() === '' || savingGloss}
+                >
+                  Save
+                </button>
+                <button
+                  type="button"
+                  className="km-btn km-btn--ghost km-btn--sm focusring"
+                  onClick={closeEditGloss}
+                  disabled={savingGloss}
+                >
+                  Cancel
+                </button>
+                {data.overridden ? (
+                  <button
+                    type="button"
+                    className="km-btn km-btn--ghost km-btn--sm focusring km-popover__gloss-reset"
+                    onClick={handleResetGloss}
+                    disabled={savingGloss}
+                  >
+                    Reset to default
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
 
           {drawer && hasDrawer ? (
             <div className="km-popover__drawer">

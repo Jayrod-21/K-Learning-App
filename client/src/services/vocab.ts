@@ -455,6 +455,48 @@ export async function mineWord(
   );
 }
 
+/** `PUT /vocab/gloss-override` response — the server's normalized echo. */
+export interface GlossOverrideResult {
+  lemma: string;
+  gloss: string;
+}
+
+/**
+ * PUT /vocab/gloss-override — set (or replace) the caller's OWN English
+ * gloss for a Korean word (Phase 2.8). `lemma` is the tapped word's own `kr`
+ * field (the WordPopover headword) — the server normalizes it (trim + NFC)
+ * before writing, so the corpus-wide read-overlay join can never miss on a
+ * normalization mismatch. Writes ONLY the caller's private override row;
+ * the shared corpus gloss every other user sees is untouched.
+ */
+export async function putGlossOverride(
+  lemma: string,
+  gloss: string,
+  signal?: AbortSignal,
+): Promise<GlossOverrideResult> {
+  return api.put<GlossOverrideResult>(
+    '/vocab/gloss-override',
+    { lemma, gloss },
+    signal !== undefined ? { signal } : undefined,
+  );
+}
+
+/**
+ * DELETE /vocab/gloss-override — clear the caller's own override for a word,
+ * reverting every gloss surface back to the shared default. `cleared: false`
+ * when there was nothing to clear (not an error — the Reset control treats
+ * either outcome as success).
+ */
+export async function deleteGlossOverride(
+  lemma: string,
+  signal?: AbortSignal,
+): Promise<{ cleared: boolean }> {
+  return api.delete<{ cleared: boolean }>('/vocab/gloss-override', {
+    data: { lemma },
+    ...(signal !== undefined ? { signal } : {}),
+  });
+}
+
 /**
  * GET /vocab/saved-from-uploads — the user's saved vocab that carries upload
  * provenance, grouped by source upload (F-107; feeds the F-053 "My Uploads"

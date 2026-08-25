@@ -63,6 +63,7 @@ function defineFor(lemma: string): DefineResult {
         definition_korean: null,
         definition_english: `to ${lemma}`,
         examples: [{ korean: `${lemma} 예문`, english: `${lemma} example` }],
+        overridden: false,
       },
     ],
   };

@@ -2175,7 +2175,15 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
     (word: string) => minedIds.has(word),
     [minedIds],
   );
-  const { popData, popLoading, popEnriching, onTapWord, onClose } = useTapWord({
+  const {
+    popData,
+    popLoading,
+    popEnriching,
+    onTapWord,
+    onClose,
+    onEditGloss,
+    onResetGloss,
+  } = useTapWord({
     isMined,
   });
 
@@ -2300,6 +2308,29 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
       );
     },
     [toast],
+  );
+
+  /**
+   * Phase 2.8 — thin toast-on-failure wrappers around `useTapWord`'s gloss
+   * mutators (same split as `Reading.tsx`'s pair: the hook owns the popover-
+   * state patch, the page owns toast copy + the rethrow that keeps
+   * `WordPopover`'s inline editor open on failure).
+   */
+  const handleEditGloss = useCallback(
+    (d: WordPopoverData, gloss: string): Promise<void> =>
+      onEditGloss(d, gloss).catch((err: unknown) => {
+        toast({ message: "Couldn't save your definition — try again", tone: 'error' });
+        throw err instanceof Error ? err : new Error('gloss save failed');
+      }),
+    [onEditGloss, toast],
+  );
+  const handleResetGloss = useCallback(
+    (d: WordPopoverData): Promise<void> =>
+      onResetGloss(d).catch((err: unknown) => {
+        toast({ message: "Couldn't reset the definition — try again", tone: 'error' });
+        throw err instanceof Error ? err : new Error('gloss reset failed');
+      }),
+    [onResetGloss, toast],
   );
 
   // Render in ordinal order regardless of wire order (defensive sorts — the
@@ -2499,6 +2530,8 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
           data={popData}
           onClose={handleClose}
           onAdd={handleAdd}
+          onEditGloss={handleEditGloss}
+          onResetGloss={handleResetGloss}
           isLoading={popLoading}
           isEnriching={popEnriching}
         />

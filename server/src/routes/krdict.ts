@@ -33,7 +33,7 @@
  */
 import { Router } from 'express';
 import { z } from 'zod';
-import { requireAuth } from '../middleware/auth.js';
+import { getUserId, requireAuth } from '../middleware/auth.js';
 import { cheapLimiter } from '../middleware/rateLimits.js';
 import { validateQuery } from '../middleware/validate.js';
 import { query } from '../db/pool.js';
@@ -104,6 +104,10 @@ router.get(
       const q = (
         req as typeof req & { validatedQuery: z.infer<typeof SearchQuerySchema> }
       ).validatedQuery;
+      // Phase 2.8 gloss overlay: the router-level requireAuth (top of file)
+      // guarantees req.user is populated on every route in this file, so
+      // getUserId(req) is safe here without a re-check.
+      const userId = getUserId(req);
 
       if (!(await krdictAvailable())) {
         // Migration 003 not applied — honest 503 rather than a 500 (mirrors
@@ -148,18 +152,28 @@ router.get(
           // morphemes. This exclusion is now the leading, UNCONDITIONAL
           // WHERE clause; the optional 초성 range narrows further with AND.
           const range = q.initial ? INITIAL_RANGES[q.initial] : null;
+          // Phase 2.8 gloss overlay: the override param slides to $5 when the
+          // range's two bounds occupy $3/$4, else $3 — mirrors the existing
+          // conditional-arity pattern this query already uses for `range`.
+          const userIdParam = range ? 5 : 3;
           const result = await query<KrdictSearchRow>(
-            `SELECT id, headword, part_of_speech,
-                    definition_korean, definition_english,
+            // Aliased (`ke`) so every column is qualified — krdict_entries.id
+            // and user_gloss_overrides.id would otherwise be an ambiguous
+            // reference the moment the JOIN is added (42702).
+            `SELECT ke.id, ke.headword, ke.part_of_speech,
+                    ke.definition_korean,
+                    COALESCE(ugo.gloss, ke.definition_english) AS definition_english,
                     COUNT(*) OVER ()::text AS total
-               FROM krdict_entries
-              WHERE (part_of_speech IS NULL OR part_of_speech NOT IN ('어미', '조사'))
-              ${range ? 'AND headword COLLATE "C" >= $3 AND headword COLLATE "C" < $4' : ''}
-              ORDER BY headword COLLATE "C", id ASC
+               FROM krdict_entries ke
+               LEFT JOIN user_gloss_overrides ugo
+                      ON ugo.user_id = $${userIdParam} AND ugo.lemma = ke.headword
+              WHERE (ke.part_of_speech IS NULL OR ke.part_of_speech NOT IN ('어미', '조사'))
+              ${range ? 'AND ke.headword COLLATE "C" >= $3 AND ke.headword COLLATE "C" < $4' : ''}
+              ORDER BY ke.headword COLLATE "C", ke.id ASC
               LIMIT $1 OFFSET $2`,
             range
-              ? [q.limit, q.offset, range.start, range.end]
-              : [q.limit, q.offset],
+              ? [q.limit, q.offset, range.start, range.end, userId]
+              : [q.limit, q.offset, userId],
           );
           rows = result.rows;
         } else {
@@ -182,18 +196,28 @@ router.get(
           // exclusion to ONLY the last OR arm (definition_english), leaving
           // 어미/조사 rows that match on headword or definition_korean
           // unfiltered — a correctness bug, not a style nit.
+          // Phase 2.8 gloss overlay: the search predicate below still
+          // matches against the SHARED definition_english (an override is a
+          // personal correction, not something that should change what a
+          // gloss-text search matches for the searching user); only the
+          // SELECTed definition_english value is overlaid.
           const result = await query<KrdictSearchRow>(
-            `SELECT id, headword, part_of_speech,
-                    definition_korean, definition_english,
+            // Aliased (`ke`) — same ambiguous-`id` reasoning as the browse
+            // branch above.
+            `SELECT ke.id, ke.headword, ke.part_of_speech,
+                    ke.definition_korean,
+                    COALESCE(ugo.gloss, ke.definition_english) AS definition_english,
                     COUNT(*) OVER ()::text AS total
-               FROM krdict_entries
-              WHERE (headword           ILIKE $1 ESCAPE '\\'
-                  OR definition_korean  ILIKE $2 ESCAPE '\\'
-                  OR definition_english ILIKE $2 ESCAPE '\\')
-                AND (part_of_speech IS NULL OR part_of_speech NOT IN ('어미', '조사'))
-              ORDER BY (headword ILIKE $1 ESCAPE '\\') DESC, id ASC
+               FROM krdict_entries ke
+               LEFT JOIN user_gloss_overrides ugo
+                      ON ugo.user_id = $5 AND ugo.lemma = ke.headword
+              WHERE (ke.headword           ILIKE $1 ESCAPE '\\'
+                  OR ke.definition_korean  ILIKE $2 ESCAPE '\\'
+                  OR ke.definition_english ILIKE $2 ESCAPE '\\')
+                AND (ke.part_of_speech IS NULL OR ke.part_of_speech NOT IN ('어미', '조사'))
+              ORDER BY (ke.headword ILIKE $1 ESCAPE '\\') DESC, ke.id ASC
               LIMIT $3 OFFSET $4`,
-            [prefixPattern, substringPattern, q.limit, q.offset],
+            [prefixPattern, substringPattern, q.limit, q.offset, userId],
           );
           rows = result.rows;
         }

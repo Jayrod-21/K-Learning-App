@@ -124,13 +124,40 @@ beforeEach(() => {
     TOURS_SEEN_STORAGE_KEY,
     JSON.stringify([...TOUR_IDS]),
   );
+  // Phase 2.9 cache-bleed fix (RECON_schema.md): seed every OTHER per-user
+  // km.* key too, plus the deliberately-excluded device-scoped one, so the
+  // logout test below can prove `clearLocalCaches()` actually ran — not
+  // just that TOURS_SEEN_STORAGE_KEY (already seeded above for an unrelated
+  // reason) happened to go away.
+  //
+  // DELIBERATELY NOT `km.settings` here: SettingsProvider (mounted by the
+  // real `<App/>` this test renders) schedules its own 200ms-debounced
+  // re-save of the CURRENT in-memory settings on every mount (a self-
+  // healing normalize-on-load, unrelated to Phase 2.9) — in an integration
+  // test whose click+findBy sequence can easily cross that window, that
+  // write can land AFTER `clearLocalCaches()` and resurrect the key,
+  // which would be a false failure of THIS test, not a regression in the
+  // logout-clears-caches contract itself. `km.settings` removal is proven
+  // deterministically (no component tree, no timers) by
+  // `lib/clearLocalCaches.test.ts` instead; this test proves the WIRING
+  // (logout → clearLocalCaches) via the other keys below, none of which
+  // has a competing async rewriter.
+  window.localStorage.setItem('km.theme', 'dark');
+  window.localStorage.setItem('km.accent', 'mint');
+  window.localStorage.setItem('km.textSize', 'lg');
+  window.localStorage.setItem('km.grammar.drillCursor', '{"index":2}');
+  window.localStorage.setItem('km.install-dismissed', '1');
   // App mounts a real BrowserRouter, which reads the environment URL —
   // start the "session" on the Settings page, where the button lives.
   window.history.replaceState(null, '', '/settings');
 });
 
 afterEach(() => {
-  window.localStorage.removeItem(TOURS_SEEN_STORAGE_KEY);
+  // Phase 2.9: clear() rather than removing each key by name one-by-one —
+  // this file now seeds several km.* keys in beforeEach, and a future key
+  // added there without a matching removeItem here would otherwise leak
+  // between tests.
+  window.localStorage.clear();
   window.history.replaceState(null, '', '/');
 });
 
@@ -174,5 +201,17 @@ describe('App — logout lands on the login screen (RequireAuth redirect)', () =
     // …and the click went through the real AuthProvider → real auth
     // service → transport exactly once (single-flight held end-to-end).
     expect(harness.logoutPosts).toBe(1);
+
+    // Phase 2.9 cache-bleed fix: every per-user km.* key seeded in
+    // beforeEach is gone — a shared-device user switch starts clean.
+    // (km.settings is proven separately — see the beforeEach comment above.)
+    expect(window.localStorage.getItem(TOURS_SEEN_STORAGE_KEY)).toBeNull();
+    expect(window.localStorage.getItem('km.theme')).toBeNull();
+    expect(window.localStorage.getItem('km.accent')).toBeNull();
+    expect(window.localStorage.getItem('km.textSize')).toBeNull();
+    expect(window.localStorage.getItem('km.grammar.drillCursor')).toBeNull();
+    // Deliberate exception (device-scoped, not per-user — see
+    // clearLocalCaches's header): the install-prompt dismissal survives.
+    expect(window.localStorage.getItem('km.install-dismissed')).toBe('1');
   });
 });
