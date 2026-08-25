@@ -146,6 +146,75 @@ describe('Login — credentials step', () => {
       'Registration is closed.',
     );
   });
+
+  it('Phase 2.3: renders an Invite code field in register mode and forwards it to register()', async () => {
+    const register = vi.fn(async () => 'authenticated' as const);
+    mocks.authValue = makeAuth({ register });
+    render(<Login />);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /Create one/ }));
+    // Not present in sign-in mode.
+    await user.type(screen.getByLabelText('Email'), 'jay@example.com');
+    await user.type(screen.getByLabelText('Password'), 'a-long-passphrase');
+    await user.type(screen.getByLabelText('Invite code'), 'RAW-CODE-123');
+    await user.click(screen.getByRole('button', { name: 'Create account' }));
+
+    expect(register).toHaveBeenCalledWith(
+      'jay@example.com',
+      'a-long-passphrase',
+      undefined,
+      'RAW-CODE-123',
+    );
+  });
+
+  it('the Invite code field is absent in sign-in mode', () => {
+    render(<Login />);
+    expect(screen.queryByLabelText('Invite code')).not.toBeInTheDocument();
+  });
+
+  it('maps invite_required (403) to the fixed string in register mode', async () => {
+    const register = vi.fn(async () => {
+      throw new ApiError('an invite code is required to register', {
+        status: 403,
+        code: 'invite_required',
+      });
+    });
+    mocks.authValue = makeAuth({ register });
+    render(<Login />);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /Create one/ }));
+    await user.type(screen.getByLabelText('Email'), 'jay@example.com');
+    await user.type(screen.getByLabelText('Password'), 'a-long-passphrase');
+    await user.click(screen.getByRole('button', { name: 'Create account' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'An invite code is required to register.',
+    );
+  });
+
+  it('maps invite_invalid (403) to the fixed, non-enumerating string (never echoes server text)', async () => {
+    const register = vi.fn(async () => {
+      throw new ApiError('invite code was already used by another account', {
+        status: 403,
+        code: 'invite_invalid',
+      });
+    });
+    mocks.authValue = makeAuth({ register });
+    render(<Login />);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /Create one/ }));
+    await user.type(screen.getByLabelText('Email'), 'jay@example.com');
+    await user.type(screen.getByLabelText('Password'), 'a-long-passphrase');
+    await user.type(screen.getByLabelText('Invite code'), 'BOGUS-CODE');
+    await user.click(screen.getByRole('button', { name: 'Create account' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('That invite code is invalid or expired.');
+    expect(alert).not.toHaveTextContent('already used by another account');
+  });
 });
 
 // ─── F-006: register → check-your-email step ──────────────────
@@ -167,10 +236,13 @@ describe('Login — F-006 register verification_required', () => {
       await screen.findByRole('heading', { level: 1, name: /Check your email/ }),
     ).toBeInTheDocument();
     expect(screen.getByText('new@example.com')).toBeInTheDocument();
-    // register was called with the trimmed email.
+    // register was called with the trimmed email. Trailing `undefined`s are
+    // the optional displayName / Phase 2.3 inviteCode args, neither filled
+    // in this test.
     expect(register).toHaveBeenCalledWith(
       'New@Example.com',
       'a-long-passphrase',
+      undefined,
       undefined,
     );
   });

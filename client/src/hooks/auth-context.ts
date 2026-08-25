@@ -123,12 +123,21 @@ export interface AuthContextValue {
    * Create an account. Resolves `'authenticated'` (gate-off legacy: session
    * minted, state flips) or `'verification_required'` (F-006 prod posture:
    * NO session — the screen must show "check your email" and the app gate
-   * stays `guest`). Throws `ApiError` on conflict / validation.
+   * stays `guest`). Throws `ApiError` on conflict / validation — including
+   * the Phase 2.3 invite-gate rejections `invite_required` (no code
+   * supplied) and `invite_invalid` (bad/expired/exhausted/mismatched code),
+   * both 403s the server returns BEFORE creating any account.
+   *
+   * `inviteCode` (Phase 2.3, D1) is forwarded as-is when non-empty; omit it
+   * entirely when the deployment isn't invite-gated (`INVITE_REQUIRED=false`)
+   * — the server ignores any value it receives in that case, but the client
+   * still only sends the field when the caller provides one.
    */
   register: (
     email: string,
     password: string,
     displayName?: string,
+    inviteCode?: string,
   ) => Promise<RegisterOutcome>;
   /** Revoke session and clear cookie. Always resolves. */
   logout: () => Promise<void>;

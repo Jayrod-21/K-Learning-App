@@ -264,6 +264,7 @@ export function AuthProvider({
       email: string,
       password: string,
       displayName?: string,
+      inviteCode?: string,
     ): Promise<RegisterOutcome> => {
       // See `login` — same race, same defence.
       probeRef.current?.abort();
@@ -273,10 +274,16 @@ export function AuthProvider({
       // user). The `|| undefined` collapses '' (after trim) to omission.
       const trimmedDisplayName: string | undefined =
         displayName?.trim() || undefined;
+      // Phase 2.3: same trim-then-omit-if-empty posture as displayName — a
+      // deployment that isn't invite-gated never wants this field on the
+      // wire at all, and the server's `z.string().min(1)` would 400 on an
+      // empty string anyway.
+      const trimmedInviteCode: string | undefined = inviteCode?.trim() || undefined;
       const data = await api.post<RegisterResponse>('/auth/register', {
         email,
         password,
         ...(trimmedDisplayName ? { display_name: trimmedDisplayName } : {}),
+        ...(trimmedInviteCode ? { invite_code: trimmedInviteCode } : {}),
       });
       if (data.status === 'verification_required') {
         // F-006 gate-on posture: the server minted NO session. Stay `guest`;

@@ -138,6 +138,10 @@ services:
       - TOTP_SECRET_ENC_KEY=${TOTP_SECRET_ENC_KEY}
       - REGISTRATION_ENABLED=${REGISTRATION_ENABLED:-false}
       - MFA_REQUIRED=${MFA_REQUIRED:-true}
+      # Phase 2.3 (D1 invite-only self-signup) — orthogonal to
+      # REGISTRATION_ENABLED above; see config/index.ts's INVITE_REQUIRED
+      # doc comment. Default false matches REGISTRATION_ENABLED's default.
+      - INVITE_REQUIRED=${INVITE_REQUIRED:-false}
       # Phase 1.3 operator kill switch for the story-TTS/illustration runners
       # (config/index.ts's STORY_RUNNERS_ENABLED) — layered UNDER the
       # automatic DEPLOY_COLOR/ACTIVE_COLOR_FILE gate below; default true so

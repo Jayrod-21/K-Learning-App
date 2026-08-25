@@ -42,6 +42,7 @@ const TOUCHED_KEYS = [
   'REGISTRATION_ENABLED',
   'MFA_REQUIRED',
   'EMAIL_VERIFICATION_REQUIRED',
+  'INVITE_REQUIRED',
   'SMTP_HOST',
   'SMTP_FROM',
   'SMTP_SECURE',
@@ -90,6 +91,10 @@ describe('strict boolean env flags (envBool) — the compose files pass STRINGS'
     { key: 'MFA_REQUIRED', defaultValue: true },
     { key: 'EMAIL_VERIFICATION_REQUIRED', defaultValue: true },
     { key: 'STORY_RUNNERS_ENABLED', defaultValue: true },
+    // Phase 2.3 — default FALSE (opt-in, unlike the other three gates above)
+    // so existing dev/test register flows keep working without provisioning
+    // an invite code; prod flips it true alongside REGISTRATION_ENABLED.
+    { key: 'INVITE_REQUIRED', defaultValue: false },
   ];
 
   for (const { key, defaultValue } of FLAGS) {
