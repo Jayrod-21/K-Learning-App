@@ -273,6 +273,54 @@ export const DiagnosticItemResultSchema = z.object({
 });
 export type DiagnosticItemResult = z.infer<typeof DiagnosticItemResultSchema>;
 
+// ---- 3b-2. generateDiagnosticReadingItem ------------------------------------
+// F-220 slice 2: ONE-SHOT generation of a copyright-clean diagnostic READING
+// item. Unlike `generateDiagnosticItem` (vocab/grammar — the seed is an
+// existing word/pattern), this route authors the PASSAGE itself: given only a
+// bare, neutral TOPIC string (server/src/scripts/readingTopics.ts — an
+// uncopyrightable concept, e.g. '날씨'), Claude writes ONE original Korean
+// reading passage at the target band plus ONE 4-choice comprehension question
+// about it, in a single call. This is what lets the diagnostic's reading
+// dimension eventually be served WITHOUT touching the copyrighted TOPIK
+// corpus (`topik_items`) — the entire point of F-220.
+//
+// `kind` is NOT part of this schema (unlike DiagnosticItemResultSchema): a
+// reading item's kind is always 'passage-mc', fixed by the caller
+// (services/diagnostic/generatedBank.ts / the CLI ingest path), never chosen
+// by the model.
+
+export const DiagnosticReadingItemInputSchema = z.object({
+  /** Target proficiency band the passage + question should be written at. */
+  targetLevel: DiagnosticTargetLevelSchema,
+  /** A bare, neutral topic word/phrase (e.g. '날씨', '취미') — an
+   *  uncopyrightable CONCEPT, never corpus prose. Claude authors the passage
+   *  100% fresh from this alone. See server/src/scripts/readingTopics.ts. */
+  topic: NonEmptyText.max(200),
+  /** Optional model override. */
+  model: z.enum(['haiku', 'sonnet', 'opus']).optional(),
+});
+export type DiagnosticReadingItemInput = z.infer<typeof DiagnosticReadingItemInputSchema>;
+
+export const DiagnosticReadingItemResultSchema = z.object({
+  /** The original Korean reading passage, authored fresh from `topic` — the
+   *  copyright-clean core of F-220 slice 2. Bounded well under
+   *  generated_items.passage's DB CHECK ceiling (1..20000, migration 101); a
+   *  single diagnostic item's passage is short by design (a beginner band
+   *  must stay a few short sentences, not a full article). */
+  passage: NonEmptyText.max(1500),
+  /** The comprehension question stem the learner reads (Korean). */
+  prompt: NonEmptyText.max(1000),
+  /** Exactly 4 choices, reusing the same {kr, en?} shape
+   *  `generateDiagnosticItem` uses (the route drops `en` before the choice
+   *  reaches the learner — see DiagnosticGenChoiceSchema's doc). */
+  choices: z.array(DiagnosticGenChoiceSchema).length(4),
+  /** Index (0..3) of the single correct choice. */
+  answerIndex: z.number().int().min(0).max(3),
+  /** One- or two-sentence explanation, revealed only after the user answers. */
+  explain: NonEmptyText.max(800),
+});
+export type DiagnosticReadingItemResult = z.infer<typeof DiagnosticReadingItemResultSchema>;
+
 // ---- 3c. ocrImage ----------------------------------------------------------
 // Image OCR mining (Pass 8, Images screen). Given a photo containing Korean
 // text, Claude Vision transcribes it and returns a short caption plus the

@@ -150,6 +150,34 @@ async function seedApprovedBankForEveryCell(): Promise<void> {
   }
 }
 
+/** One APPROVED generated_items READING row (F-220 slice 2) for `level` —
+ *  kind='passage-mc', carries a non-null passage. Mirrors
+ *  `seedApprovedBankItem` but for the reading section. */
+async function seedApprovedReadingBankItem(level: (typeof LEVELS)[number]): Promise<number> {
+  const choices = JSON.stringify([
+    { kr: `은행-정답-reading-${level}`, en: '' },
+    { kr: '오답1', en: '' },
+    { kr: '오답2', en: '' },
+    { kr: '오답3', en: '' },
+  ]);
+  const { rows } = await pg.pool.query<{ id: string }>(
+    `INSERT INTO generated_items
+       (section, level, kind, stem, passage, choices, answer_index, explain, source_ref,
+        status, created_by, model_id, prompt_hash)
+     VALUES ('reading', $1, 'passage-mc', $2, $3, $4::jsonb, 0, 'mock explain', 'test-seed',
+             'approved', 'test-fixture', 'claude-sonnet-4-6', $5)
+     RETURNING id`,
+    [level, `mock reading bank stem (${level})`, `mock reading bank passage (${level}).`, choices, fakeHash()],
+  );
+  return Number(rows[0]!.id);
+}
+
+async function seedApprovedReadingBankForEveryCell(): Promise<void> {
+  for (const level of LEVELS) {
+    await seedApprovedReadingBankItem(level);
+  }
+}
+
 /** Drive a run to completion, skipping every item (mirrors
  *  diagnostic.test.ts's runAllSkip). */
 async function runAllSkip(agent: RegisteredAgent['agent']): Promise<number> {
@@ -226,6 +254,93 @@ describe('F-220 DIAGNOSTIC_USE_GENERATED_BANK', () => {
     expect(rows.rows.length).toBe(WEIGHTS.vocab + WEIGHTS.grammar);
     for (const row of rows.rows) {
       expect(row.source_ref).toMatch(/^bank:\d+$/);
+    }
+  });
+});
+
+describe('F-220 slice 2 DIAGNOSTIC_USE_GENERATED_BANK — reading', () => {
+  it('flag OFF (default): reading is served from topik even with an approved reading bank covering every level', async () => {
+    await seedNonGeneratedPools();
+    await seedLiveGenerationSeeds();
+    await seedApprovedReadingBankForEveryCell();
+    setClaudeProxy(makeStubProxy());
+    _setConfigForTesting({ DIAGNOSTIC_USE_GENERATED_BANK: false });
+
+    const { agent } = await registerUser(t.app, pg.pool);
+    const runId = await runAllSkip(agent);
+
+    const rows = await pg.pool.query<{ source_kind: string; source_ref: string | null }>(
+      `SELECT source_kind, source_ref FROM diagnostic_responses
+        WHERE run_id = $1 AND section = 'reading'`,
+      [runId],
+    );
+    expect(rows.rows.length).toBeGreaterThanOrEqual(WEIGHTS.reading);
+    for (const row of rows.rows) {
+      // Byte-identical-until-opt-in: still the live topik path, never the bank.
+      expect(row.source_kind).toBe('topik');
+      expect(row.source_ref).not.toMatch(/^bank:/);
+    }
+  });
+
+  it('flag ON + approved reading bank for every level: reading is served from the bank; the topik pool is never touched even though it exists', async () => {
+    await seedNonGeneratedPools(); // still seeds a real topik reading pool
+    await seedLiveGenerationSeeds();
+    await seedApprovedReadingBankForEveryCell();
+    setClaudeProxy(makeStubProxy());
+    _setConfigForTesting({ DIAGNOSTIC_USE_GENERATED_BANK: true });
+
+    const { agent } = await registerUser(t.app, pg.pool);
+    const runId = await runAllSkip(agent);
+
+    const rows = await pg.pool.query<{ source_kind: string; source_ref: string | null }>(
+      `SELECT source_kind, source_ref FROM diagnostic_responses
+        WHERE run_id = $1 AND section = 'reading'`,
+      [runId],
+    );
+    expect(rows.rows.length).toBe(WEIGHTS.reading);
+    for (const row of rows.rows) {
+      expect(row.source_kind).toBe('generated');
+      expect(row.source_ref).toMatch(/^bank:\d+$/);
+    }
+  });
+
+  it('flag ON but the reading bank is EMPTY for a level: falls through to the live topik path for that level (never null-skips reading)', async () => {
+    await seedNonGeneratedPools();
+    await seedLiveGenerationSeeds();
+    // Deliberately do NOT seed any reading bank rows.
+    setClaudeProxy(makeStubProxy());
+    _setConfigForTesting({ DIAGNOSTIC_USE_GENERATED_BANK: true });
+
+    const { agent } = await registerUser(t.app, pg.pool);
+    const runId = await runAllSkip(agent);
+
+    const rows = await pg.pool.query<{ source_kind: string }>(
+      `SELECT source_kind FROM diagnostic_responses WHERE run_id = $1 AND section = 'reading'`,
+      [runId],
+    );
+    expect(rows.rows.length).toBeGreaterThanOrEqual(WEIGHTS.reading);
+    for (const row of rows.rows) {
+      expect(row.source_kind).toBe('topik');
+    }
+  });
+
+  it('flag ON: LISTENING is completely untouched — still served from topik even with the reading bank full', async () => {
+    await seedNonGeneratedPools();
+    await seedLiveGenerationSeeds();
+    await seedApprovedReadingBankForEveryCell();
+    setClaudeProxy(makeStubProxy());
+    _setConfigForTesting({ DIAGNOSTIC_USE_GENERATED_BANK: true });
+
+    const { agent } = await registerUser(t.app, pg.pool);
+    const runId = await runAllSkip(agent);
+
+    const rows = await pg.pool.query<{ source_kind: string }>(
+      `SELECT source_kind FROM diagnostic_responses WHERE run_id = $1 AND section = 'listening'`,
+      [runId],
+    );
+    expect(rows.rows.length).toBeGreaterThanOrEqual(WEIGHTS.listening);
+    for (const row of rows.rows) {
+      expect(row.source_kind).toBe('topik');
     }
   });
 });

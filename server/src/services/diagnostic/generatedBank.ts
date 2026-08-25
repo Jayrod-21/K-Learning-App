@@ -24,10 +24,12 @@
 import { query, type Querier } from '../../db/pool.js';
 import type { DiagnosticTargetLevel } from '../claude/index.js';
 
-/** This slice's bank only ever holds vocab/grammar rows (the CLI writes no
- *  other section yet), even though the table's `section` CHECK admits the
- *  full forward-compat set. Narrower than the table schema on purpose. */
-export type GeneratedBankSection = 'vocab' | 'grammar';
+/** F-220 slice 1 wrote vocab/grammar rows; slice 2 (F-220) adds 'reading' —
+ *  a generated, copyright-clean passage + comprehension MC item
+ *  (kind='passage-mc', carries a non-null `passage`). Still narrower than
+ *  the table's full forward-compat `section` CHECK ('listening'/'writing'
+ *  are later slices). */
+export type GeneratedBankSection = 'vocab' | 'grammar' | 'reading';
 
 const CHOICE_IDS = ['a', 'b', 'c', 'd'] as const;
 type ChoiceId = (typeof CHOICE_IDS)[number];
@@ -46,6 +48,11 @@ export interface GeneratedBankItem {
   readonly level: DiagnosticTargetLevel;
   /** The question stem — maps to `ServerItem.prompt`. */
   readonly prompt: string;
+  /** The shared reading passage — present (non-empty) only for a
+   *  section='reading' draw; `undefined` for vocab/grammar (mirrors
+   *  `ServerItem.passage`'s optional-field posture — `toClientItem` already
+   *  forwards it verbatim when present). */
+  readonly passage?: string;
   readonly choices: readonly GeneratedBankChoice[];
   readonly correctAnswer: ChoiceId;
   readonly explain: string;
@@ -60,6 +67,7 @@ interface GeneratedItemRow {
   readonly kind: string;
   readonly level: string;
   readonly stem: string;
+  readonly passage: string | null;
   readonly choices: ReadonlyArray<{ readonly kr: string; readonly en?: string }>;
   readonly answer_index: number;
   readonly explain: string | null;
@@ -74,8 +82,9 @@ interface GeneratedItemRow {
  * the random-order shuffle over the (small, per-cell) approved slice.
  *
  * The `kind` predicate re-applies the SAME section<->kind contract the live
- * path enforces (routes/diagnostic.ts `buildGeneratedItem`: grammar items
- * are kind 'pattern', vocab items are anything else) as a WHERE clause —
+ * path enforces (routes/diagnostic.ts `buildGeneratedItem`/the reading draw
+ * in `buildItemForSection`: grammar items are kind 'pattern', reading items
+ * are kind 'passage-mc', vocab items are anything else) as a WHERE clause —
  * defense-in-depth so a future stray row (e.g. a hand-inserted admin fix)
  * can never surface through the draw path even if it slipped past the
  * ingest CLI's own guard.
@@ -84,16 +93,23 @@ interface GeneratedItemRow {
  * run against a per-test database without touching module-level pool state.
  *
  * Returns null when no approved row matches the cell — the caller's cue to
- * fall through to live generation.
+ * fall through to live generation (vocab/grammar) or `pickTopikRow` (reading).
  */
 export async function pickGeneratedItem(
   section: GeneratedBankSection,
   level: DiagnosticTargetLevel,
   exec: Querier = query,
 ): Promise<GeneratedBankItem | null> {
-  const kindOp = section === 'grammar' ? '=' : '<>';
+  // 'grammar' -> exactly kind='pattern'; 'reading' -> exactly
+  // kind='passage-mc' (both an exact-match `=`, section is ALSO in the WHERE
+  // clause so this is never ambiguous with the other's kind); 'vocab' ->
+  // anything EXCEPT 'pattern' (unchanged from slice 1 — a vocab row can
+  // never legitimately carry kind='passage-mc' in the first place, since the
+  // ingest CLI only ever writes that kind under section='reading').
+  const kindOp = section === 'vocab' ? '<>' : '=';
+  const kindValue = section === 'reading' ? 'passage-mc' : 'pattern';
   const { rows } = await exec<GeneratedItemRow>(
-    `SELECT id, kind, level, stem, choices, answer_index, explain
+    `SELECT id, kind, level, stem, passage, choices, answer_index, explain
        FROM generated_items
       WHERE section = $1
         AND level = $2
@@ -101,7 +117,7 @@ export async function pickGeneratedItem(
         AND kind ${kindOp} $3
       ORDER BY random()
       LIMIT 1`,
-    [section, level, 'pattern'],
+    [section, level, kindValue],
   );
   const row = rows[0];
   if (row === undefined) return null;
@@ -121,6 +137,7 @@ export async function pickGeneratedItem(
     kind: row.kind,
     level: row.level as DiagnosticTargetLevel,
     prompt: row.stem,
+    ...(row.passage !== null ? { passage: row.passage } : {}),
     choices,
     correctAnswer,
     explain: row.explain ?? '',

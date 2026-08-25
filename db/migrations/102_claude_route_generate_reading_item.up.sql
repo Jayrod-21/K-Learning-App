@@ -1,0 +1,34 @@
+-- migrate: non-destructive
+-- 102 (up): add 'generate_reading_item' to claude_route.
+--
+-- F-220 slice 2 (generated, copyright-clean diagnostic READING items) adds
+-- ONE new proxy route to the code's RouteName union
+-- (server/src/services/claude/config.ts):
+--   * generate_reading_item — generateDiagnosticReadingItem; authors an
+--     original Korean passage + comprehension question from a bare topic.
+--     Called only by the offline generate-item-bank CLI's --emit-batch mode
+--     (never invoked live), but every call — batch or live — still writes a
+--     claude_usage row (and, for a future cacheTtl>0 route, a claude_cache
+--     row) typed against this enum.
+-- Without this enum value the call would fail its claude_usage write with
+-- `invalid input value for enum claude_route` — the exact defect 031/032
+-- fixed for the grammar-drill/image-OCR/diagnostic routes, and that
+-- 053/055/057 repeat the same "intentional friction" pattern for since. This
+-- migration is that friction: a new Claude-touching route requires a
+-- reviewed migration, authored HERE alongside the code instead of after the
+-- fact. server/tests/db/claude_route_enum.test.ts is the drift guard that
+-- would otherwise catch this silently missing.
+--
+-- NOT part of migration 101's "no migration needed" scope (F-220 slice 2's
+-- build brief) — 101 already has the `generated_items.passage` column and
+-- the `'reading'`/`'passage-mc'` section+kind values it needs with zero
+-- schema change. This is a SEPARATE, unrelated table (claude_cache/
+-- claude_usage, migration 004) whose `route` enum must grow with every new
+-- RouteName, exactly like every prior Claude-proxy route addition.
+--
+-- ADR-013: ADD VALUE is its own migration and safe inside migrate.py's
+-- per-migration transaction on PG12+ — the value just cannot be USED until
+-- COMMIT. Nothing in this file uses it; the server (separate runtime
+-- transactions, once this migration has landed) does. Mirrors 057/055/053/032/031.
+
+ALTER TYPE claude_route ADD VALUE IF NOT EXISTS 'generate_reading_item';

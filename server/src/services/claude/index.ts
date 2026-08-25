@@ -52,6 +52,8 @@ import {
   ConversationTurnSchema,
   DiagnosticItemInputSchema,
   DiagnosticItemResultSchema,
+  DiagnosticReadingItemInputSchema,
+  DiagnosticReadingItemResultSchema,
   EnrichmentInputSchema,
   EnrichmentResultSchema,
   GradeInputSchema,
@@ -83,6 +85,8 @@ import {
   type ConversationTurn,
   type DiagnosticItemInput,
   type DiagnosticItemResult,
+  type DiagnosticReadingItemInput,
+  type DiagnosticReadingItemResult,
   type EnrichmentInput,
   type EnrichmentResult,
   type GradeInput,
@@ -111,6 +115,7 @@ import {
 import { buildConversationRequest } from './prompts/conversation';
 import { buildNameConversationRequest } from './prompts/name_conversation';
 import { buildDiagnosticItemRequest } from './prompts/diagnostic_item';
+import { buildDiagnosticReadingItemRequest } from './prompts/diagnostic_reading_item';
 import { buildEnrichRequest } from './prompts/enrich';
 import { buildGradeWritingRequest } from './prompts/grade_writing';
 import {
@@ -140,6 +145,8 @@ export type {
   ConversationTurn,
   DiagnosticItemInput,
   DiagnosticItemResult,
+  DiagnosticReadingItemInput,
+  DiagnosticReadingItemResult,
   DiagnosticTargetLevel,
   EnrichmentInput,
   EnrichmentResult,
@@ -280,6 +287,16 @@ export interface ClaudeProxy {
     input: DiagnosticItemInput,
     ctx?: CallContext,
   ): Promise<ProxyResult<DiagnosticItemResult>>;
+  /**
+   * F-220 slice 2: author ONE original Korean reading passage plus ONE
+   * 4-choice comprehension question about it, from a bare topic string alone
+   * (never from existing corpus prose — see models.ts's copyright note).
+   * Unlike `generateDiagnosticItem`, this method authors the PASSAGE itself.
+   */
+  generateDiagnosticReadingItem(
+    input: DiagnosticReadingItemInput,
+    ctx?: CallContext,
+  ): Promise<ProxyResult<DiagnosticReadingItemResult>>;
   /**
    * Run OCR + vocab-mining on ONE uploaded photo. The user message carries an
    * IMAGE content block (base64). Returns a caption + the distinct content
@@ -547,6 +564,36 @@ class ClaudeProxyImpl implements ClaudeProxy {
       request: req,
       cacheTtl: cfg.cacheTtlSeconds.diagnostic_item,
       outputSchema: DiagnosticItemResultSchema,
+      parser: parseJsonContent,
+    });
+  }
+
+  async generateDiagnosticReadingItem(
+    rawInput: DiagnosticReadingItemInput,
+    ctx: CallContext = {},
+  ): Promise<ProxyResult<DiagnosticReadingItemResult>> {
+    const cfg = this.cfg;
+    const route: RouteName = 'generate_reading_item';
+    const input = parseInput(DiagnosticReadingItemInputSchema, rawInput, route);
+    // The topic is the only free-text field — sanitize through the SAME
+    // injection guard + length cap every other route uses. Topics are a
+    // static, app-owned list (server/src/scripts/readingTopics.ts), not raw
+    // user text, but the wrapping is defense-in-depth and the cap bounds
+    // prompt size (mirrors generateDiagnosticItem's seedKorean handling).
+    const topic = sanitizeUserInput(input.topic, {
+      maxLength: cfg.inputCaps.generate_reading_item,
+    });
+    const cleaned: DiagnosticReadingItemInput = { ...input, topic };
+    const model = resolveModel(cfg, route, input.model);
+    const req = buildDiagnosticReadingItemRequest(cleaned, model);
+
+    return this.runJsonRoute({
+      route,
+      model,
+      ctx,
+      request: req,
+      cacheTtl: cfg.cacheTtlSeconds.generate_reading_item,
+      outputSchema: DiagnosticReadingItemResultSchema,
       parser: parseJsonContent,
     });
   }
