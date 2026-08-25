@@ -266,6 +266,26 @@ def test_100_down_reverses_cleanly_then_099_down_requires_allow_destructive(
     target_before_100 = _pre_target(full_dir, MIGRATION_100)  # == "099"
     target_before_099 = _pre_target(full_dir, MIGRATION_099)
 
+    # `_up` applies the WHOLE real chain, which may include migrations layered
+    # ON TOP of 100 (e.g. 101 generated_items, whose down is a destructive
+    # DROP TABLE). Bring the chain down to exactly 100 first, with the flag,
+    # so the 100->099 assertions below test 100's OWN down in isolation
+    # regardless of what later migrations exist — otherwise a later migration's
+    # destructive down would refuse the deliberately-un-flagged `down` below and
+    # this test would break every time a new migration lands. A no-op (rc 0)
+    # when 100 is already the top of the chain.
+    rc = migrate.main(
+        [
+            "--migrations-dir",
+            str(full_dir),
+            "--target",
+            MIGRATION_100,
+            "--allow-destructive",
+            "down",
+        ]
+    )
+    assert rc == 0, f"pre-step: down to {MIGRATION_100} (dropping any later migrations) returned {rc}"
+
     with psycopg.connect(dsn, autocommit=True) as conn:
         user_id = _seed_user(conn, "down-user@test.dev")
         _seed_pending_upload(conn, user_id)
