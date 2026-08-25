@@ -43,6 +43,7 @@ const TOUCHED_KEYS = [
   'MFA_REQUIRED',
   'EMAIL_VERIFICATION_REQUIRED',
   'INVITE_REQUIRED',
+  'DIAGNOSTIC_USE_GENERATED_BANK',
   'SMTP_HOST',
   'SMTP_FROM',
   'SMTP_SECURE',
@@ -95,6 +96,11 @@ describe('strict boolean env flags (envBool) — the compose files pass STRINGS'
     // so existing dev/test register flows keep working without provisioning
     // an invite code; prod flips it true alongside REGISTRATION_ENABLED.
     { key: 'INVITE_REQUIRED', defaultValue: false },
+    // F-220 slice 1 — default FALSE (opt-in): the live diagnostic's
+    // vocab/grammar generation stays byte-identical until an operator has
+    // populated + approved a generated_items bank and deliberately flips
+    // this on.
+    { key: 'DIAGNOSTIC_USE_GENERATED_BANK', defaultValue: false },
   ];
 
   for (const { key, defaultValue } of FLAGS) {
