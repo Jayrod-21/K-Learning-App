@@ -98,6 +98,8 @@ import {
   thetaToNumeric,
   type DiagnosticBand,
 } from '../services/diagnostic/cat.js';
+import { pickGeneratedItem } from '../services/diagnostic/generatedBank.js';
+import { loadConfig } from '../config/index.js';
 import {
   DIMENSION_ORDER,
   RUBRIC_VERSION,
@@ -831,6 +833,33 @@ async function buildGeneratedItem(
   userId: number,
 ): Promise<ServerItem | null> {
   const target = targetLevelForTheta(theta);
+
+  // F-220 slice 1 — default-OFF draw from the generated, copyright-clean
+  // item bank (generated_items, migration 101). With the flag off (the
+  // default), this branch never runs and everything below is byte-identical
+  // to before F-220. With the flag on, an approved bank item for this exact
+  // cell short-circuits the live Claude call entirely; a `null` (bank empty/
+  // unreviewed for this cell) falls straight through to the unchanged live
+  // generation path below — the bank is a supplement, never a hard
+  // dependency.
+  if (loadConfig().DIAGNOSTIC_USE_GENERATED_BANK) {
+    const banked = await pickGeneratedItem(section, target);
+    if (banked !== null) {
+      return {
+        section,
+        sourceKind: 'generated',
+        sourceRef: banked.sourceRef,
+        difficulty: proficiencyToNumber(target),
+        kind: banked.kind,
+        level: banked.level,
+        prompt: banked.prompt,
+        choices: banked.choices,
+        correctAnswer: banked.correctAnswer,
+        explain: banked.explain,
+      };
+    }
+  }
+
   const seed = section === 'vocab' ? await pickVocabSeed(target) : await pickGrammarSeed(target);
   if (seed === null) return null;
 

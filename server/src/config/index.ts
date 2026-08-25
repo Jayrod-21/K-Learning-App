@@ -457,6 +457,16 @@ const EnvSchema = z.object({
   INVITE_REQUIRED: envBool(false),
 
   // ---------------------------------------------------------------------------
+  // F-220 slice 1 — generated, copyright-clean assessment-item bank
+  // (generated_items, migration 101). Default FALSE so the live diagnostic's
+  // vocab/grammar item selection (routes/diagnostic.ts buildGeneratedItem)
+  // is BYTE-IDENTICAL to today until an operator has populated + reviewed a
+  // bank (draft -> approved) AND deliberately flips this on. Strict
+  // envBool — same landmine as REGISTRATION_ENABLED/INVITE_REQUIRED above.
+  // ---------------------------------------------------------------------------
+  DIAGNOSTIC_USE_GENERATED_BANK: envBool(false),
+
+  // ---------------------------------------------------------------------------
   // Mail transport (F-006) — provider-agnostic SMTP, NEVER a hardcoded vendor.
   // Unset SMTP_HOST ⇒ the mock/log transport (dev + tests): the message is
   // logged (including the verification URL — the dev escape hatch) and nothing
