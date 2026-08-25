@@ -10,13 +10,19 @@
  * `source_upload_id` (migration 040). This phase only needs each page to
  * exist and be viewable, in the right order.
  *
- * Flow:
- *   POST   /uploads                  → upload a zip-of-images or PDF
- *                                       (multipart `file` + `title` + `type`),
- *                                       normalize to pages, store them,
- *                                       upsert the row (idempotent replace by
- *                                       (user, title))
- *   GET    /uploads                  → this user's uploads, newest first
+ * Flow (Phase 2.5 — ASYNC ingest, the OOM fix; see services/
+ * bookIngestRunner.ts's header for the full design):
+ *   POST   /uploads                  → enqueue a zip-of-images or PDF
+ *                                       (multipart `file` + `title` + `type`)
+ *                                       for async ingest — writes the raw
+ *                                       file to disk + a 'pending' row,
+ *                                       returns 202 IMMEDIATELY (no decode in
+ *                                       the request; idempotent replace by
+ *                                       (user, title) for a TERMINAL row —
+ *                                       a live pending/processing row 409s)
+ *   GET    /uploads                  → this user's uploads, newest first —
+ *                                       poll GET /uploads/:id for a pending/
+ *                                       processing upload's status
  *   GET    /uploads/shared           → the shared curated library (F-217) —
  *                                       every is_shared book, all accounts
  *   GET    /uploads/:id              → one upload's metadata (incl. page_count)
@@ -44,10 +50,12 @@
  * reused rather than reinvented — see services/bookUploadIngest.ts's header
  * for the upload-side rationale, services/zipPageExtract.ts's header for the
  * zip-bomb guards):
- *   - UPLOAD: multer MEMORY storage, single field `file`, ~300 MiB fileSize
- *     cap, declared-mime fileFilter as an early reject, magic-byte
+ *   - UPLOAD: multer DISK storage (Phase 2.5 — was memory storage; the raw
+ *     upload never touches Node heap), single field `file`, ~300 MiB
+ *     fileSize cap, declared-mime fileFilter as an early reject, magic-byte
  *     (`PK\x03\x04` zip / `%PDF-` pdf) sniff as the authority (never trust
- *     the client-declared mime).
+ *     the client-declared mime) — run against the file ON DISK, never the
+ *     whole thing loaded into memory to check it.
  *   - PATH TRAVERSAL: every page's blob filename is a SERVER-generated UUID +
  *     the session user id (services/uploadStore.ts); no client string
  *     (including a zip entry's filename — used ONLY for sort order) ever
@@ -83,15 +91,29 @@
  *     schema — an extra field is REJECTED, not ignored.
  *   - COST/ABUSE: a per-user DAILY cap (config BOOK_UPLOAD_DAILY_CAP) on NEW
  *     titles → 429 BEFORE any write; a same-title re-upload (idempotent
- *     replace) is exempt (see bookUploadIngest.ts).
- *   - ATOMICITY: POST is transactional — every page's blob write is followed
- *     by its `book_pages` INSERT before the `book_uploads` upsert's
- *     transaction commits; the PRIOR pages' blobs (on a same-title replace)
- *     are only deleted AFTER the transaction commits, so a rolled-back
- *     request never destroys files a still-live row points at. DELETE reads
- *     every page's blob_ref inside the same transaction as the row delete
- *     (which CASCADEs `book_pages`, migration 041), then unlinks the files
- *     best-effort after commit.
+ *     replace, of a TERMINAL ready/failed row) is exempt (see
+ *     bookUploadIngest.ts). A same-title upload while a PRIOR one is still
+ *     pending/processing → 409, not a cap consumption (the second request
+ *     never wrote anything).
+ *   - ATOMICITY (Phase 2.5): POST's enqueue is one short transaction (row
+ *     lock -> cap check / conflict check -> insert-or-reset to 'pending')
+ *     that never touches a page or a blob — the actual decode is the
+ *     runner's job, entirely outside the request (bookIngestRunner.ts). Any
+ *     failure AFTER multer wrote the raw file — the inline `UploadBodySchema`
+ *     parse (blank title, bad `type`, `.strict()` mass-assignment), the
+ *     magic-byte sniff, the daily cap, or the 409 conflict — deletes the
+ *     just-written raw file before responding, so nothing orphans on disk
+ *     for a request that never got as far as a DB row. Body validation is
+ *     done INLINE in the handler rather than via the `validateBody(...)`
+ *     middleware every other route here uses, specifically so a validation
+ *     failure lands in the SAME try/catch as every other post-multer
+ *     failure (BUG FIX: `validateBody` calls `next(err)` directly, which
+ *     bypasses the handler entirely — under the old memoryStorage this was
+ *     harmless, but diskStorage means it used to leak the raw file on every
+ *     validation rejection). DELETE (unchanged) reads every page's blob_ref
+ *     inside the same transaction as the row delete (which CASCADEs
+ *     `book_pages`, migration 041), then unlinks the files best-effort
+ *     after commit.
  *   - REORDER CONCURRENCY: `PATCH .../pages/order` renumbers through a
  *     temporary out-of-range placeholder (see the handler) so the two-phase
  *     bulk UPDATE never trips the NOT DEFERRABLE `UNIQUE(upload_id,
@@ -102,21 +124,23 @@
  *     or replace-by-title, so this deliberately isn't a long/immutable cache).
  */
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { stat, unlink } from 'node:fs/promises';
 import { Router, type Request } from 'express';
 import { z } from 'zod';
 import { getUserId, requireAuth } from '../middleware/auth.js';
 import { cheapLimiter, expensiveLimiter, mediaLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateParams } from '../middleware/validate.js';
-import { query, withTransaction } from '../db/pool.js';
-import { NotFoundError, ValidationError } from '../middleware/errors.js';
+import { clientQuerier, query, withTransaction, type Querier } from '../db/pool.js';
+import { ConflictError, NotFoundError, ValidationError } from '../middleware/errors.js';
 import { deleteBlob, resolveUnderRoot } from '../services/uploadStore.js';
 import {
+  assertUnderDailyCap,
   BOOK_UPLOAD_TYPES,
-  ingestUpload,
+  bookUploadRawRelPath,
   multerBookUpload,
-  persistUpload,
+  sniffUploadedFileKind,
   type BookUploadDTO,
+  type BookUploadType,
 } from '../services/bookUploadIngest.js';
 import {
   MAX_EXTRACT_PAGES_PER_RUN,
@@ -125,6 +149,7 @@ import {
   toExtractionRunDTO,
   type ExtractionRunRow,
 } from '../services/uploadExtract.js';
+import { sweepFailedBookUploads } from '../services/jobRetention.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -202,9 +227,10 @@ interface UploadRow {
   id: number;
   title: string;
   type: (typeof BOOK_UPLOAD_TYPES)[number];
-  status: 'processing' | 'ready' | 'failed';
+  status: 'pending' | 'processing' | 'ready' | 'failed';
   page_count: number | null;
   byte_size: number;
+  error: string | null;
   created_at: Date;
 }
 
@@ -219,49 +245,136 @@ function toDTO(row: UploadRow): BookUploadDTO {
     status: row.status,
     page_count: row.page_count,
     byte_size: row.byte_size,
+    error: row.error,
     created_at: row.created_at.toISOString(),
   };
 }
 
-// ---------------------------------------------------------------------------
-// POST /uploads — upload a zip-of-images or PDF (transactional; idempotent
-// replace by title).
-// ---------------------------------------------------------------------------
+/**
+ * The enqueue transaction (Phase 2.5 — mirrors reading.ts's
+ * `enqueueStoryAudio` shape): row-lock any existing (user, title) upload
+ * FIRST — serializing this against a concurrent second POST for the SAME
+ * title — then either INSERT a brand-new 'pending' row (daily cap applies)
+ * or, for a terminal (ready/failed) existing row, RESET it to 'pending' with
+ * a fresh raw file (idempotent replace — unchanged posture from the sync-era
+ * `ingestUpload`'s "PER-USER CAP" note: a same-title re-upload never spends
+ * budget). A 'pending'/'processing' existing row 409s rather than being
+ * clobbered — see the module header IDOR/ATOMICITY note for why: overwriting
+ * `raw_blob_ref` on a row the runner might be mid-decode of would let its
+ * eventual status-guarded settle UPDATE (`WHERE status = 'processing'`)
+ * silently no-op, stranding freshly-decoded book_pages under a row that had
+ * already moved back to 'pending' out from under it.
+ *
+ * The OLD book_pages for a replaced title are deliberately NOT deleted here
+ * — the runner clears them itself, immediately before it starts the new
+ * decode (bookIngestRunner.ts's idempotency step), so the prior version
+ * stays viewable for as long as the new one is still queued/decoding.
+ */
+async function enqueueBookUpload(
+  db: Querier,
+  userId: number,
+  body: { title: string; type: BookUploadType },
+  byteSize: number,
+  rawBlobRef: string,
+): Promise<BookUploadDTO> {
+  const existing = await db<{ id: number; status: UploadRow['status'] }>(
+    `SELECT id, status FROM book_uploads WHERE user_id = $1 AND title = $2 FOR UPDATE`,
+    [userId, body.title],
+  );
+  const row = existing.rows[0];
 
-router.post('/', expensiveLimiter(), multerBookUpload, validateBody(UploadBodySchema), async (req, res, next) => {
-  try {
-    const userId = getUserId(req);
-    const file = (req as Request & { file?: Express.Multer.File }).file;
-    const body = (req as Request & { body: z.infer<typeof UploadBodySchema> }).body;
-
-    // ingestUpload does the CPU-bound zip/PDF -> ordered-pages normalization
-    // (see bookUploadIngest.ts's "synchronous processing" note) before
-    // anything is persisted.
-    const ingested = await ingestUpload(file, body, userId);
-    const persisted = await withTransaction((client) => persistUpload(client, userId, ingested));
-
-    // Filesystem cleanup happens AFTER the commit above succeeds — deleting
-    // the prior pages' blobs earlier would destroy the only copy if the
-    // transaction had rolled back. Best-effort: a leftover orphan file is
-    // harmless (GC-able), so a delete failure here must not fail the request
-    // that already committed its new rows.
-    if (persisted.priorBlobRefs.length > 0) {
-      await Promise.all(
-        persisted.priorBlobRefs.map(async (blobRef) => {
-          try {
-            await deleteBlob(blobRef);
-          } catch (err) {
-            req.log.warn(
-              { err: String(err), blobRef },
-              'uploads: failed to delete replaced page blob (orphaned, non-fatal)',
-            );
-          }
-        }),
+  if (row !== undefined) {
+    if (row.status === 'pending' || row.status === 'processing') {
+      throw new ConflictError(
+        'an upload is already processing for this title — wait for it to finish or fail, or use a different title',
       );
     }
+    const { rows } = await db<UploadRow>(
+      `UPDATE book_uploads
+          SET type = $2::book_upload_type, status = 'pending', byte_size = $3,
+              page_count = NULL, error = NULL, started_at = NULL, finished_at = NULL,
+              raw_blob_ref = $4, version = version + 1
+        WHERE id = $1
+        RETURNING id, title, type, status, page_count, byte_size, error, created_at`,
+      [row.id, body.type, byteSize, rawBlobRef],
+    );
+    return toDTO(rows[0]!);
+  }
 
-    res.status(persisted.wasNew ? 201 : 200).json({ upload: persisted.dto });
+  // Brand-new title — the per-user daily cap applies BEFORE the INSERT.
+  await assertUnderDailyCap(db, userId);
+  const { rows } = await db<UploadRow>(
+    `INSERT INTO book_uploads (user_id, title, type, status, byte_size, raw_blob_ref)
+     VALUES ($1, $2, $3::book_upload_type, 'pending', $4, $5)
+     RETURNING id, title, type, status, page_count, byte_size, error, created_at`,
+    [userId, body.title, body.type, byteSize, rawBlobRef],
+  );
+  return toDTO(rows[0]!);
+}
+
+// ---------------------------------------------------------------------------
+// POST /uploads — enqueue a zip-of-images or PDF for ASYNC ingest (Phase 2.5
+// — the OOM fix). NO decode happens in the request: multer has already
+// written the raw file to disk (diskStorage, never Node heap — see
+// bookUploadIngest.ts); this handler validates (magic-byte sniff, daily cap)
+// and enqueues a 'pending' book_uploads row, returning 202 immediately. The
+// in-process ingest runner (bookIngestRunner.ts) does the actual streaming
+// decode; the client polls GET /uploads/:id for status.
+// ---------------------------------------------------------------------------
+
+router.post('/', expensiveLimiter(), multerBookUpload, async (req, res, next) => {
+  const file = (req as Request & { file?: Express.Multer.File }).file;
+  try {
+    const userId = getUserId(req);
+
+    // BODY VALIDATION — deliberately done HERE, inline, rather than via the
+    // `validateBody(UploadBodySchema)` middleware every other route in this
+    // file uses (BUG FIX, Phase 2.5 diskStorage regression: `validateBody`
+    // calls `next(err)` directly on a Zod failure, which skips straight to
+    // the error handler and NEVER reaches this handler's own try/catch below
+    // — so the raw file multer had already written to disk (diskStorage,
+    // unlike the old memoryStorage) would leak on every blank-title/
+    // bad-type/`.strict()`-mass-assignment rejection, with no `book_uploads`
+    // row ever written to let `jobRetention.ts`'s sweep reach it later. Doing
+    // the parse inline means a schema failure throws INTO this handler's own
+    // catch, which already unlinks `file.path` on any post-multer failure —
+    // one cleanup path for every rejection, not two.
+    const parsedBody = UploadBodySchema.safeParse(req.body);
+    if (!parsedBody.success) {
+      throw new ValidationError('invalid request body', parsedBody.error.issues);
+    }
+    const body = parsedBody.data;
+
+    if (!file || file.size === 0) {
+      throw new ValidationError('a zip (vFlat export) or PDF file is required in the "file" field');
+    }
+
+    // Magic-byte sniff — never trust the client-declared mime (multer's
+    // fileFilter was only an early reject). Reads a handful of bytes off
+    // disk, never the whole (possibly 300 MiB) file. Throws ValidationError
+    // (400) for a file that's neither a real zip nor a real PDF.
+    await sniffUploadedFileKind(file.path);
+
+    const rawBlobRef = bookUploadRawRelPath(userId, file.filename);
+    const dto = await withTransaction((client) =>
+      enqueueBookUpload(clientQuerier(client), userId, body, file.size, rawBlobRef),
+    );
+
+    res.status(202).json({ upload: dto });
   } catch (err) {
+    // Any failure AFTER multer already wrote the raw file (a blank/invalid
+    // body per the inline UploadBodySchema parse above, bad magic bytes,
+    // over the daily cap, a live 409 conflict) must not orphan it on disk —
+    // delete best-effort before propagating (module header "On a validation
+    // failure, delete the just-written raw file").
+    if (file) {
+      await unlink(file.path).catch((unlinkErr: unknown) => {
+        req.log.warn(
+          { err: String(unlinkErr), path: file.path },
+          'uploads: failed to delete raw upload file after a failed enqueue (orphaned, non-fatal)',
+        );
+      });
+    }
     next(err);
   }
 });
@@ -273,6 +386,12 @@ router.post('/', expensiveLimiter(), multerBookUpload, validateBody(UploadBodySc
 router.get('/', cheapLimiter(), async (req, res, next) => {
   try {
     const userId = getUserId(req);
+    // Retention (Phase 2.5): sweep this user's stale terminal-'failed' book
+    // uploads before listing — the "My Uploads" read is the natural sweep
+    // trigger (no cron in this repo, jobRetention.ts's established pattern).
+    // Best-effort and user-scoped; a failure here is logged and swallowed
+    // inside the service, so it never fails the listing.
+    await sweepFailedBookUploads(userId, req.log);
     // The owner ALWAYS sees their own books here, whether or not they are
     // shared. (Reverses the earlier F-207 decision-#2 exclusion, which was
     // wrong for books: unlike audio — whose curated sets all live on the
@@ -284,7 +403,7 @@ router.get('/', cheapLimiter(), async (req, res, next) => {
     // browsing the shared library as a NON-owner is GET /uploads/shared
     // (F-217, below).
     const { rows } = await query<UploadRow>(
-      `SELECT id, title, type, status, page_count, byte_size, created_at
+      `SELECT id, title, type, status, page_count, byte_size, error, created_at
          FROM book_uploads
         WHERE user_id = $1
         ORDER BY created_at DESC, id DESC`,
@@ -329,7 +448,7 @@ router.get('/shared', cheapLimiter(), async (_req, res, next) => {
     // tests). READ-only surface; every write route keeps its strict owner
     // scope, and is_shared itself stays operator-set only.
     const { rows } = await query<UploadRow>(
-      `SELECT id, title, type, status, page_count, byte_size, created_at
+      `SELECT id, title, type, status, page_count, byte_size, error, created_at
          FROM book_uploads
         WHERE is_shared = true AND status = 'ready'
         ORDER BY created_at DESC, id DESC
@@ -359,7 +478,7 @@ router.get('/:id', cheapLimiter(), validateParams(IdParamsSchema), async (req, r
     // never confirm a foreign book exists. UploadRow carries no user_id/
     // email, so a shared read leaks no owner identity.
     const { rows } = await query<UploadRow>(
-      `SELECT id, title, type, status, page_count, byte_size, created_at
+      `SELECT id, title, type, status, page_count, byte_size, error, created_at
          FROM book_uploads
         WHERE id = $1 AND (user_id = $2 OR is_shared = true)`,
       [id, userId],
@@ -699,21 +818,28 @@ router.delete(
       const { id } = (req as Request & { validatedParams: z.infer<typeof IdParamsSchema> })
         .validatedParams;
 
-      // Capture every page's blob_ref BEFORE deleting (the DELETE below
-      // CASCADEs book_pages at the DB level, migration 041 — the rows are
-      // gone the instant this commits, but the FILES are cleaned up
-      // separately below since file deletion isn't transactional). Any
-      // content U2 has tagged via source_upload_id is un-tagged, not deleted
-      // (ON DELETE SET NULL, migration 040), and the upload's extraction-run
-      // rows likewise survive with upload_id nulled (ON DELETE SET NULL,
-      // migration 069): they are the daily Vision-page cost ledger, and
-      // deleting a book must never refund its budget (fixpass b8 BLOCKER-1).
-      const blobRefs = await withTransaction(async (client) => {
-        const owner = await client.query<{ id: number }>(
-          `SELECT id FROM book_uploads WHERE id = $1 AND user_id = $2 FOR UPDATE`,
+      // Capture every page's blob_ref + the RAW upload file's ref (Phase
+      // 2.5 — a 'pending'/'processing' row still points at one; a settled
+      // 'ready'/'failed' row's is already NULL) BEFORE deleting (the DELETE
+      // below CASCADEs book_pages at the DB level, migration 041 — the rows
+      // are gone the instant this commits, but the FILES are cleaned up
+      // separately below since file deletion isn't transactional). Deleting
+      // an upload the runner hasn't claimed yet (still 'pending') would
+      // otherwise strand its raw file on the km_book_uploads volume forever
+      // — nothing would ever claim (and therefore never clean up) a row that
+      // no longer exists. Any content U2 has tagged via source_upload_id is
+      // un-tagged, not deleted (ON DELETE SET NULL, migration 040), and the
+      // upload's extraction-run rows likewise survive with upload_id nulled
+      // (ON DELETE SET NULL, migration 069): they are the daily Vision-page
+      // cost ledger, and deleting a book must never refund its budget
+      // (fixpass b8 BLOCKER-1).
+      const { blobRefs, rawBlobRef } = await withTransaction(async (client) => {
+        const owner = await client.query<{ id: number; raw_blob_ref: string | null }>(
+          `SELECT id, raw_blob_ref FROM book_uploads WHERE id = $1 AND user_id = $2 FOR UPDATE`,
           [id, userId],
         );
-        if (!owner.rows[0]) {
+        const row = owner.rows[0];
+        if (!row) {
           // Not theirs / missing → 404 (IDOR-safe — same response whether the
           // id belongs to another user or doesn't exist).
           throw new NotFoundError('upload not found');
@@ -723,20 +849,27 @@ router.delete(
           [id],
         );
         await client.query(`DELETE FROM book_uploads WHERE id = $1`, [id]);
-        return pages.rows.map((r) => r.blob_ref);
+        return { blobRefs: pages.rows.map((r) => r.blob_ref), rawBlobRef: row.raw_blob_ref };
       });
 
       // Best-effort blob cleanup — the rows are already gone; a failed unlink
       // leaves a harmless orphan file rather than failing a delete the user
-      // already sees as successful.
+      // already sees as successful. A row deleted while still 'processing'
+      // can race the runner (it holds no lock across its decode loop — see
+      // bookIngestRunner.ts's header): the runner's own page-INSERTs will
+      // then fail their FK (the parent row is gone) and its settle UPDATE
+      // will no-op (0 rows matched), so any page blobs it wrote before
+      // hitting that FK error are ALSO orphaned — acceptable, same "harmless
+      // GC-able orphan" posture as every other best-effort delete in this
+      // module; nothing user-visible or security-relevant.
       await Promise.all(
-        blobRefs.map(async (blobRef) => {
+        [...blobRefs, ...(rawBlobRef !== null ? [rawBlobRef] : [])].map(async (blobRef) => {
           try {
             await deleteBlob(blobRef);
           } catch (err) {
             req.log.warn(
               { err: String(err), blobRef },
-              'uploads: failed to delete page blob on DELETE (orphaned, non-fatal)',
+              'uploads: failed to delete blob on DELETE (orphaned, non-fatal)',
             );
           }
         }),

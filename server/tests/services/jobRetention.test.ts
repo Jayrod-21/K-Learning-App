@@ -25,6 +25,7 @@ import { setPoolForTesting } from '../../src/db/pool.js';
 import {
   JOB_RETENTION_DAYS,
   sweepAudioTranscriptionJobs,
+  sweepFailedBookUploads,
   sweepStoryAudioJobs,
   sweepStoryImageJobs,
 } from '../../src/services/jobRetention.js';
@@ -60,7 +61,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await pg.pool.query(
     `TRUNCATE TABLE audio_transcription_jobs, story_audio_jobs, story_image_jobs,
-                    generated_stories, users RESTART IDENTITY CASCADE`,
+                    book_uploads, generated_stories, users RESTART IDENTITY CASCADE`,
   );
 });
 
@@ -147,6 +148,35 @@ async function countStoryAudioJobs(userId: number): Promise<number> {
 async function countStoryImageJobs(userId: number): Promise<number> {
   const { rows } = await pg.pool.query<{ n: string }>(
     `SELECT count(*)::text AS n FROM story_image_jobs WHERE user_id = $1`,
+    [userId],
+  );
+  return Number(rows[0]!.n);
+}
+
+let bookUploadTitleCounter = 0;
+
+/** Insert one book_uploads row with an explicit status + finished-age. A
+ *  NULL `finishedDaysAgo` leaves finished_at NULL (pending/processing's
+ *  in-flight shape — Phase 2.5). Title must be unique per (user, title); a
+ *  counter keeps every seeded row distinct within one test. */
+async function seedBookUploadRow(
+  userId: number,
+  status: 'pending' | 'processing' | 'ready' | 'failed',
+  finishedDaysAgo: number | null,
+): Promise<void> {
+  bookUploadTitleCounter += 1;
+  await pg.pool.query(
+    `INSERT INTO book_uploads (user_id, title, type, status, byte_size, finished_at)
+     VALUES ($1, $2, 'vocab', $3::book_upload_status, 1024,
+             CASE WHEN $4::int IS NULL THEN NULL
+                  ELSE now() - make_interval(days => $4::int) END)`,
+    [userId, `retention-test-${bookUploadTitleCounter}`, status, finishedDaysAgo],
+  );
+}
+
+async function countBookUploads(userId: number): Promise<number> {
+  const { rows } = await pg.pool.query<{ n: string }>(
+    `SELECT count(*)::text AS n FROM book_uploads WHERE user_id = $1`,
     [userId],
   );
   return Number(rows[0]!.n);
@@ -251,6 +281,37 @@ describe('sweepStoryImageJobs', () => {
     expect(deleted).toBe(2);
     expect(await countStoryImageJobs(userId)).toBe(2);
     expect(await countStoryImageJobs(other)).toBe(1);
+  });
+});
+
+describe('sweepFailedBookUploads (Phase 2.5 — async book-ingest pipeline)', () => {
+  it('deletes old FAILED rows, keeps recent-failed + ready + in-flight, and is user-scoped', async () => {
+    const userId = await seedUser('bu-owner@example.com');
+    const other = await seedUser('bu-other@example.com');
+
+    await seedBookUploadRow(userId, 'failed', OLD_DAYS); // deleted
+    await seedBookUploadRow(userId, 'failed', RECENT_DAYS); // kept — recent
+    // A 'ready' upload is the user's actual content — NEVER swept by age,
+    // unlike the job-ledger tables above (book_uploads IS the asset here,
+    // not a row that merely records a job ran).
+    await seedBookUploadRow(userId, 'ready', OLD_DAYS); // kept — ready, however old
+    await seedBookUploadRow(userId, 'pending', null); // kept — in-flight
+    await seedBookUploadRow(userId, 'processing', null); // kept — in-flight
+    await seedBookUploadRow(other, 'failed', OLD_DAYS); // kept — other user
+
+    const deleted = await sweepFailedBookUploads(userId, nullLog);
+
+    expect(deleted).toBe(1);
+    expect(await countBookUploads(userId)).toBe(4);
+    expect(await countBookUploads(other)).toBe(1);
+  });
+
+  it('is idempotent — a second sweep deletes nothing', async () => {
+    const userId = await seedUser('bu-idem@example.com');
+    await seedBookUploadRow(userId, 'failed', OLD_DAYS);
+
+    expect(await sweepFailedBookUploads(userId, nullLog)).toBe(1);
+    expect(await sweepFailedBookUploads(userId, nullLog)).toBe(0);
   });
 });
 

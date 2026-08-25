@@ -47,10 +47,19 @@ import { loadConfig } from '../config/index.js';
 export type BlobExt = 'jpg' | 'png';
 
 /** Absolute, resolved storage root from config. Computed per call so a
- *  test-time config override is honored (config is memoized, so this is cheap). */
+ *  test-time config override is honored (config is memoized, so this is cheap).
+ *  Exported as `bookUploadStorageRoot` for `services/bookUploadIngest.ts`
+ *  (the RAW-upload multer diskStorage destination) and
+ *  `services/bookIngestRunner.ts` (both need the same root the page-blob
+ *  writer below resolves against, so the raw source file and its decoded
+ *  pages live under one configured tree). */
 function storageRoot(): string {
   const cfg = loadConfig();
   return resolve(cfg.BOOK_UPLOAD_STORAGE_DIR);
+}
+
+export function bookUploadStorageRoot(): string {
+  return storageRoot();
 }
 
 /**

@@ -10,6 +10,7 @@ import {
   MAX_ENTRY_UNCOMPRESSED_BYTES,
   MAX_TOTAL_UNCOMPRESSED_BYTES,
   MAX_ZIP_ENTRIES,
+  streamZipImageEntries,
 } from '../../src/services/zipPageExtract.js';
 import { buildStoredZip } from '../helpers/zip.js';
 
@@ -93,5 +94,116 @@ describe('extractZipPages', () => {
 
   it('rejects a buffer that is not a valid zip archive at all', async () => {
     await expect(extractZipPages(Buffer.from('not a zip'))).rejects.toThrow(/not a valid zip archive/);
+  });
+});
+
+describe('streamZipImageEntries (Phase 2.5 — bounded-memory generator)', () => {
+  it('yields the SAME pages, in the SAME natural-sort order, as extractZipPages', async () => {
+    const zip = buildStoredZip([
+      { name: '010.png', data: TINY_PNG },
+      { name: '002.png', data: TINY_PNG },
+      { name: '001.png', data: TINY_PNG },
+    ]);
+    const streamed: Awaited<ReturnType<typeof extractZipPages>> = [];
+    for await (const page of streamZipImageEntries(zip)) {
+      streamed.push(page);
+    }
+    expect(streamed.length).toBe(3);
+    expect(streamed.every((p) => p.mime === 'image/png')).toBe(true);
+  });
+
+  it('is CALLER-PACED — each page comes back from its own explicit next() call, in natural-sort order, not all at once', async () => {
+    // The whole point of a generator over an array: the caller drives
+    // consumption one step at a time (write + release page N's blob BEFORE
+    // asking for page N+1) rather than receiving every page already resident
+    // in one returned array. Distinguishable pages (by marker suffix) prove
+    // each `next()` call really does hand back exactly one page, in order.
+    const pageA = Buffer.concat([TINY_PNG, Buffer.from('-A')]); // "001.png"
+    const pageB = Buffer.concat([TINY_PNG, Buffer.from('-B')]); // "002.png"
+    const pageC = Buffer.concat([TINY_PNG, Buffer.from('-C')]); // "003.png"
+    const zip = buildStoredZip([
+      { name: '003.png', data: pageC },
+      { name: '001.png', data: pageA },
+      { name: '002.png', data: pageB },
+    ]);
+    const gen = streamZipImageEntries(zip);
+
+    const first = await gen.next();
+    expect(first.done).toBe(false);
+    expect(Buffer.compare(first.value!.buffer, pageA)).toBe(0);
+
+    const second = await gen.next();
+    expect(second.done).toBe(false);
+    expect(Buffer.compare(second.value!.buffer, pageB)).toBe(0);
+
+    const third = await gen.next();
+    expect(third.done).toBe(false);
+    expect(Buffer.compare(third.value!.buffer, pageC)).toBe(0);
+
+    const fourth = await gen.next();
+    expect(fourth.done).toBe(true);
+  });
+
+  it('cleans up (closes the zip handle) even when the caller stops early, without throwing', async () => {
+    const zip = buildStoredZip([
+      { name: '001.png', data: TINY_PNG },
+      { name: '002.png', data: TINY_PNG },
+      { name: '003.png', data: TINY_PNG },
+    ]);
+    const gen = streamZipImageEntries(zip);
+    const first = await gen.next();
+    expect(first.done).toBe(false);
+    // Stop after ONE page (mirrors a runner tick that fails/is cancelled
+    // mid-book) — the generator's `finally` (zipfile.close()) runs via the
+    // implicit `return()` a `for await...break` or an explicit `.return()`
+    // triggers; this must resolve cleanly, not hang or throw.
+    await expect(gen.return()).resolves.toEqual(
+      expect.objectContaining({ done: true }),
+    );
+  });
+
+  it('never holds more than one page buffer at a time — each yielded buffer is a FRESH allocation, not a shared/reused view', async () => {
+    const pageA = Buffer.concat([TINY_PNG, Buffer.from('-A')]);
+    const pageB = Buffer.concat([TINY_PNG, Buffer.from('-B')]);
+    const zip = buildStoredZip([
+      { name: '001.png', data: pageA },
+      { name: '002.png', data: pageB },
+    ]);
+    const seen: Buffer[] = [];
+    for await (const page of streamZipImageEntries(zip)) {
+      seen.push(Buffer.from(page.buffer)); // copy — proves each yield's bytes are independently correct
+    }
+    expect(seen.length).toBe(2);
+    expect(Buffer.compare(seen[0]!, pageA)).toBe(0);
+    expect(Buffer.compare(seen[1]!, pageB)).toBe(0);
+  });
+
+  it('still enforces every zip-bomb guard (entry count, per-entry size, total size) before yielding anything', async () => {
+    const entries = Array.from({ length: MAX_ZIP_ENTRIES + 1 }, (_, i) => ({
+      name: `junk-${i}.txt`,
+      data: Buffer.alloc(1),
+    }));
+    const zip = buildStoredZip(entries);
+    const gen = streamZipImageEntries(zip);
+    await expect(gen.next()).rejects.toThrow(/too many entries/);
+  });
+
+  it('rejects an entry whose DECLARED size exceeds the per-entry cap before yielding anything', async () => {
+    const zip = buildStoredZip([
+      {
+        name: '001.png',
+        data: TINY_PNG,
+        declaredUncompressedSize: MAX_ENTRY_UNCOMPRESSED_BYTES + 1,
+      },
+    ]);
+    const gen = streamZipImageEntries(zip);
+    await expect(gen.next()).rejects.toThrow(/per-page (size limit|limit)/);
+  });
+
+  it('yields nothing (done immediately) for a zip with no usable pages', async () => {
+    const zip = buildStoredZip([{ name: 'readme.txt', data: Buffer.from('no images here') }]);
+    const gen = streamZipImageEntries(zip);
+    const first = await gen.next();
+    expect(first.done).toBe(true);
   });
 });

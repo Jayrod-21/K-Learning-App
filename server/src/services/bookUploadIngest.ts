@@ -1,99 +1,87 @@
 /**
- * Book-upload ingest service (U1a — book-upload feature, reworked to the
- * PAGE-IMAGE model). See db/docs/PDF_UPLOAD_DESIGN.md §"REVISION
- * (2026-07-08)" (authoritative) for the "why": Jared's real scans are a
- * vFlat export — a ZIP of ~500 high-res JPG page images (240 MB), not a
- * single <=15MB PDF. This module now accepts EITHER a zip-of-images or a
- * plain PDF and normalizes BOTH to an ORDERED SEQUENCE OF PAGE IMAGES before
- * anything is persisted — the DB (`book_pages`, migration 041) and the
- * viewer (`GET /uploads/:id/page/:n`) only ever deal in pages, never a whole
- * zip/PDF blob. The original upload is NOT retained once normalized (storage
- * savings — a book can be 240 MB; only its derived pages are kept).
+ * Book-upload ingest — request-side validation + enqueue helpers (U1a —
+ * book-upload feature; Phase 2.5 — reworked to an ASYNC, bounded-memory
+ * pipeline; see db/docs/PDF_UPLOAD_DESIGN.md §"REVISION (2026-07-08)" for the
+ * original page-image model this still targets).
  *
- * Split into two halves on the transaction boundary (Bar §"Concurrency": no
- * external I/O inside an open tx):
- *
- *   1. `ingestUpload()` — file presence + magic-byte sniff (zip vs. PDF) +
- *      the actual zip/PDF → page-images normalization + per-user daily cap.
- *      Pure validation + CPU-bound decode work (no network call — extraction/
- *      OCR is U2's separate, async/manual curation pass); throws typed 4xx
- *      AppErrors, writes NOTHING.
- *   2. `persistUpload(client, …)` — N page-blob writes + the `book_uploads`/
- *      `book_pages` INSERT-or-REPLACE, run inside the CALLER's transaction.
- *      Returns the PRIOR pages' blob refs (if this was a same-title replace)
- *      so the caller can delete the orphaned files AFTER the transaction
- *      commits (filesystem cleanup is not transactional, so it must not gate
- *      the DB commit).
- *
- * JUDGMENT CALL — synchronous processing: normalization (unzip/pdftoppm) now
- * runs INSIDE the request instead of being deferred to a background job. The
- * design doc explicitly leaves this as a judgment call ("OK to process async
- * ... your call"). Chosen SYNC because: (a) it's a personal, single-user app
- * (daily cap 10, effectively serial usage — no concurrent-upload contention
- * to worry about), (b) it avoids standing up a job queue/worker for a ~10s
- * worst case (a 240 MB zip's worth of JPEGs, or a few hundred pdftoppm pages),
- * (c) it keeps the request/response model — and the test suite — simple (one
- * call in, one call out, no polling). Trade-off: a very large upload ties up
- * one request/connection for its full processing time; if that ever becomes
- * painful in practice, flipping to async only requires moving the
- * `ingestUpload`/`persistUpload` call out of the request handler into a
- * background task and having the route return 202 with status='processing'
- * immediately — the schema (`book_upload_status` already has 'processing') and
- * the two-function split already support that without a redesign.
+ * THE OOM THIS MODULE USED TO CAUSE, AND THE FIX (Phase 2.5):
+ *   Previously, `ingestUpload()` ran the ENTIRE zip/PDF decode SYNCHRONOUSLY
+ *   inside the request — multer `memoryStorage` held the whole raw upload
+ *   (up to 300 MiB) in heap, then every page (up to 2 GiB of zip entries, or
+ *   up to 2000 rendered PDF pages) was decoded into one `IngestedPage[]`
+ *   array, all resident together. km-server's 1 GiB cgroup limit OOM-killed
+ *   the whole process on a large book (RECON.md). This module no longer
+ *   decodes ANYTHING:
+ *     - multer now uses **diskStorage** (below) — the raw upload is written
+ *       straight to the km_book_uploads volume, never buffered in Node heap.
+ *     - The zip/PDF -> page-image DECODE moved entirely to the in-process
+ *       ingest runner (`services/bookIngestRunner.ts`), which streams ONE
+ *       page at a time via `zipPageExtract.ts`'s / `pdfPageRender.ts`'s async
+ *       generators — see that module's header for the bounded-memory
+ *       contract.
+ *   What THIS module still owns (the request-path half — fast, no
+ *   decoding): raw-file multer plumbing, magic-byte sniffing of the raw
+ *   file, and the per-user daily-cap check. `routes/uploads.ts`'s POST
+ *   handler uses these to validate + enqueue a `book_uploads` row with
+ *   `status = 'pending'` and returns 202 immediately; the runner does the
+ *   rest.
  *
  * SECURITY (mirrors imageIngest.ts's posture — see its header for the fuller
  * rationale; here restated for this surface):
- *   - UPLOAD: multer MEMORY storage, single `file` field, ~300 MiB cap
- *     (Jared's real books run up to ~240 MB), declared-mime `fileFilter` as
- *     an early reject only — the magic-byte sniff after multer is the
- *     authority (never trust the declared mime). `PK\x03\x04` -> zip,
- *     `%PDF-` -> PDF; anything else is rejected regardless of declared mime.
- *   - ZIP-BOMB / MALICIOUS-ARCHIVE: see services/zipPageExtract.ts's header
- *     (entry-count cap, per-entry + total declared-size caps checked before
- *     any decompression, non-image/dotfile/directory entries ignored).
- *   - PATH TRAVERSAL: each page's blob filename is a SERVER-generated UUID +
- *     the session user id (see uploadStore.ts); no client string (including
- *     zip entry filenames) ever enters a filesystem path — entry names are
- *     used ONLY for sort order, never as a path segment.
+ *   - UPLOAD: multer DISK storage (Phase 2.5 — was memory storage), single
+ *     `file` field, ~300 MiB cap (Jared's real books run up to ~240 MB),
+ *     declared-mime `fileFilter` as an early reject only — the magic-byte
+ *     sniff (`sniffUploadedFileKind`, reading only the file's first bytes
+ *     off disk, never the whole thing) is the authority (never trust the
+ *     declared mime). `PK\x03\x04` -> zip, `%PDF-` -> PDF; anything else is
+ *     rejected regardless of declared mime.
+ *   - RAW-FILE PATH: written under `BOOK_UPLOAD_STORAGE_DIR/raw/{userId}/`
+ *     with a SERVER-generated UUID filename (multer's `filename` callback) —
+ *     no client string (including the client's original filename) ever
+ *     enters a filesystem path. Same traversal-guard contract as
+ *     `book_pages.blob_ref` (uploadStore.ts's `resolveUnderRoot`, reused by
+ *     the runner to open and later delete this file).
+ *   - ZIP-BOMB / MALICIOUS-ARCHIVE / PDF-BOMB guards: unchanged, still fully
+ *     enforced — just later, by the runner at decode time (see
+ *     zipPageExtract.ts / pdfPageRender.ts headers). The request path never
+ *     decodes, so it can't be exhausted by a bomb either.
  *   - PER-USER CAP: a DAILY cap (config BOOK_UPLOAD_DAILY_CAP) on NEW titles
- *     -> 429. A same-title re-upload (idempotent replace) does NOT consume
+ *     -> 429, checked BEFORE the row is written (routes/uploads.ts, inside
+ *     the same transaction as the existing-row lookup so the check can't be
+ *     raced). A same-title re-upload (idempotent replace) does NOT consume
  *     budget — the cap only guards against an unbounded number of DISTINCT
  *     uploads accumulating on disk, not iterative re-uploads while a title
  *     is still being dialed in.
- *   - ATOMICITY: every page blob write lives inside the caller's tx boundary
- *     (i.e. is followed by its `book_pages` INSERT before the tx commits); a
- *     DB failure partway through leaves orphan files (harmless, GC-able),
- *     never a half-written book. The REPLACED pages' blobs (on a same-title
- *     re-upload) are deleted only after the transaction commits, so a
- *     rolled-back request never deletes bytes a live row still points at.
  *   - MASS ASSIGNMENT: `title`/`type` are the only two body fields, both
  *     validated by a `.strict()` Zod schema at the route boundary (routes/
  *     uploads.ts) before this module ever sees them.
  */
 import multer, { MulterError } from 'multer';
 import { randomUUID } from 'node:crypto';
+import { mkdir, open } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { NextFunction, Request, Response } from 'express';
 import type { PoolClient } from 'pg';
-import { query } from '../db/pool.js';
+import { getUserId } from '../middleware/auth.js';
 import { AppError, PayloadTooLargeError, ValidationError } from '../middleware/errors.js';
 import { loadConfig } from '../config/index.js';
-import { saveBlob, type BlobExt } from './uploadStore.js';
-import { extractZipPages, type PageImageMime } from './zipPageExtract.js';
-import { renderPdfPagesToJpeg } from './pdfPageRender.js';
+import type { Querier } from '../db/pool.js';
+import { bookUploadStorageRoot, saveBlob, type BlobExt } from './uploadStore.js';
+import type { PageImageMime } from './zipPageExtract.js';
 
 // ---------------------------------------------------------------------------
-// Upload constraints + multer
+// Upload constraints + multer (DISK storage — Phase 2.5)
 // ---------------------------------------------------------------------------
 
 /**
  * Declared-mime allowlist for the fileFilter's EARLY reject only — never the
- * authority (the magic-byte sniff in `ingestUpload` is). Zip archives arrive
- * under several different declared mimes depending on OS/browser/export tool
- * (a vFlat export is often `application/zip` or `application/x-zip-compressed`;
- * some browsers fall back to the generic `application/octet-stream` for any
+ * authority (the magic-byte sniff is). Zip archives arrive under several
+ * different declared mimes depending on OS/browser/export tool (a vFlat
+ * export is often `application/zip` or `application/x-zip-compressed`; some
+ * browsers fall back to the generic `application/octet-stream` for any
  * binary they don't recognize), so this list is intentionally permissive —
- * being wrong here just means the request is 15-byte-sniffed and 400'd a
- * little later instead of at the fileFilter, never a security gap.
+ * being wrong here just means the request is byte-sniffed and 400'd a little
+ * later instead of at the fileFilter, never a security gap.
  */
 export const ALLOWED_MIMES = [
   'application/pdf',
@@ -103,7 +91,8 @@ export const ALLOWED_MIMES = [
 ] as const;
 
 /** ~300 MiB — the design doc's cap ("Jared has the storage; a book is ~240MB").
- *  Bounds memory use (memory storage) AND per-request cost. */
+ *  Bounds per-request disk cost (multer's diskStorage `limits.fileSize` — the
+ *  raw upload NEVER touches Node heap at all now, see module header). */
 export const MAX_UPLOAD_BYTES = 300 * 1024 * 1024;
 
 /** The `book_uploads.type` enum, mirrored here so Zod/TS agree with the DB
@@ -119,30 +108,76 @@ export const BOOK_UPLOAD_TYPES = [
 ] as const;
 export type BookUploadType = (typeof BOOK_UPLOAD_TYPES)[number];
 
+/** Raw-upload subtree under BOOK_UPLOAD_STORAGE_DIR — kept separate from the
+ *  per-page blob paths `uploadStore.ts` writes (`{userId}/{uuid}.{jpg|png}`)
+ *  so "durable decoded page" and "transient raw source file awaiting decode"
+ *  are distinguishable by path shape alone, and so a future sweep of stale
+ *  raw files (jobRetention.ts) can target this subtree specifically. */
+const RAW_UPLOAD_SUBDIR = 'raw';
+
+/** The raw-upload directory for one user — `mkdir -p`'d lazily by multer's
+ *  `destination` callback below, same posture as uploadStore.ts's per-user
+ *  page-blob directory. */
+function rawUploadDir(userId: number): string {
+  return join(bookUploadStorageRoot(), RAW_UPLOAD_SUBDIR, String(userId));
+}
+
+/** The RELATIVE path (what the route stores as `book_uploads.raw_blob_ref`)
+ *  for a raw file multer just wrote — `userId` from the session, `filename`
+ *  from multer's own `filename` callback (a server-generated UUID, never
+ *  client input). Resolved back to an absolute path the SAME way a page
+ *  blob's `blob_ref` is — `uploadStore.ts`'s `resolveUnderRoot` — so the
+ *  runner reads/deletes it with the identical traversal guard. */
+export function bookUploadRawRelPath(userId: number, filename: string): string {
+  return `${RAW_UPLOAD_SUBDIR}/${userId}/${filename}`;
+}
+
 /**
- * multer MEMORY storage: the buffer never touches disk via multer. A
- * `fileFilter` rejects an obviously-wrong declared mime EARLY (saves
- * buffering up to 300 MiB for a `.exe`), but it is NOT trusted — the
- * magic-byte sniff in `ingestUpload` is the authority. `limits.files: 1` +
- * `.single('file')` reject extra files; `fields: 4` leaves room for the
- * `title` + `type` text fields alongside the file part.
+ * multer DISK storage (Phase 2.5 — was memory storage; see module header for
+ * why). The raw upload is written straight to the km_book_uploads volume
+ * under the caller's own subdirectory; `requireAuth` (router.use, ahead of
+ * this middleware in routes/uploads.ts) has already populated `req.user` by
+ * the time this `destination` callback runs, so `getUserId` is safe to call
+ * here. The `filename` is a fresh SERVER UUID — never the client's original
+ * filename — so the resulting path is injection-free by construction, same
+ * guarantee `uploadStore.saveBlob` gives page blobs.
  *
- * (Kept as memory storage rather than switching to disk storage despite the
- * 15 MiB -> 300 MiB cap bump: this is a personal, single-user app with a
- * daily cap of ~10 uploads — effectively serial usage, not concurrent load —
- * so a transient ~300-400 MB memory spike per request is an acceptable
- * trade-off against the real complexity disk storage would add (temp-file
- * lifecycle, cleanup-on-crash, path-safety for a second storage location).)
+ * `fileFilter` rejects an obviously-wrong declared mime EARLY (saves writing
+ * up to 300 MiB for a `.exe`), but it is NOT trusted — the magic-byte sniff
+ * (`sniffUploadedFileKind`, below) is the authority. `limits.files: 1` +
+ * `.single('file')` reject extra files; `fields: 4` leaves room for the
+ * `title` + `type` text fields alongside the file part. A file that fails
+ * `limits.fileSize` is auto-unlinked by multer itself (diskStorage's
+ * documented behavior) — no orphan to clean up for that case; every OTHER
+ * post-multer validation failure is the route's job to clean up (it has the
+ * path; see routes/uploads.ts).
  */
 const upload = multer({
-  storage: multer.memoryStorage(),
+  storage: multer.diskStorage({
+    destination: (req, _file, cb) => {
+      let userId: number;
+      try {
+        userId = getUserId(req as Request);
+      } catch (err) {
+        cb(err instanceof Error ? err : new Error(String(err)), '');
+        return;
+      }
+      const dir = rawUploadDir(userId);
+      mkdir(dir, { recursive: true })
+        .then(() => cb(null, dir))
+        .catch((err: unknown) => cb(err instanceof Error ? err : new Error(String(err)), dir));
+    },
+    filename: (_req, _file, cb) => {
+      cb(null, `${randomUUID()}.raw`);
+    },
+  }),
   limits: { fileSize: MAX_UPLOAD_BYTES, files: 1, fields: 4 },
   fileFilter: (_req, file, cb) => {
     if ((ALLOWED_MIMES as readonly string[]).includes(file.mimetype)) {
       cb(null, true);
     } else {
       // Reject without throwing — surfaces as no `req.file`, mapped to 400
-      // by ingestUpload's presence check.
+      // by the route's presence check.
       cb(null, false);
     }
   },
@@ -180,6 +215,12 @@ export function multerBookUpload(req: Request, res: Response, next: NextFunction
   });
 }
 
+// ---------------------------------------------------------------------------
+// Magic-byte sniffing (unchanged detection, now reads from DISK not a Buffer
+// already in memory — both the route and the runner re-open the raw file by
+// its stored relative path, so this operates on a small head-read either way)
+// ---------------------------------------------------------------------------
+
 /**
  * Sniff the leading bytes to confirm the buffer is a REAL PDF, never trusting
  * the client-declared mime. PDF files begin with the literal ASCII signature
@@ -202,8 +243,8 @@ export function sniffPdfMagicBytes(buf: Buffer): boolean {
  * conforming zip (including a vFlat export) starts with. Per the design doc,
  * only this signature is recognized (not the empty-archive `PK\x05\x06` or
  * spanned-archive `PK\x07\x08` variants) — a zip with zero pages is rejected
- * downstream anyway (0 usable pages -> 400), so there's no case where those
- * variants would matter for this feature.
+ * downstream anyway (0 usable pages -> failed), so there's no case where
+ * those variants would matter for this feature.
  */
 export function sniffZipMagicBytes(buf: Buffer): boolean {
   return (
@@ -215,41 +256,117 @@ export function sniffZipMagicBytes(buf: Buffer): boolean {
   );
 }
 
-type UploadKind = 'zip' | 'pdf';
+export type UploadKind = 'zip' | 'pdf';
 
-/** Classify the upload by magic bytes only — never the client-declared mime. */
-function sniffUploadKind(buf: Buffer): UploadKind | null {
+/** Classify by magic bytes only — never the client-declared mime. Exported:
+ *  both the route (validating the just-written raw file) and the runner
+ *  (re-opening it later, in its own process tick) need this exact
+ *  classification and must never disagree. */
+export function sniffUploadKind(buf: Buffer): UploadKind | null {
   if (sniffZipMagicBytes(buf)) return 'zip';
   if (sniffPdfMagicBytes(buf)) return 'pdf';
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// DTO
-// ---------------------------------------------------------------------------
+/** Bytes needed to sniff either signature (`%PDF-` is the longer of the two,
+ *  at 5). A little headroom costs nothing and a head-read is always this
+ *  small regardless of the file's real size. */
+export const UPLOAD_HEAD_SNIFF_BYTES = 8;
 
-export interface BookUploadDTO {
-  readonly id: string;
-  readonly title: string;
-  readonly type: BookUploadType;
-  readonly status: 'processing' | 'ready' | 'failed';
-  readonly page_count: number | null;
-  readonly byte_size: number;
-  readonly created_at: string;
+/**
+ * Read the first `n` bytes of a file on disk WITHOUT loading the rest — used
+ * to magic-byte-sniff a raw upload that can be up to 300 MiB, never buffering
+ * more than a handful of bytes regardless of the real file size. Shared by
+ * `sniffUploadedFileKind` below and `bookIngestRunner.ts` (which re-sniffs
+ * the same raw file to pick a decoder, rather than trusting a stored "kind"
+ * column — one fewer piece of persisted state that could drift from the
+ * actual bytes on disk).
+ */
+export async function readFileHead(absPath: string, n: number): Promise<Buffer> {
+  const fh = await open(absPath, 'r');
+  try {
+    const buf = Buffer.alloc(n);
+    const { bytesRead } = await fh.read(buf, 0, n, 0);
+    return buf.subarray(0, bytesRead);
+  } finally {
+    await fh.close();
+  }
+}
+
+/**
+ * Validate a just-written raw file (already on disk via `multerBookUpload`'s
+ * diskStorage) is a real zip or PDF. Throws `ValidationError` (400) — never
+ * trusts the declared mime. Performs NO writes/deletes; the caller (the
+ * route) owns cleaning up the raw file on any validation failure (it has the
+ * path; this function only reads).
+ */
+export async function sniffUploadedFileKind(absPath: string): Promise<UploadKind> {
+  const head = await readFileHead(absPath, UPLOAD_HEAD_SNIFF_BYTES);
+  const kind = sniffUploadKind(head);
+  if (kind === null) {
+    throw new ValidationError(
+      'uploaded file is neither a zip archive (PK\\x03\\x04) nor a PDF (%PDF-)',
+    );
+  }
+  return kind;
 }
 
 // ---------------------------------------------------------------------------
-// Half 1: validate + normalize + cap (no writes)
+// Daily cap
 // ---------------------------------------------------------------------------
 
-/** One normalized page, ready to be saved as a blob + a `book_pages` row. */
+/**
+ * Per-user DAILY cap check for a BRAND-NEW title, run inside the CALLER's
+ * transaction (routes/uploads.ts's enqueue transaction, which already holds
+ * a row lock serializing concurrent requests for the same user — see that
+ * route's header) so the check can't be raced past by two concurrent
+ * uploads. Only relevant when NO existing (user, title) row exists yet — a
+ * same-title replace of a terminal row is exempt (unchanged posture from the
+ * sync-era `ingestUpload`; see this module's header "PER-USER CAP").
+ * Throws `DailyCapError` (429) over the cap; performs no write itself.
+ *
+ * Takes a `Querier` (db/pool.ts) rather than a raw `PoolClient` — routes/
+ * uploads.ts (where the caller lives) may not import `pg` directly
+ * (eslint's route/pg boundary guardrail); `clientQuerier(client)` adapts its
+ * `withTransaction` client into this shape.
+ */
+export async function assertUnderDailyCap(db: Querier, userId: number): Promise<void> {
+  const cfg = loadConfig();
+  const { rows } = await db<{ n: string }>(
+    `SELECT count(*)::text AS n
+       FROM book_uploads
+      WHERE user_id = $1
+        AND created_at >= date_trunc('day', now())`,
+    [userId],
+  );
+  const usedToday = Number(rows[0]?.n ?? '0');
+  if (usedToday >= cfg.BOOK_UPLOAD_DAILY_CAP) {
+    throw new DailyCapError(cfg.BOOK_UPLOAD_DAILY_CAP);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Whole-book synchronous persist — OPERATOR CLI ONLY (scripts/bulk-ingest-
+// books.ts), NOT the HTTP request path. The CLI reads archives straight off
+// local disk (not through POST /uploads) and has no request/OOM concern of
+// its own (an operator-run batch job, sequential, one book fully in memory
+// at a time — mirrors its own long-standing posture, unchanged by Phase
+// 2.5). It still needs a "here are N ordered pages, persist them" primitive,
+// so that stays here rather than being deleted; `bookIngestRunner.ts` is the
+// STREAMING equivalent for the async HTTP path and shares `persistOnePage`
+// below so the actual blob-write + row-insert logic lives in exactly one
+// place regardless of caller.
+// ---------------------------------------------------------------------------
+
+/** One normalized page, ready to be saved as a blob + a `book_pages` row
+ *  (CLI's whole-array shape; the runner instead consumes the streaming
+ *  generators' `ExtractedPage` one at a time — same `{buffer, mime}` shape). */
 export interface IngestedPage {
   readonly buffer: Buffer;
   readonly mime: PageImageMime;
 }
 
-/** The validated + normalized upload, ready to persist. Produced by
- *  `ingestUpload`, consumed by `persistUpload`. */
+/** The CLI's normalized-and-ready-to-persist upload. */
 export interface IngestedUpload {
   readonly pages: readonly IngestedPage[];
   readonly byteSize: number;
@@ -257,95 +374,9 @@ export interface IngestedUpload {
   readonly type: BookUploadType;
 }
 
-/**
- * Validate an uploaded zip/PDF, normalize it to ordered page images, and
- * enforce the per-user daily cap. Throws typed AppErrors (400 bad/missing
- * file, unsupported type, zip-bomb guard trip, corrupt PDF, 0 usable pages;
- * 429 cap); performs NO writes, so any failure here leaves the DB and blob
- * store untouched.
- *
- * Order of operations (security-load-bearing — mirrors ocrUploadedImage):
- *   1. file present + non-empty + magic-byte sniff (zip vs. PDF) -> 400 on
- *      any mismatch.
- *   2. normalize to ordered page images (extractZipPages / renderPdfPagesToJpeg)
- *      -> 400 on a zip-bomb guard trip, a corrupt/encrypted PDF, or 0 usable
- *      pages.
- *   3. per-user DAILY cap on NEW titles -> 429 (an existing-title replace is
- *      exempt — see module header).
- */
-export async function ingestUpload(
-  file: Express.Multer.File | undefined,
-  body: { title: string; type: BookUploadType },
-  userId: number,
-): Promise<IngestedUpload> {
-  // 1. File present + non-empty + magic-byte verified.
-  if (!file || file.buffer.length === 0) {
-    throw new ValidationError('a zip (vFlat export) or PDF file is required in the "file" field');
-  }
-  const kind = sniffUploadKind(file.buffer);
-  if (kind === null) {
-    throw new ValidationError(
-      'uploaded file is neither a zip archive (PK\\x03\\x04) nor a PDF (%PDF-)',
-    );
-  }
-
-  // 2. Normalize to ordered page images. Both branches throw ValidationError
-  //    on a bad/malicious archive or an unreadable PDF — nothing is written.
-  const pages: IngestedPage[] =
-    kind === 'zip'
-      ? await extractZipPages(file.buffer)
-      : (await renderPdfPagesToJpeg(file.buffer)).map((buffer) => ({
-          buffer,
-          mime: 'image/jpeg' as const,
-        }));
-
-  if (pages.length === 0) {
-    throw new ValidationError(
-      kind === 'zip'
-        ? 'zip archive contained no usable image pages (jpg/png)'
-        : 'PDF contains no pages',
-    );
-  }
-
-  // 3. Per-user DAILY cap on NEW titles only. An existing (user, title) row
-  //    means this request is a REPLACE, which the loop below is specifically
-  //    designed to exempt (see module header "PER-USER CAP").
-  const existing = await query<{ id: number }>(
-    `SELECT id FROM book_uploads WHERE user_id = $1 AND title = $2`,
-    [userId, body.title],
-  );
-  if (!existing.rows[0]) {
-    const cfg = loadConfig();
-    const { rows: capRows } = await query<{ n: string }>(
-      `SELECT count(*)::text AS n
-         FROM book_uploads
-        WHERE user_id = $1
-          AND created_at >= date_trunc('day', now())`,
-      [userId],
-    );
-    const usedToday = Number(capRows[0]?.n ?? '0');
-    if (usedToday >= cfg.BOOK_UPLOAD_DAILY_CAP) {
-      throw new DailyCapError(cfg.BOOK_UPLOAD_DAILY_CAP);
-    }
-  }
-
-  return {
-    pages,
-    byteSize: file.buffer.length,
-    title: body.title,
-    type: body.type,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Half 2: persist (inside the CALLER's transaction)
-// ---------------------------------------------------------------------------
-
 /** Result of persisting an upload: the DTO to return, plus the PRIOR pages'
  *  blob refs (if this request replaced an existing same-title upload) so the
- *  caller can delete the orphaned files once the transaction has committed.
- *  Empty means either a brand-new upload or a replace of a title that
- *  (somehow) had zero pages — nothing to clean up either way. */
+ *  caller can delete the orphaned files once the transaction has committed. */
 export interface PersistedUpload {
   readonly dto: BookUploadDTO;
   readonly priorBlobRefs: readonly string[];
@@ -356,26 +387,53 @@ interface UpsertRow {
   id: number;
   title: string;
   type: BookUploadType;
-  status: 'processing' | 'ready' | 'failed';
+  status: 'pending' | 'processing' | 'ready' | 'failed';
   page_count: number | null;
   byte_size: number;
+  error: string | null;
   created_at: Date;
 }
 
-function extForMime(mime: PageImageMime): BlobExt {
+/** Page-image mime -> on-disk blob extension. Exported so
+ *  `bookIngestRunner.ts` (which writes page blobs one at a time via a plain
+ *  pooled query, NOT this module's `persistOnePage`/`PoolClient`-bound
+ *  helper — see that module's header for why) uses the identical mapping. */
+export function extForMime(mime: PageImageMime): BlobExt {
   return mime === 'image/png' ? 'png' : 'jpg';
 }
 
 /**
- * Persist a normalized upload: N page-blob writes + INSERT-or-REPLACE
- * `book_uploads` + N `book_pages` INSERTs, all on the caller's transaction
- * client. Each page's blob id is a fresh SERVER UUID — never client input —
- * so its path is injection-free.
+ * Save ONE page's blob then insert its `book_pages` row, in that order — a
+ * failure partway through leaves at most an orphan FILE (the matching DB row
+ * was never written), never a DB row pointing at a missing file. Shared by
+ * `persistUpload` below (looped over a whole array, CLI) and
+ * `bookIngestRunner.ts` (looped over a streaming generator, one page at a
+ * time, HTTP path) — the ONE place page persistence actually happens.
+ */
+export async function persistOnePage(
+  client: PoolClient,
+  userId: number,
+  uploadId: number,
+  pageNumber: number,
+  page: IngestedPage,
+): Promise<void> {
+  const blobRef = await saveBlob(userId, randomUUID(), extForMime(page.mime), page.buffer);
+  await client.query(
+    `INSERT INTO book_pages (upload_id, page_number, blob_ref) VALUES ($1, $2, $3)`,
+    [uploadId, pageNumber, blobRef],
+  );
+}
+
+/**
+ * Persist a normalized upload SYNCHRONOUSLY, whole-array: N page-blob writes
+ * + INSERT-or-REPLACE `book_uploads` (status set straight to 'ready' — this
+ * caller already has every page in hand) + N `book_pages` INSERTs, all on the
+ * caller's transaction client. CLI-ONLY (`scripts/bulk-ingest-books.ts`) —
+ * the HTTP path never calls this; see `bookIngestRunner.ts` for the async
+ * per-page streaming equivalent.
  *
- * Idempotent replace: a re-upload of the SAME (user, title) UPSERTs the
- * `book_uploads` row (new type/byte_size/page_count, status stays 'ready' —
- * normalization already fully completed by the time this function runs, see
- * module header's "synchronous processing" note) and REPLACES its
+ * Idempotent replace: a re-run of the SAME (user, title) UPSERTs the
+ * `book_uploads` row (new type/byte_size/page_count) and REPLACES its
  * `book_pages` rows outright: the OLD rows are deleted (their blob_refs
  * captured first, for the caller to unlink after commit) and the NEW pages
  * are inserted fresh. The row is locked (`FOR UPDATE`) BEFORE any of this so
@@ -413,10 +471,11 @@ export async function persistUpload(
      ON CONFLICT (user_id, title) DO UPDATE SET
        type       = EXCLUDED.type,
        status     = 'ready',
+       error      = NULL,
        byte_size  = EXCLUDED.byte_size,
        page_count = EXCLUDED.page_count,
        version    = book_uploads.version + 1
-     RETURNING id, title, type, status, page_count, byte_size, created_at`,
+     RETURNING id, title, type, status, page_count, byte_size, error, created_at`,
     [userId, ingested.title, ingested.type, ingested.byteSize, pageCount],
   );
   const row = rows[0];
@@ -426,16 +485,8 @@ export async function persistUpload(
   }
   const uploadId = row.id;
 
-  // Save each page's blob THEN insert its book_pages row, in order — so a
-  // failure partway through leaves at most an orphan FILE (the matching DB
-  // row was never written), never a DB row pointing at a missing file.
   for (let i = 0; i < ingested.pages.length; i += 1) {
-    const page = ingested.pages[i]!;
-    const blobRef = await saveBlob(userId, randomUUID(), extForMime(page.mime), page.buffer);
-    await client.query(
-      `INSERT INTO book_pages (upload_id, page_number, blob_ref) VALUES ($1, $2, $3)`,
-      [uploadId, i + 1, blobRef],
-    );
+    await persistOnePage(client, userId, uploadId, i + 1, ingested.pages[i]!);
   }
 
   return {
@@ -448,11 +499,29 @@ export async function persistUpload(
       status: row.status,
       page_count: row.page_count,
       byte_size: row.byte_size,
+      error: row.error,
       created_at: row.created_at.toISOString(),
     },
     priorBlobRefs,
     wasNew,
   };
+}
+
+// ---------------------------------------------------------------------------
+// DTO
+// ---------------------------------------------------------------------------
+
+export interface BookUploadDTO {
+  readonly id: string;
+  readonly title: string;
+  readonly type: BookUploadType;
+  readonly status: 'pending' | 'processing' | 'ready' | 'failed';
+  readonly page_count: number | null;
+  readonly byte_size: number;
+  /** Bounded, server-authored failure message (bookIngestRunner.ts's
+   *  `failureMessage`) — non-null only when `status === 'failed'`. */
+  readonly error: string | null;
+  readonly created_at: string;
 }
 
 // ---------------------------------------------------------------------------

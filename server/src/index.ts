@@ -11,6 +11,7 @@ import { loadConfig } from './config/index.js';
 import { closePool, getPool } from './db/pool.js';
 import { getLogger } from './logging.js';
 import { buildClaudeProxy, setClaudeProxy } from './services/claudeProxy.js';
+import { startBookIngestRunner } from './services/bookIngestRunner.js';
 import { startStoryAudioRunner } from './services/storyAudio.js';
 import { startStoryImageRunner } from './services/storyImage.js';
 
@@ -57,11 +58,20 @@ function main(): void {
     log.warn('story illustrations disabled — OPENAI_API_KEY not set');
   }
   const stopStoryImageRunner = startStoryImageRunner(log);
+  // Phase 2.5: the in-server book-ingest runner (the OOM fix's other half —
+  // see services/bookIngestRunner.ts's header for the full design). Same
+  // posture as the story runners above: started UNCONDITIONALLY in every
+  // color (the stale-reap half is time-based and must run everywhere; only
+  // claim+process is gated on being the active color, inside the tick
+  // itself). No dormant-deploy concept here — book upload has no vendor key,
+  // so there's nothing to warn about at boot.
+  const stopBookIngestRunner = startBookIngestRunner(log);
 
   function shutdown(signal: string): void {
     log.info({ signal }, 'shutting down');
     stopStoryAudioRunner();
     stopStoryImageRunner();
+    stopBookIngestRunner();
     server.close(async () => {
       try {
         await closePool();

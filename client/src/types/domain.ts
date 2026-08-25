@@ -2819,16 +2819,19 @@ export type BookUploadType =
   | 'comic';
 
 /**
- * Processing state. U1 has no extraction yet, so every upload stays
- * `processing` from the moment it lands — U2 is what eventually flips a row
- * to `ready` (or `failed` if curation errors out). The PDF itself is
- * viewable immediately regardless of status (design doc: "async — upload →
- * viewable now → structured content lands when curated").
+ * Ingest state (Phase 2.5 — async book-upload pipeline, `services/
+ * bookIngestRunner.ts`). `pending` — `POST /uploads` has enqueued the raw
+ * file and returned 202; the in-server runner hasn't claimed it yet.
+ * `processing` — the runner is actively streaming the zip/PDF into pages.
+ * `ready` — decoded; every page is viewable. `failed` — the decode errored
+ * (see `BookUpload.error`); a re-upload of the same title retries. The
+ * client polls `GET /uploads/:id` while `pending`/`processing` (see
+ * `pages/Uploads.tsx`).
  */
-export type BookUploadStatus = 'processing' | 'ready' | 'failed';
+export type BookUploadStatus = 'pending' | 'processing' | 'ready' | 'failed';
 
 /**
- * A user-uploaded book PDF, as `listUploads` / `getUpload` / `uploadBook`
+ * A user-uploaded book, as `listUploads` / `getUpload` / `uploadBook`
  * (services/uploads.ts) resolve it — the in-app shape for `GET /uploads`,
  * `GET /uploads/:id`, and the `POST /uploads` response alike.
  */
@@ -2839,14 +2842,17 @@ export interface BookUpload {
   type: BookUploadType;
   status: BookUploadStatus;
   /**
-   * Page count, once known. The normalize-to-pages step (zip/PDF → ordered
-   * page images, `book_pages`) runs synchronously at ingest (design doc
-   * REVISION), so this is present as soon as `status` is `ready`; still
-   * `?`-optional (rather than a fabricated 0) for a `processing`/`failed` row
-   * whose `page_count` column is null.
+   * Page count, once known. `undefined` (rather than a fabricated 0) while
+   * `status` is `pending`/`processing`/`failed` — the runner sets this only
+   * on a successful settle to `ready` (Phase 2.5; the normalize-to-pages
+   * step is now asynchronous, not synchronous at ingest).
    */
   pageCount?: number;
   byteSize: number;
+  /** Bounded, server-authored failure message — set only when `status` is
+   *  `failed`; `undefined` otherwise. Safe to render verbatim (never raw
+   *  provider/library text — see bookIngestRunner.ts's `failureMessage`). */
+  error?: string;
   createdAt: string;
 }
 

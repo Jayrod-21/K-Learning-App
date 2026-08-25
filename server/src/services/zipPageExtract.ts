@@ -34,9 +34,23 @@
  *     the unrelated Images/OCR feature — is NOT a page-image format here and
  *     is treated as a non-image entry).
  *   - Zero usable image pages after the full scan → the caller
- *     (`bookUploadIngest.ingestUpload`) rejects with 400.
+ *     (`bookIngestRunner.ts`) settles the upload 'failed'.
+ *
+ * STREAMING (Phase 2.5 — the OOM fix): `streamZipImageEntriesFromFile` is the
+ * bounded-memory entry point the ingest RUNNER uses — an async generator that
+ * OPENS THE RAW ZIP BY PATH (`yauzl.open`, fd-based — never loads the whole
+ * compressed archive into a Buffer either) and yields ONE decompressed page
+ * at a time, so the caller can write + release each buffer before the next is
+ * decompressed. At most one page's bytes (plus the small, metadata-only
+ * candidate list, capped at `MAX_ZIP_ENTRIES`) are ever resident at once —
+ * never the whole raw file, and never the whole decompressed page set.
+ * `streamZipImageEntries` (buffer-based) and `extractZipPages` (array-
+ * returning) stay for callers that already hold the zip as a Buffer (tests;
+ * anything NOT the ingest runner) — both are now implemented on top of one
+ * shared candidate-collection + per-entry-extraction core, so the guard/order
+ * logic lives in exactly one place regardless of entry point.
  */
-import { fromBuffer, type Entry, type ZipFile } from 'yauzl';
+import { fromBuffer, open as openZipFile, type Entry, type Options, type ZipFile } from 'yauzl';
 import { ValidationError } from '../middleware/errors.js';
 import { sniffImageMime } from './imageIngest.js';
 import { naturalCompare } from './naturalSort.js';
@@ -56,23 +70,24 @@ export interface ExtractedPage {
   readonly mime: PageImageMime;
 }
 
-interface RawEntry {
-  readonly name: string;
-  readonly buffer: Buffer;
-  readonly mime: PageImageMime;
-}
-
 /**
  * Extract every usable image entry from a ZIP buffer, ordered by natural
  * filename sort. Throws `ValidationError` (400) on a malformed archive or any
  * zip-bomb guard trip. Does NOT reject a zero-page result itself — the caller
- * (`ingestUpload`) makes that call so the "0 pages" message can be worded per
- * upload kind (zip vs. PDF).
+ * (`bookIngestRunner.ts`) makes that call so the "0 pages" message can be
+ * worded per upload kind (zip vs. PDF).
+ *
+ * Array-returning convenience built ON TOP OF `streamZipImageEntries` (drains
+ * the generator into memory) — fine for a caller that genuinely wants the
+ * whole set at once (tests; anything NOT the ingest runner). The runner
+ * itself MUST use the generator directly — see that function's doc.
  */
 export async function extractZipPages(zipBuffer: Buffer): Promise<ExtractedPage[]> {
-  const raw = await readZipImageEntries(zipBuffer);
-  const ordered = [...raw].sort((a, b) => naturalCompare(a.name, b.name));
-  return ordered.map((e) => ({ buffer: e.buffer, mime: e.mime }));
+  const pages: ExtractedPage[] = [];
+  for await (const page of streamZipImageEntries(zipBuffer)) {
+    pages.push(page);
+  }
+  return pages;
 }
 
 function isSkippableEntryName(name: string): boolean {
@@ -85,27 +100,33 @@ function isSkippableEntryName(name: string): boolean {
 }
 
 /**
- * Two passes, deliberately:
- *   PASS 1 (metadata only) — enumerate EVERY central-directory entry, applying
- *     the count / per-entry-declared / total-declared zip-bomb guards, and
- *     collect the image-candidate `Entry` refs. NO entry bytes are read here.
- *     A declared bomb is rejected from its central directory alone, before a
- *     single byte is decompressed — the proper posture (don't start extracting
- *     an archive that ANNOUNCES it's a bomb) AND it means a later entry's
- *     size lie can't be masked by successfully streaming the earlier ones.
- *   PASS 2 (extract) — only once every guard has passed, open a read stream
- *     per candidate, sequentially, enforcing the ACTUAL-bytes cap (an entry
- *     that under-declares its size in the header can't sneak past — the
- *     streamed byte count is re-checked), sniff the magic bytes, keep the
- *     jpg/png pages.
+ * PASS 1 (metadata only) — enumerate EVERY central-directory entry, applying
+ * the count / per-entry-declared / total-declared zip-bomb guards, and
+ * collect the image-candidate `Entry` refs, sorted by natural filename order
+ * (the sort key — `entry.fileName` — comes straight from central-directory
+ * metadata, so it's available and cheap here, BEFORE any entry's bytes are
+ * touched; sorting at this point means pass 2 can extract-and-yield in FINAL
+ * page order without ever holding more than one decompressed page at a time).
+ * NO entry bytes are read here. A declared bomb is rejected from its central
+ * directory alone, before a single byte is decompressed — the proper posture
+ * (don't start extracting an archive that ANNOUNCES it's a bomb) AND it means
+ * a later entry's size lie can't be masked by successfully streaming the
+ * earlier ones.
  *
- * `autoClose: false` so the zipfile stays open for pass 2's streams after the
- * enumerate pass's 'end' fires; it's closed explicitly once both passes are
- * done (or on any failure).
+ * Returns the open `zipfile` (NOT closed — `autoClose: false`, so it stays
+ * open for the caller's pass 2 reads) alongside the sorted candidates; the
+ * caller owns closing it (success, generator return, or thrown error alike).
+ *
+ * `openZip` is the yauzl opener to use — `fromBuffer` (already-in-memory
+ * archive) or `open` (by file path, fd-based — see `streamZipImageEntriesFromFile`)
+ * share an identical `(options, callback)` shape, so this function is opener-
+ * agnostic and the SAME guard/candidate logic backs both entry points.
  */
-function readZipImageEntries(zipBuffer: Buffer): Promise<RawEntry[]> {
+function collectCandidateEntries(
+  openZip: (options: Options, callback: (err: Error | null, zipfile?: ZipFile) => void) => void,
+): Promise<{ zipfile: ZipFile; candidates: Entry[] }> {
   return new Promise((resolve, reject) => {
-    fromBuffer(zipBuffer, { lazyEntries: true, autoClose: false }, (openErr, zipfile) => {
+    openZip({ lazyEntries: true, autoClose: false }, (openErr, zipfile) => {
       if (openErr || !zipfile) {
         reject(new ValidationError('uploaded file is not a valid zip archive'));
         return;
@@ -125,7 +146,6 @@ function readZipImageEntries(zipBuffer: Buffer): Promise<RawEntry[]> {
 
       zipfile.on('error', (err) => fail(err instanceof Error ? err : new Error(String(err))));
 
-      // PASS 1: metadata-only enumeration + guards.
       zipfile.on('entry', (entry: Entry) => {
         entryCount += 1;
         if (entryCount > MAX_ZIP_ENTRIES) {
@@ -162,35 +182,85 @@ function readZipImageEntries(zipBuffer: Buffer): Promise<RawEntry[]> {
         zipfile.readEntry();
       });
 
-      // PASS 2: all metadata validated — now extract the candidates' bytes.
       zipfile.on('end', () => {
         if (settled) return;
-        void (async () => {
-          try {
-            const results: RawEntry[] = [];
-            for (const entry of candidates) {
-              const buffer = await readEntryBuffer(zipfile, entry);
-              const mime = sniffImageMime(buffer);
-              // Page images are jpg/png only (photographs of book pages) —
-              // webp (a valid mime for the unrelated Images/OCR feature) and
-              // anything else are silently skipped, not errors.
-              if (mime === 'image/jpeg' || mime === 'image/png') {
-                results.push({ name: entry.fileName, buffer, mime });
-              }
-            }
-            if (settled) return;
-            settled = true;
-            zipfile.close();
-            resolve(results);
-          } catch (err) {
-            fail(err instanceof Error ? err : new Error(String(err)));
-          }
-        })();
+        settled = true;
+        candidates.sort((a, b) => naturalCompare(a.fileName, b.fileName));
+        resolve({ zipfile, candidates });
       });
 
       zipfile.readEntry();
     });
   });
+}
+
+/**
+ * BOUNDED-MEMORY streaming extraction core, shared by both public generator
+ * entry points below (buffer-based and file-based) — decompresses and yields
+ * ONE page at a time, in final (natural-sorted) page order. The caller MUST
+ * consume each yielded page (write its blob, await it) BEFORE requesting the
+ * next — nothing here ever holds more than one page's decompressed bytes at
+ * once (the candidate list from pass 1 is metadata only: `Entry` objects, not
+ * page bytes, and is capped at `MAX_ZIP_ENTRIES`).
+ *
+ * Every zip-bomb guard from the two-pass design still applies, just spread
+ * across the generator's lifecycle: PASS 1 (all declared-size/count guards)
+ * runs eagerly on the first `next()` call (inside `collectCandidateEntries`,
+ * before the first page is ever yielded); PASS 2's ACTUAL-streamed-bytes cap
+ * (`readEntryBuffer`) is enforced per entry, lazily, as each page is pulled.
+ *
+ * Cleanup: the zipfile is closed in a `finally` so it's released whether the
+ * generator runs to completion, the caller stops early (`break`/`return` out
+ * of a `for await`), or an entry fails mid-stream.
+ */
+async function* streamCandidatePages(
+  openZip: (options: Options, callback: (err: Error | null, zipfile?: ZipFile) => void) => void,
+): AsyncGenerator<ExtractedPage, void, void> {
+  const { zipfile, candidates } = await collectCandidateEntries(openZip);
+  try {
+    for (const entry of candidates) {
+      const buffer = await readEntryBuffer(zipfile, entry);
+      const mime = sniffImageMime(buffer);
+      // Page images are jpg/png only (photographs of book pages) — webp (a
+      // valid mime for the unrelated Images/OCR feature) and anything else
+      // are silently skipped, not errors.
+      if (mime === 'image/jpeg' || mime === 'image/png') {
+        yield { buffer, mime };
+      }
+      // `buffer` (and the just-yielded page, once the caller's `await` on
+      // this iteration resolves) is eligible for GC here — nothing in this
+      // function retains it past this iteration.
+    }
+  } finally {
+    zipfile.close();
+  }
+}
+
+/**
+ * Buffer-based streaming entry point — for a caller that already holds the
+ * zip in memory (tests; anything that isn't the ingest runner). See
+ * `streamZipImageEntriesFromFile` for the runner's TRUE bounded-memory
+ * variant, which never materializes the raw archive as a Buffer either.
+ */
+export function streamZipImageEntries(zipBuffer: Buffer): AsyncGenerator<ExtractedPage, void, void> {
+  return streamCandidatePages((options, callback) => fromBuffer(zipBuffer, options, callback));
+}
+
+/**
+ * THE ingest runner's entry point (Phase 2.5 — the OOM fix, file half):
+ * streams pages directly from the raw zip FILE ON DISK — `yauzl.open` reads
+ * via a file descriptor (seeking to the central directory, then streaming
+ * each entry's compressed bytes on demand) and never loads the whole archive
+ * into a Buffer, unlike `streamZipImageEntries`/`fromBuffer` above. Combined
+ * with the one-page-at-a-time yield contract, this means a 300 MiB raw zip's
+ * ENTIRE processing footprint is bounded by roughly one page's decompressed
+ * size, never the archive's total size and never the decompressed total.
+ * `server/src/services/bookIngestRunner.ts` is the only production caller.
+ */
+export function streamZipImageEntriesFromFile(
+  absPath: string,
+): AsyncGenerator<ExtractedPage, void, void> {
+  return streamCandidatePages((options, callback) => openZipFile(absPath, options, callback));
 }
 
 /**

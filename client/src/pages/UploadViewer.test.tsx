@@ -269,10 +269,10 @@ describe('UploadViewer — meta + page rendering', () => {
     expect(await screen.findByText('1 / 5')).toBeInTheDocument();
   });
 
-  it('shows a fixed "still processing" state instead of the pager when there is no page_count', async () => {
+  it('shows a "processing your book" state instead of the pager when there is no page_count', async () => {
     uploadsSvc.getUpload.mockResolvedValue(PROCESSING);
     renderViewer();
-    expect(await screen.findByText(/still processing/)).toBeInTheDocument();
+    expect(await screen.findByText(/Processing your book/)).toBeInTheDocument();
   });
 });
 

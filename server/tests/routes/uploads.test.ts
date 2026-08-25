@@ -1,7 +1,8 @@
 /**
  * Integration tests for /uploads routes (U1a — book-upload feature, reworked
  * to the PAGE-IMAGE model; see db/docs/PDF_UPLOAD_DESIGN.md §"REVISION
- * (2026-07-08)").
+ * (2026-07-08)"), now on the Phase 2.5 ASYNC ingest contract (the OOM fix —
+ * see services/bookIngestRunner.ts's header).
  *
  * Routes:
  *   POST   /uploads
@@ -16,33 +17,47 @@
  * The blob store points at a throwaway temp dir (BOOK_UPLOAD_STORAGE_DIR is
  * env-injected before buildTestApp) — never any real storage.
  *
+ * THE ASYNC CONTRACT (Phase 2.5): `POST /uploads` no longer decodes anything —
+ * multer writes the raw file to disk and the handler enqueues a `'pending'`
+ * `book_uploads` row, returning **202** immediately (no `book_pages` exist
+ * yet). The in-process runner (`services/bookIngestRunner.ts`) does the
+ * actual decode; tests drive it deterministically via `runBookIngestTick`
+ * (no timers) — the same pattern `tests/services/bookIngestRunner.test.ts`
+ * uses. A single `runBookIngestTick` call fully claims-decodes-settles ONE
+ * pending upload (idle/done/failed), so `POST` + one tick reaches the same
+ * end state the old synchronous `201` response used to reach in one step.
+ *
  * The ZIP-of-images path is exercised with a REAL, hand-built zip archive
  * (tests/helpers/zip.ts + the real `yauzl` parser via services/
  * zipPageExtract.ts — see tests/services/zipPageExtract.test.ts for the
  * dedicated zip-bomb-guard unit tests). The PDF path mocks
- * services/pdfPageRender.ts's `renderPdfPagesToJpeg` — the test container
- * doesn't have poppler-utils installed (see that module's header and
- * tests/services/pdfPageRender.test.ts, a self-skipping real-poppler smoke
- * test).
+ * services/pdfPageRender.ts's `streamPdfPagesToJpegFromFile` (the runner's
+ * real entry point) — the test container doesn't have poppler-utils
+ * installed (see that module's header and tests/services/pdfPageRender.test.ts,
+ * a self-skipping real-poppler smoke test).
  *
  * Coverage:
  *   - auth required on every route (401 unauthenticated)
- *   - POST happy path (zip): a real multi-image zip → 201 + book_uploads row +
- *     book_pages rows in NATURAL FILENAME ORDER + each page's blob on disk
- *     with the exact bytes
- *   - POST happy path (pdf): mocked renderPdfPagesToJpeg → 201 + pages persisted
- *   - POST rejects: neither-zip-nor-pdf bytes (400), disallowed declared mime
- *     (400), missing file (400), oversize (413), zip with 0 usable pages
- *     (400), missing/blank title (400), invalid type (400), unknown extra
- *     field (400, .strict())
- *   - POST idempotent replace: re-upload of the SAME (user, title) → 200 (not
- *     201), ONE book_uploads row, OLD book_pages rows + blob files gone, NEW
- *     ones present
- *   - POST daily cap: many distinct titles → 429; a same-title replace at the
- *     cap is exempt
+ *   - POST enqueue (zip): a real multi-image zip → 202 pending, NO book_pages
+ *     yet → one runner tick → 'ready', pages in NATURAL FILENAME ORDER, each
+ *     page's blob on disk with the exact bytes
+ *   - POST enqueue (pdf): mocked streamPdfPagesToJpegFromFile → 202 pending →
+ *     tick → 'ready', pages persisted
+ *   - POST rejects SYNCHRONOUSLY (before any book_uploads row exists): bad
+ *     magic bytes (400), disallowed declared mime (400), missing file (400),
+ *     oversize (413), missing/blank title (400), invalid type (400), unknown
+ *     extra field (400, .strict()), over the daily cap (429)
+ *   - POST rejects ASYNCHRONOUSLY (enqueues 202, the runner settles 'failed'
+ *     on tick): zip with 0 usable pages, a zip-bomb-guard trip, a PDF that
+ *     renders to 0 pages
+ *   - POST conflict: a second POST for the SAME (user, title) while the
+ *     existing row is pending/processing → 409, no second row
+ *   - POST idempotent replace: re-upload of a TERMINAL (ready/failed) same
+ *     (user, title) row → 202 (reset to pending, NOT a new row); daily cap is
+ *     exempt for a replace
  *   - GET list: user-scoped, newest first
- *   - GET :id: own returns metadata incl. page_count; other user's id → 404;
- *     bad id → 400
+ *   - GET :id: own returns metadata incl. page_count + error; other user's id
+ *     → 404; bad id → 400
  *   - GET :id/page/:n: streams the right page's bytes + headers; IDOR → 404;
  *     out-of-range n → 404; bad n → 400
  *   - GET :id/pages: ordered {id, page_number} list for the owner; IDOR →
@@ -55,7 +70,7 @@
  */
 import os from 'node:os';
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
@@ -64,14 +79,19 @@ import { registerUser, seedBookPage, seedBookUpload } from '../helpers/seed.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
 import { BOOK_UPLOAD_TYPES, MAX_UPLOAD_BYTES } from '../../src/services/bookUploadIngest.js';
 import { buildStoredZip } from '../helpers/zip.js';
+import { runBookIngestTick } from '../../src/services/bookIngestRunner.js';
+import { getLogger } from '../../src/logging.js';
 
 // The PDF path shells out to `pdftoppm`, which the test container doesn't
-// have (see services/pdfPageRender.ts's header) — mock the whole module so
-// the PDF-upload route test is deterministic without poppler.
+// have (see services/pdfPageRender.ts's header) — mock the runner's real
+// entry point so the PDF-upload tests are deterministic without poppler.
+// `streamPdfPagesToJpegFromFile` (Phase 2.5) is an async generator that
+// yields one rendered JPEG page Buffer at a time, called with the raw
+// upload's ABSOLUTE PATH on disk (never a Buffer — see that module's header).
 vi.mock('../../src/services/pdfPageRender.js', () => ({
-  renderPdfPagesToJpeg: vi.fn(),
+  streamPdfPagesToJpegFromFile: vi.fn(),
 }));
-import { renderPdfPagesToJpeg } from '../../src/services/pdfPageRender.js';
+import { streamPdfPagesToJpegFromFile } from '../../src/services/pdfPageRender.js';
 
 let pg: PgHandle;
 let t: TestApp;
@@ -79,8 +99,8 @@ let t: TestApp;
 /** A minimal but VALID (parseable) 1-page PDF — real %PDF- signature + a
  *  trailer, so the magic-byte sniff AND a "does this look like a PDF" smell
  *  test both pass, mirroring what a real scanner/export would send. Only
- *  used to reach the mocked renderPdfPagesToJpeg — its actual bytes are never
- *  rendered in this suite. */
+ *  used to reach the mocked streamPdfPagesToJpegFromFile — its actual bytes
+ *  are never rendered in this suite. */
 const TINY_PDF = Buffer.from(
   '%PDF-1.4\n' +
     '1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj\n' +
@@ -138,7 +158,7 @@ beforeEach(async () => {
     'TRUNCATE TABLE book_uploads, vocab_cards, sessions, users RESTART IDENTITY CASCADE',
   );
   resetLimiters();
-  vi.mocked(renderPdfPagesToJpeg).mockReset();
+  vi.mocked(streamPdfPagesToJpegFromFile).mockReset();
 });
 
 /** GET a binary URL with the body captured as a raw Buffer (mirrors
@@ -157,6 +177,46 @@ async function bookPageRows(uploadId: string | number) {
     [uploadId],
   );
   return rows;
+}
+
+/** List filenames under BOOK_UPLOAD_STORAGE_DIR/raw/{userId}/ — `[]` (not a
+ *  thrown ENOENT) if the directory doesn't exist yet, i.e. no upload for
+ *  this user has ever reached multer's diskStorage `destination` callback.
+ *  Used to assert a POST rejection leaves NO orphan raw file behind (Bug 2
+ *  fix — see routes/uploads.ts's POST handler doc). */
+async function listRawUploadFiles(userId: number): Promise<string[]> {
+  try {
+    return await readdir(path.join(process.env.BOOK_UPLOAD_STORAGE_DIR!, 'raw', String(userId)));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw err;
+  }
+}
+
+/** Drive the runner exactly one tick (no timers — the deterministic pattern
+ *  tests/services/bookIngestRunner.test.ts uses). With at most one pending
+ *  upload in play (the norm in this suite — beforeEach truncates), one call
+ *  fully claims → decodes → settles it. */
+function tick() {
+  return runBookIngestTick(getLogger());
+}
+
+/** GET /uploads/:id and return the parsed upload DTO — used after a tick to
+ *  read back the settled state through the real read path (dogfooding the
+ *  route under test rather than only asserting against raw DB rows). */
+async function fetchUpload(agent: ReturnType<typeof request.agent>, id: string | number) {
+  const res = await agent.get(`/uploads/${id}`);
+  expect(res.status).toBe(200);
+  return res.body.upload as {
+    id: string;
+    title: string;
+    type: string;
+    status: string;
+    page_count: number | null;
+    byte_size: number;
+    error: string | null;
+    created_at: string;
+  };
 }
 
 describe('uploads — auth required', () => {
@@ -182,8 +242,8 @@ describe('uploads — auth required', () => {
   });
 });
 
-describe('POST /uploads — zip-of-images upload', () => {
-  it('uploads a real multi-image zip, orders pages by NATURAL filename sort, and writes every page blob to disk (201)', async () => {
+describe('POST /uploads — zip-of-images upload (async: 202 → runner tick → ready)', () => {
+  it('enqueues a real multi-image zip as 202 pending (no pages yet), then the runner orders pages by NATURAL filename sort and writes every page blob to disk', async () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
 
     // Deliberately out of append order (mirrors a vFlat retake landing out of
@@ -204,14 +264,25 @@ describe('POST /uploads — zip-of-images upload', () => {
       .field('type', 'vocab')
       .attach('file', zip, { filename: 'book.zip', contentType: 'application/zip' });
 
-    expect(res.status).toBe(201);
-    const up = res.body.upload;
-    expect(up.title).toBe('Vocab 2000 Advanced');
-    expect(up.status).toBe('ready');
-    expect(up.page_count).toBe(3);
-    expect(up.byte_size).toBe(zip.length);
+    expect(res.status).toBe(202);
+    const enqueued = res.body.upload;
+    expect(enqueued.title).toBe('Vocab 2000 Advanced');
+    expect(enqueued.status).toBe('pending');
+    expect(enqueued.page_count).toBeNull();
+    expect(enqueued.error).toBeNull();
+    expect(enqueued.byte_size).toBe(zip.length);
 
-    const pages = await bookPageRows(up.id);
+    // No decode has happened yet — the response IS immediate.
+    expect(await bookPageRows(enqueued.id)).toEqual([]);
+
+    await expect(tick()).resolves.toBe('done');
+
+    const settled = await fetchUpload(agent, enqueued.id);
+    expect(settled.status).toBe('ready');
+    expect(settled.page_count).toBe(3);
+    expect(settled.error).toBeNull();
+
+    const pages = await bookPageRows(enqueued.id);
     expect(pages.length).toBe(3);
     expect(pages.map((p) => p.page_number)).toEqual([1, 2, 3]);
 
@@ -228,7 +299,7 @@ describe('POST /uploads — zip-of-images upload', () => {
     }
   });
 
-  it('ignores non-image entries and still succeeds with only the real pages counted', async () => {
+  it('ignores non-image entries and still settles ready with only the real pages counted', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const zip = buildStoredZip([
       { name: 'metadata.json', data: Buffer.from('{"title":"x"}') },
@@ -240,11 +311,16 @@ describe('POST /uploads — zip-of-images upload', () => {
       .field('title', 'With Metadata File')
       .field('type', 'grammar')
       .attach('file', zip, { filename: 'book.zip', contentType: 'application/zip' });
-    expect(res.status).toBe(201);
-    expect(res.body.upload.page_count).toBe(2);
+    expect(res.status).toBe(202);
+    expect(res.body.upload.status).toBe('pending');
+
+    await expect(tick()).resolves.toBe('done');
+    const settled = await fetchUpload(agent, res.body.upload.id);
+    expect(settled.status).toBe('ready');
+    expect(settled.page_count).toBe(2);
   });
 
-  it('rejects a zip with zero usable image pages (400)', async () => {
+  it('a zip with zero usable image pages enqueues fine (202) but the runner settles it FAILED — the row survives with a bounded error, no book_pages', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const zip = buildStoredZip([{ name: 'readme.txt', data: Buffer.from('no images') }]);
     const res = await agent
@@ -252,12 +328,26 @@ describe('POST /uploads — zip-of-images upload', () => {
       .field('title', 'Empty Book')
       .field('type', 'vocab')
       .attach('file', zip, { filename: 'book.zip', contentType: 'application/zip' });
-    expect(res.status).toBe(400);
+    // 202, not 400 — the decode (and therefore this validation) happens
+    // async, in the runner, not in the request.
+    expect(res.status).toBe(202);
+    expect(res.body.upload.status).toBe('pending');
+
+    await expect(tick()).resolves.toBe('failed');
+
+    const settled = await fetchUpload(agent, res.body.upload.id);
+    expect(settled.status).toBe('failed');
+    expect(settled.page_count).toBeNull();
+    expect(settled.error).toBeTruthy();
+    expect(await bookPageRows(res.body.upload.id)).toEqual([]);
+
+    // The row itself is NOT rolled back — unlike the old synchronous 400,
+    // the enqueue already committed before the runner ever saw the file.
     const rows = await pg.pool.query<{ n: string }>(`SELECT count(*)::text AS n FROM book_uploads`);
-    expect(rows.rows[0]?.n).toBe('0');
+    expect(rows.rows[0]?.n).toBe('1');
   });
 
-  it('rejects a zip that lies about an entry size past the zip-bomb guard (400)', async () => {
+  it('a zip that lies about an entry size past the zip-bomb guard enqueues fine (202) but the runner settles it FAILED', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const zip = buildStoredZip([
       { name: '001.png', data: TINY_PNG, declaredUncompressedSize: 200 * 1024 * 1024 },
@@ -267,16 +357,32 @@ describe('POST /uploads — zip-of-images upload', () => {
       .field('title', 'Bomb Book')
       .field('type', 'vocab')
       .attach('file', zip, { filename: 'book.zip', contentType: 'application/zip' });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(202);
+
+    await expect(tick()).resolves.toBe('failed');
+
+    const settled = await fetchUpload(agent, res.body.upload.id);
+    expect(settled.status).toBe('failed');
+    expect(settled.error).toContain('possible zip bomb');
+    expect(await bookPageRows(res.body.upload.id)).toEqual([]);
   });
 });
 
-describe('POST /uploads — PDF upload (mocked pdftoppm)', () => {
-  it('renders a PDF to pages via renderPdfPagesToJpeg and persists them in order (201)', async () => {
+describe('POST /uploads — PDF upload (async: mocked streamPdfPagesToJpegFromFile)', () => {
+  it('enqueues a PDF as 202 pending, then the runner renders pages via the streaming decoder and persists them in order', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const jpegPage1 = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1]);
     const jpegPage2 = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 2]);
-    vi.mocked(renderPdfPagesToJpeg).mockResolvedValueOnce([jpegPage1, jpegPage2]);
+    // Capture the raw file's bytes INSIDE the mock (called mid-decode, before
+    // the runner's post-settle cleanup) — a successful settle deletes the raw
+    // file (deleteRawFileBestEffort) before this tick() call even returns, so
+    // reading it back afterward would race a file that's already gone.
+    let capturedRawBytes: Buffer | null = null;
+    vi.mocked(streamPdfPagesToJpegFromFile).mockImplementation(async function* (rawPath: string) {
+      capturedRawBytes = await readFile(rawPath);
+      yield jpegPage1;
+      yield jpegPage2;
+    });
 
     const res = await agent
       .post('/uploads')
@@ -284,9 +390,24 @@ describe('POST /uploads — PDF upload (mocked pdftoppm)', () => {
       .field('type', 'grammar')
       .attach('file', TINY_PDF, { filename: 'book.pdf', contentType: 'application/pdf' });
 
-    expect(res.status).toBe(201);
-    expect(res.body.upload.page_count).toBe(2);
-    expect(vi.mocked(renderPdfPagesToJpeg)).toHaveBeenCalledWith(TINY_PDF);
+    expect(res.status).toBe(202);
+    expect(res.body.upload.status).toBe('pending');
+    // The decoder hasn't been asked for anything yet — it only runs on tick.
+    expect(vi.mocked(streamPdfPagesToJpegFromFile)).not.toHaveBeenCalled();
+
+    await expect(tick()).resolves.toBe('done');
+
+    // Called once, with the RAW FILE'S PATH on disk (Phase 2.5's streaming-
+    // from-file contract — never a Buffer of the PDF). Verify it's really
+    // the raw file multer wrote, by the exact bytes read off disk mid-decode.
+    expect(vi.mocked(streamPdfPagesToJpegFromFile)).toHaveBeenCalledTimes(1);
+    const [calledPath] = vi.mocked(streamPdfPagesToJpegFromFile).mock.calls[0]!;
+    expect(typeof calledPath).toBe('string');
+    expect(capturedRawBytes).toEqual(TINY_PDF);
+
+    const settled = await fetchUpload(agent, res.body.upload.id);
+    expect(settled.status).toBe('ready');
+    expect(settled.page_count).toBe(2);
 
     const pages = await bookPageRows(res.body.upload.id);
     expect(pages.length).toBe(2);
@@ -294,23 +415,32 @@ describe('POST /uploads — PDF upload (mocked pdftoppm)', () => {
     const onDisk2 = await readFile(path.join(process.env.BOOK_UPLOAD_STORAGE_DIR!, pages[1]!.blob_ref));
     expect(Buffer.compare(onDisk1, jpegPage1)).toBe(0);
     expect(Buffer.compare(onDisk2, jpegPage2)).toBe(0);
-    // PDF pages are always stored as .jpg (renderPdfPagesToJpeg's contract).
+    // PDF pages are always stored as .jpg (streamPdfPagesToJpegFromFile's contract).
     expect(pages[0]!.blob_ref.endsWith('.jpg')).toBe(true);
   });
 
-  it('rejects a PDF that renders to zero pages (400)', async () => {
+  it('a PDF that renders to zero pages enqueues fine (202) but the runner settles it FAILED', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
-    vi.mocked(renderPdfPagesToJpeg).mockResolvedValueOnce([]);
+    vi.mocked(streamPdfPagesToJpegFromFile).mockImplementation(async function* () {
+      // yields nothing
+    });
     const res = await agent
       .post('/uploads')
       .field('title', 'Blank PDF')
       .field('type', 'vocab')
       .attach('file', TINY_PDF, { filename: 'book.pdf', contentType: 'application/pdf' });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(202);
+
+    await expect(tick()).resolves.toBe('failed');
+
+    const settled = await fetchUpload(agent, res.body.upload.id);
+    expect(settled.status).toBe('failed');
+    expect(settled.error).toContain('PDF contains no pages');
+    expect(await bookPageRows(res.body.upload.id)).toEqual([]);
   });
 });
 
-describe('POST /uploads — shared validation (zip/pdf-agnostic)', () => {
+describe('POST /uploads — shared validation (zip/pdf-agnostic, all still SYNCHRONOUS 4xx/413 — before any book_uploads row is written)', () => {
   it('rejects a file whose bytes are neither a zip nor a PDF, despite an allowed declared mime (400)', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const notAZipOrPdf = Buffer.from('just some plain bytes, not an archive', 'utf8');
@@ -365,6 +495,41 @@ describe('POST /uploads — shared validation (zip/pdf-agnostic)', () => {
     expect(res.status).toBe(400);
   });
 
+  it('a blank-title (validation-stage) rejection leaves NO orphan raw file on disk (Bug 2 fix)', async () => {
+    // BUG 2 (Phase 2.5 diskStorage regression, fixed): multer's diskStorage
+    // writes the raw file to disk BEFORE body validation ever runs.
+    // Previously, `validateBody(UploadBodySchema)` called `next(err)`
+    // directly on a Zod failure — skipping the handler's own try/catch
+    // (which unlinks `file.path` on every other post-multer failure)
+    // entirely, so a blank title (or any other schema rejection) leaked the
+    // just-written raw file with NO book_uploads row for jobRetention.ts to
+    // ever reach. The fix moved the UploadBodySchema parse INLINE into the
+    // handler's own try block (routes/uploads.ts), so this failure now hits
+    // the exact same cleanup path as bad magic bytes / the daily cap / a 409.
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .post('/uploads')
+      .field('title', '   ')
+      .field('type', 'vocab')
+      .attach('file', minimalZip(), { filename: 'book.zip', contentType: 'application/zip' });
+    expect(res.status).toBe(400);
+    expect(await listRawUploadFiles(userId)).toEqual([]);
+    const rows = await pg.pool.query<{ n: string }>(`SELECT count(*)::text AS n FROM book_uploads`);
+    expect(rows.rows[0]?.n).toBe('0');
+  });
+
+  it('a `.strict()` mass-assignment rejection ALSO leaves NO orphan raw file on disk (Bug 2 fix)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .post('/uploads')
+      .field('title', 'Some Book')
+      .field('type', 'vocab')
+      .field('status', 'ready') // not a writable field — .strict() rejects
+      .attach('file', minimalZip(), { filename: 'book.zip', contentType: 'application/zip' });
+    expect(res.status).toBe(400);
+    expect(await listRawUploadFiles(userId)).toEqual([]);
+  });
+
   it('rejects a missing title field (400)', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent
@@ -404,7 +569,101 @@ describe('POST /uploads — shared validation (zip/pdf-agnostic)', () => {
     expect(res.status).toBe(400);
   });
 
-  it('re-uploading the SAME (user, title) REPLACES: one row, old pages+blobs deleted, new pages persisted (200)', async () => {
+  it('enforces the per-user daily cap on NEW titles (429)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // Default cap is 10 — seed that many distinct-titled rows dated today.
+    for (let i = 0; i < 10; i += 1) {
+      await seedBookUpload(pg.pool, userId, { title: `cap-book-${i}` });
+    }
+    const res = await agent
+      .post('/uploads')
+      .field('title', 'One Too Many')
+      .field('type', 'vocab')
+      .attach('file', minimalZip(), { filename: 'book.zip', contentType: 'application/zip' });
+    expect(res.status).toBe(429);
+  });
+
+  it('does NOT count a same-title replace against the daily cap (still 202, reset to pending)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    for (let i = 0; i < 10; i += 1) {
+      await seedBookUpload(pg.pool, userId, { title: `cap-book-${i}` });
+    }
+    // Re-uploading an EXISTING (terminal) title at the cap must still
+    // succeed (replace, not a new title) — the async contract's success
+    // status is ALWAYS 202 (enqueue), never a synchronous 200/201.
+    const res = await agent
+      .post('/uploads')
+      .field('title', 'cap-book-0')
+      .field('type', 'vocab')
+      .attach('file', minimalZip(), { filename: 'book.zip', contentType: 'application/zip' });
+    expect(res.status).toBe(202);
+    expect(res.body.upload.status).toBe('pending');
+  });
+});
+
+describe('POST /uploads — conflict vs idempotent replace (Phase 2.5 async contract)', () => {
+  it('a second POST for the SAME (user, title) while the first is still PENDING → 409, no second row, the first row untouched', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const firstZip = buildStoredZip([{ name: '001.png', data: TINY_PNG }]);
+    const first = await agent
+      .post('/uploads')
+      .field('title', 'My Book')
+      .field('type', 'vocab')
+      .attach('file', firstZip, { filename: 'v1.zip', contentType: 'application/zip' });
+    expect(first.status).toBe(202);
+    expect(first.body.upload.status).toBe('pending');
+
+    // Deliberately do NOT tick — the row is still 'pending' when the second
+    // POST arrives. This is exactly the race the 409 exists to prevent: a
+    // second upload clobbering raw_blob_ref out from under a row the runner
+    // might already be mid-decode of (routes/uploads.ts's ATOMICITY note).
+    const secondZip = buildStoredZip([
+      { name: '001.png', data: TINY_PNG },
+      { name: '002.png', data: TINY_PNG },
+    ]);
+    const second = await agent
+      .post('/uploads')
+      .field('title', 'My Book')
+      .field('type', 'grammar')
+      .attach('file', secondZip, { filename: 'v2.zip', contentType: 'application/zip' });
+    expect(second.status).toBe(409);
+
+    const countRows = await pg.pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM book_uploads WHERE user_id = $1 AND title = 'My Book'`,
+      [userId],
+    );
+    expect(countRows.rows[0]?.n).toBe('1');
+
+    const row = (
+      await pg.pool.query<{ type: string; status: string }>(
+        `SELECT type::text AS type, status::text AS status FROM book_uploads WHERE id = $1`,
+        [first.body.upload.id],
+      )
+    ).rows[0]!;
+    expect(row.type).toBe('vocab'); // untouched by the rejected second request
+    expect(row.status).toBe('pending');
+  });
+
+  it('a second POST for the SAME (user, title) while the existing row is PROCESSING → 409 too', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // Simulate the runner having already claimed the row (status flipped to
+    // 'processing') — a real mid-decode state a tick call in this
+    // single-threaded test suite can't otherwise pause at.
+    await seedBookUpload(pg.pool, userId, {
+      title: 'Mid Decode',
+      status: 'processing',
+      rawBlobRef: 'raw/x/does-not-matter.raw',
+    });
+
+    const res = await agent
+      .post('/uploads')
+      .field('title', 'Mid Decode')
+      .field('type', 'vocab')
+      .attach('file', minimalZip(), { filename: 'book.zip', contentType: 'application/zip' });
+    expect(res.status).toBe(409);
+  });
+
+  it("re-uploading the SAME (user, title) after the first settles READY replaces it: 202 pending (same row, reset), the runner decodes the NEW pages after clearing the old book_pages rows", async () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
 
     const firstZip = buildStoredZip([
@@ -416,7 +675,11 @@ describe('POST /uploads — shared validation (zip/pdf-agnostic)', () => {
       .field('title', 'My Book')
       .field('type', 'vocab')
       .attach('file', firstZip, { filename: 'v1.zip', contentType: 'application/zip' });
-    expect(first.status).toBe(201);
+    expect(first.status).toBe(202);
+    await expect(tick()).resolves.toBe('done');
+    const firstReady = await fetchUpload(agent, first.body.upload.id);
+    expect(firstReady.status).toBe('ready');
+
     const firstPages = await bookPageRows(first.body.upload.id);
     expect(firstPages.length).toBe(2);
     const firstBlobPaths = firstPages.map((p) =>
@@ -437,10 +700,14 @@ describe('POST /uploads — shared validation (zip/pdf-agnostic)', () => {
       .field('type', 'grammar') // type may change too
       .attach('file', secondZip, { filename: 'v2.zip', contentType: 'application/zip' });
 
-    expect(second.status).toBe(200); // replace, not create
+    // 202 (enqueue), never 200/201 — the async contract has exactly ONE
+    // success status regardless of new-insert vs terminal-row reset.
+    expect(second.status).toBe(202);
     expect(second.body.upload.id).toBe(first.body.upload.id); // same row
+    expect(second.body.upload.status).toBe('pending'); // reset back to pending
     expect(second.body.upload.type).toBe('grammar');
-    expect(second.body.upload.page_count).toBe(3);
+    expect(second.body.upload.page_count).toBeNull(); // cleared on reset
+    expect(second.body.upload.error).toBeNull();
 
     const rows = await pg.pool.query<{ n: string }>(
       `SELECT count(*)::text AS n FROM book_uploads WHERE user_id = $1`,
@@ -448,42 +715,34 @@ describe('POST /uploads — shared validation (zip/pdf-agnostic)', () => {
     );
     expect(rows.rows[0]?.n).toBe('1'); // still exactly one row
 
+    // Deliberate UX behavior (bookIngestRunner.ts's documented idempotency
+    // trade-off): the enqueue-time reset does NOT clear book_pages — the
+    // OLD book stays viewable while the replacement is queued. Only the
+    // runner's idempotency step (immediately before the fresh decode) wipes
+    // the old page rows.
+    expect((await bookPageRows(second.body.upload.id)).length).toBe(2);
+
+    await expect(tick()).resolves.toBe('done');
+    const secondReady = await fetchUpload(agent, second.body.upload.id);
+    expect(secondReady.status).toBe('ready');
+    expect(secondReady.page_count).toBe(3);
+
     const secondPages = await bookPageRows(second.body.upload.id);
     expect(secondPages.length).toBe(3);
+    expect(secondPages.map((p) => p.blob_ref)).not.toEqual(
+      expect.arrayContaining(firstPages.map((p) => p.blob_ref)),
+    );
 
-    // The OLD page blob files were deleted (orphan cleanup after the replace
-    // commits) — no orphans left behind.
+    // FIX VERIFIED (src/services/bookIngestRunner.ts's `clearPagesAndBlobs`,
+    // shared by the idempotency-wipe, stale-reap, and settle-race-clear
+    // sites): the runner's idempotency step no longer just deletes the OLD
+    // book_pages ROWS — it captures each row's blob_ref via `DELETE ...
+    // RETURNING blob_ref` and best-effort unlinks every one of those FILES
+    // too, mirroring routes/uploads.ts's DELETE handler. A same-title
+    // replace no longer orphans the prior version's page-image files.
     for (const p of firstBlobPaths) {
-      await expect(readFile(p)).rejects.toThrow();
+      await expect(readFile(p)).rejects.toThrow(); // no longer orphaned — unlinked by the fresh decode's idempotency clear
     }
-  });
-
-  it('enforces the per-user daily cap on NEW titles (429)', async () => {
-    const { agent, userId } = await registerUser(t.app, pg.pool);
-    // Default cap is 10 — seed that many distinct-titled rows dated today.
-    for (let i = 0; i < 10; i += 1) {
-      await seedBookUpload(pg.pool, userId, { title: `cap-book-${i}` });
-    }
-    const res = await agent
-      .post('/uploads')
-      .field('title', 'One Too Many')
-      .field('type', 'vocab')
-      .attach('file', minimalZip(), { filename: 'book.zip', contentType: 'application/zip' });
-    expect(res.status).toBe(429);
-  });
-
-  it('does NOT count a same-title replace against the daily cap', async () => {
-    const { agent, userId } = await registerUser(t.app, pg.pool);
-    for (let i = 0; i < 10; i += 1) {
-      await seedBookUpload(pg.pool, userId, { title: `cap-book-${i}` });
-    }
-    // Re-uploading an EXISTING title at the cap must still succeed (replace).
-    const res = await agent
-      .post('/uploads')
-      .field('title', 'cap-book-0')
-      .field('type', 'vocab')
-      .attach('file', minimalZip(), { filename: 'book.zip', contentType: 'application/zip' });
-    expect(res.status).toBe(200);
   });
 });
 
@@ -496,7 +755,7 @@ describe("POST /uploads — 'comic' type (Track P, picture/comic/manga)", () => 
     expect(BOOK_UPLOAD_TYPES).toContain('comic');
   });
 
-  it("accepts type 'comic' end-to-end: 201, the row persists type='comic', pages land as images", async () => {
+  it("accepts type 'comic' end-to-end: 202 pending → runner settles ready, the row persists type='comic', pages land as images", async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent
       .post('/uploads')
@@ -504,10 +763,14 @@ describe("POST /uploads — 'comic' type (Track P, picture/comic/manga)", () => 
       .field('type', 'comic')
       .attach('file', minimalZip(), { filename: 'manhwa.zip', contentType: 'application/zip' });
 
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(202);
     expect(res.body.upload.type).toBe('comic');
-    expect(res.body.upload.status).toBe('ready');
-    expect(res.body.upload.page_count).toBe(1);
+    expect(res.body.upload.status).toBe('pending');
+
+    await expect(tick()).resolves.toBe('done');
+    const settled = await fetchUpload(agent, res.body.upload.id);
+    expect(settled.status).toBe('ready');
+    expect(settled.page_count).toBe(1);
 
     // The DB enum (072) actually stores the value — not just the DTO echo.
     const { rows } = await pg.pool.query<{ type: string }>(
@@ -542,7 +805,7 @@ describe('GET /uploads — list, user-scoped, newest first', () => {
 });
 
 describe('GET /uploads/:id — single upload, user-scoped', () => {
-  it('returns the upload metadata', async () => {
+  it('returns the upload metadata, including page_count and error', async () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
     const id = await seedBookUpload(pg.pool, userId, {
       title: 'Some Book',
@@ -558,6 +821,22 @@ describe('GET /uploads/:id — single upload, user-scoped', () => {
     expect(res.body.upload.type).toBe('literature');
     expect(res.body.upload.status).toBe('ready');
     expect(res.body.upload.page_count).toBe(250);
+    expect(res.body.upload.error).toBeNull();
+  });
+
+  it('returns a pending/failed upload with its error surfaced (Phase 2.5)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const failedId = await seedBookUpload(pg.pool, userId, {
+      title: 'Broke Book',
+      status: 'failed',
+      error: 'zip archive contained no usable image pages (jpg/png)',
+    });
+
+    const res = await agent.get(`/uploads/${failedId}`);
+    expect(res.status).toBe(200);
+    expect(res.body.upload.status).toBe('failed');
+    expect(res.body.upload.page_count).toBeNull();
+    expect(res.body.upload.error).toBe('zip archive contained no usable image pages (jpg/png)');
   });
 
   it("returns 404 for another user's upload (IDOR)", async () => {
@@ -583,6 +862,8 @@ describe('GET /uploads/:id — single upload, user-scoped', () => {
 });
 
 describe('GET /uploads/:id/page/:n — streams a page image, user-scoped', () => {
+  /** Upload a real 3-page zip via the route, then drive it to 'ready' with
+   *  one runner tick — the async equivalent of the old synchronous helper. */
   async function uploadThreePages(agent: ReturnType<typeof request.agent>, title = 'Paged Book') {
     const zip = buildStoredZip([
       { name: '001.png', data: markedPng('one') },
@@ -594,7 +875,8 @@ describe('GET /uploads/:id/page/:n — streams a page image, user-scoped', () =>
       .field('title', title)
       .field('type', 'vocab')
       .attach('file', zip, { filename: 'book.zip', contentType: 'application/zip' });
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(202);
+    await expect(tick()).resolves.toBe('done');
     return res.body.upload.id as string;
   }
 
@@ -651,6 +933,13 @@ describe('GET /uploads/:id/page/:n — streams a page image, user-scoped', () =>
     const res = await getBinary(agent, `/uploads/${uploadId}/page/1`);
     expect(res.status).toBe(404);
   });
+
+  it("returns 404 for a page on a still-'pending' upload (nothing decoded yet)", async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, { status: 'pending', pageCount: null });
+    const res = await getBinary(agent, `/uploads/${uploadId}/page/1`);
+    expect(res.status).toBe(404);
+  });
 });
 
 describe('GET /uploads/:id/pages — ordered page-id list, user-scoped', () => {
@@ -689,7 +978,7 @@ describe('GET /uploads/:id/pages — ordered page-id list, user-scoped', () => {
     expect(res.body.pages.map((p: { page_number: number }) => p.page_number)).toEqual([1, 2, 3]);
   });
 
-  it('returns an empty list for an owned upload with no pages yet', async () => {
+  it('returns an empty list for an owned upload with no pages yet (still pending/processing)', async () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
     const uploadId = await seedBookUpload(pg.pool, userId, { status: 'processing', pageCount: null });
 
@@ -944,6 +1233,9 @@ describe('DELETE /uploads/:id — removes row + every page blob (cascade)', () =
       .field('title', 'To Delete')
       .field('type', 'vocab')
       .attach('file', zip, { filename: 'book.zip', contentType: 'application/zip' });
+    expect(uploadRes.status).toBe(202);
+    await expect(tick()).resolves.toBe('done');
+
     const id = uploadRes.body.upload.id as string;
     const pages = await bookPageRows(id);
     const blobPaths = pages.map((p) => path.join(process.env.BOOK_UPLOAD_STORAGE_DIR!, p.blob_ref));
@@ -969,6 +1261,23 @@ describe('DELETE /uploads/:id — removes row + every page blob (cascade)', () =
     for (const p of blobPaths) {
       await expect(readFile(p)).rejects.toThrow();
     }
+  });
+
+  it('deletes a still-PENDING upload cleanly too (nothing decoded yet, no book_pages to cascade)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const id = await seedBookUpload(pg.pool, userId, {
+      status: 'pending',
+      rawBlobRef: 'raw/does/not-matter.raw',
+    });
+
+    const res = await agent.delete(`/uploads/${id}`);
+    expect(res.status).toBe(204);
+
+    const uploadRows = await pg.pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM book_uploads WHERE id = $1`,
+      [id],
+    );
+    expect(uploadRows.rows[0]?.n).toBe('0');
   });
 
   it("returns 404 for another user's upload (IDOR) and does not delete it", async () => {
@@ -1013,7 +1322,8 @@ async function shareBook(uploadId: number | string): Promise<void> {
 }
 
 /** Upload a real 2-page book as `agent` (route path — writes real page blobs,
- *  so the page-stream tests exercise the full chain). */
+ *  so the page-stream tests exercise the full chain), then drive it to
+ *  'ready' with one runner tick (Phase 2.5's async contract). */
 async function uploadTwoPageBook(agent: ReturnType<typeof request.agent>, title: string) {
   const zip = buildStoredZip([
     { name: '001.png', data: markedPng('shared-one') },
@@ -1024,7 +1334,8 @@ async function uploadTwoPageBook(agent: ReturnType<typeof request.agent>, title:
     .field('title', title)
     .field('type', 'literature')
     .attach('file', zip, { filename: 'book.zip', contentType: 'application/zip' });
-  expect(res.status).toBe(201);
+  expect(res.status).toBe(202);
+  await expect(tick()).resolves.toBe('done');
   return res.body.upload.id as string;
 }
 
@@ -1047,10 +1358,13 @@ describe('F-207 phase 3a — cross-account READ of a shared book (meta + pages)'
     expect(res.body.upload.type).toBe('literature');
     // No-owner-PII contract: the DTO is served cross-account, so it must
     // carry NOTHING that says whose row this is — assert the exact key set,
-    // not just the absence of the two known-dangerous fields.
+    // not just the absence of the two known-dangerous fields. (Phase 2.5:
+    // `error` joined the DTO alongside every other surface — still no
+    // user_id/email/raw_blob_ref.)
     expect(Object.keys(res.body.upload).sort()).toEqual([
       'byte_size',
       'created_at',
+      'error',
       'id',
       'page_count',
       'status',
@@ -1179,6 +1493,7 @@ describe('F-217 — GET /uploads/shared (the shared-books browse list)', () => {
       expect(Object.keys(upload).sort()).toEqual([
         'byte_size',
         'created_at',
+        'error',
         'id',
         'page_count',
         'status',
@@ -1308,7 +1623,7 @@ describe('F-207 phase 3a — every book mutation (and owner-workflow read) stays
     expect((await b.agent.get(`/uploads/${id}/pages`)).status).toBe(404);
   });
 
-  it('a shared-book upload replay cannot be hijacked: POSTing the same title as another user creates a NEW private book for the caller, never touching the shared row', async () => {
+  it('a shared-book upload replay cannot be hijacked: POSTing the same title as another user creates a NEW private (pending → ready) book for the caller, never touching the shared row', async () => {
     const a = await registerUser(t.app, pg.pool);
     const sharedId = await uploadTwoPageBook(a.agent, 'Collision Title');
     await shareBook(sharedId);
@@ -1344,7 +1659,9 @@ describe('F-207 phase 3a — every book mutation (and owner-workflow read) stays
       .field('title', 'Clean Upload')
       .field('type', 'vocab')
       .attach('file', minimalZip(), { filename: 'book.zip', contentType: 'application/zip' });
-    expect(clean.status).toBe(201);
+    // Async contract: a clean, ACCEPTED upload enqueues as 202 (pending),
+    // never 201 — the row commits before any decode runs.
+    expect(clean.status).toBe(202);
     const { rows } = await pg.pool.query<{ is_shared: boolean }>(
       `SELECT is_shared FROM book_uploads WHERE id = $1`,
       [clean.body.upload.id],
