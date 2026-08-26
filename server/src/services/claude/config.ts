@@ -74,6 +74,12 @@ const EnvSchema = z.object({
   // from a bare topic alone, is sonnet-grade Korean authoring + comprehension
   // work (mirrors generate_story/diagnostic_item — never haiku-tier).
   CLAUDE_DEFAULT_MODEL_GENERATE_READING_ITEM: ModelEnum.default('claude-sonnet-4-6'),
+  // F-220 slice 3 generate_listening_item: authoring an original Korean
+  // multi-speaker dialogue (at a target TOPIK band) PLUS a genuine
+  // comprehension question about it, from a bare topic alone, is the same
+  // sonnet-grade Korean authoring + comprehension work as
+  // generate_reading_item — never haiku-tier.
+  CLAUDE_DEFAULT_MODEL_GENERATE_LISTENING_ITEM: ModelEnum.default('claude-sonnet-4-6'),
 
   // Input length caps (in characters) — prompt-injection defense.
   CLAUDE_MAX_INPUT_ENRICH: z.coerce.number().int().positive().default(2_000),
@@ -125,6 +131,10 @@ const EnvSchema = z.object({
   // both sufficient and a prompt-injection ceiling (mirrors diagnostic_item's
   // seed cap).
   CLAUDE_MAX_INPUT_GENERATE_READING_ITEM: z.coerce.number().int().positive().default(500),
+  // F-220 slice 3: same bare-topic-word input shape as generate_reading_item
+  // (a short, static, app-owned string from readingTopics.ts) — same tight
+  // cap.
+  CLAUDE_MAX_INPUT_GENERATE_LISTENING_ITEM: z.coerce.number().int().positive().default(500),
 
   // Cache TTLs (seconds). 0 = DO NOT cache (the CacheStore skips the write and
   // every lookup misses). Forever-caching requires the explicit
@@ -185,6 +195,10 @@ const EnvSchema = z.object({
   // topic that already has one shouldn't be an identical passage) — exactly
   // diagnostic_item / generate_story's rationale.
   CLAUDE_CACHE_TTL_GENERATE_READING_ITEM_S: z.coerce.number().int().nonnegative().default(0),
+  // F-220 slice 3 generate_listening_item: 0 = no caching, same variety
+  // rationale as generate_reading_item — a re-rolled dialogue for a topic
+  // that already has one shouldn't be an identical exchange.
+  CLAUDE_CACHE_TTL_GENERATE_LISTENING_ITEM_S: z.coerce.number().int().nonnegative().default(0),
 
   // Rate-limit (per-minute, per-bucket-key).
   CLAUDE_RATE_LIMIT_ENRICH: z.coerce.number().int().positive().default(60),
@@ -227,6 +241,10 @@ const EnvSchema = z.object({
   // directly) — 20/min comfortably bounds a batch run while capping a
   // runaway loop (mirrors diagnostic_item's ceiling).
   CLAUDE_RATE_LIMIT_GENERATE_READING_ITEM: z.coerce.number().int().positive().default(20),
+  // F-220 slice 3: same offline-CLI-only caller shape as
+  // generate_reading_item — 20/min comfortably bounds a batch run while
+  // capping a runaway loop.
+  CLAUDE_RATE_LIMIT_GENERATE_LISTENING_ITEM: z.coerce.number().int().positive().default(20),
 
   // Logging. 'silent' is a valid pino level (disables all output) and is what
   // the test harness sets; include it so loadConfig() accepts it rather than
@@ -243,6 +261,7 @@ export type RouteName =
   | 'grade_writing'
   | 'diagnostic_item'
   | 'generate_reading_item'
+  | 'generate_listening_item'
   | 'generate_conversation'
   | 'image_ocr'
   | 'generate_grammar_drill'
@@ -277,6 +296,7 @@ export const ROUTE_NAMES = [
   'grade_writing',
   'diagnostic_item',
   'generate_reading_item',
+  'generate_listening_item',
   'generate_conversation',
   'image_ocr',
   'generate_grammar_drill',
@@ -359,6 +379,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicClaudeCo
       grade_writing: e.CLAUDE_DEFAULT_MODEL_GRADE_WRITING,
       diagnostic_item: e.CLAUDE_DEFAULT_MODEL_DIAGNOSTIC_ITEM,
       generate_reading_item: e.CLAUDE_DEFAULT_MODEL_GENERATE_READING_ITEM,
+      generate_listening_item: e.CLAUDE_DEFAULT_MODEL_GENERATE_LISTENING_ITEM,
       generate_conversation: e.CLAUDE_DEFAULT_MODEL_CONVERSATION,
       image_ocr: e.CLAUDE_DEFAULT_MODEL_IMAGE_OCR,
       generate_grammar_drill: e.CLAUDE_DEFAULT_MODEL_GENERATE_GRAMMAR_DRILL,
@@ -376,6 +397,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicClaudeCo
       grade_writing: e.CLAUDE_MAX_INPUT_GRADE_WRITING,
       diagnostic_item: e.CLAUDE_MAX_INPUT_DIAGNOSTIC_ITEM,
       generate_reading_item: e.CLAUDE_MAX_INPUT_GENERATE_READING_ITEM,
+      generate_listening_item: e.CLAUDE_MAX_INPUT_GENERATE_LISTENING_ITEM,
       generate_conversation: e.CLAUDE_MAX_INPUT_CONVERSATION,
       image_ocr: e.CLAUDE_MAX_INPUT_IMAGE_OCR,
       generate_grammar_drill: e.CLAUDE_MAX_INPUT_GENERATE_GRAMMAR_DRILL,
@@ -393,6 +415,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicClaudeCo
       grade_writing: e.CLAUDE_CACHE_TTL_GRADE_WRITING_S,
       diagnostic_item: e.CLAUDE_CACHE_TTL_DIAGNOSTIC_ITEM_S,
       generate_reading_item: e.CLAUDE_CACHE_TTL_GENERATE_READING_ITEM_S,
+      generate_listening_item: e.CLAUDE_CACHE_TTL_GENERATE_LISTENING_ITEM_S,
       generate_conversation: e.CLAUDE_CACHE_TTL_CONVERSATION_S,
       image_ocr: e.CLAUDE_CACHE_TTL_IMAGE_OCR_S,
       generate_grammar_drill: e.CLAUDE_CACHE_TTL_GENERATE_GRAMMAR_DRILL_S,
@@ -410,6 +433,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicClaudeCo
       grade_writing: e.CLAUDE_RATE_LIMIT_GRADE_WRITING,
       diagnostic_item: e.CLAUDE_RATE_LIMIT_DIAGNOSTIC_ITEM,
       generate_reading_item: e.CLAUDE_RATE_LIMIT_GENERATE_READING_ITEM,
+      generate_listening_item: e.CLAUDE_RATE_LIMIT_GENERATE_LISTENING_ITEM,
       generate_conversation: e.CLAUDE_RATE_LIMIT_CONVERSATION,
       image_ocr: e.CLAUDE_RATE_LIMIT_IMAGE_OCR,
       generate_grammar_drill: e.CLAUDE_RATE_LIMIT_GENERATE_GRAMMAR_DRILL,

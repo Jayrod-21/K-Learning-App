@@ -246,7 +246,9 @@ export function parseStoryTurns(raw: unknown): StoryTurn[] | null {
 }
 
 /** What either synthesis path hands the shared persist step. */
-interface SynthesizedStory {
+/** Exported — `scripts/synthesize-listening-audio.ts` (F-220 slice 3) reuses
+ *  this shape around its own call to {@link synthesizeMultiVoice}. */
+export interface SynthesizedStory {
   audio: Buffer;
   segments: StorySegmentWindow[];
   durationMs: number | null;
@@ -268,8 +270,17 @@ interface SynthesizedStory {
  * TTS char alignments, whose last endMs can undershoot the true file length
  * (trailing silence/padding) and would drift every later boundary.
  * segment_number is the 1-based turn index; segment body is the turn's text.
+ *
+ * EXPORTED (F-220 slice 3): `scripts/synthesize-listening-audio.ts` reuses
+ * this EXACT function as its synth CORE — per-turn ElevenLabs calls (via the
+ * SAME injectable `getTtsProvider()`) + ffprobe/ffmpeg concat (via the SAME
+ * injectable `getMp3Concat()`) — WITHOUT any story_audio_jobs coupling; it
+ * calls this directly with the listening item's `turns` and persists the
+ * result into `audio_sources`/`audio_tracks` itself (a different owner/kind
+ * than a voiced story, per that script's own header). No behavior here
+ * changes for the story-audio runner — this export is additive.
  */
-async function synthesizeMultiVoice(
+export async function synthesizeMultiVoice(
   turns: StoryTurn[],
   narratorVoiceId: string,
   log: Logger,

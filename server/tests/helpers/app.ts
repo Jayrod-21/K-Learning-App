@@ -174,6 +174,36 @@ export function makeStubProxy(overrides: Partial<ClaudeProxy> = {}): ClaudeProxy
       },
       metadata: { ...baseMeta, requestId: randomUUID() },
     }),
+    generateDiagnosticListeningItem: async (input) => ({
+      // F-220 slice 3: deterministic valid listening item — a short mock
+      // 2-turn dialogue + one 4-choice comprehension question, answerIndex 0.
+      // Lets CLI/generator tests exercise the full flow without touching
+      // Anthropic or ElevenLabs.
+      result: {
+        turns: [
+          {
+            speaker: 'narrator',
+            gender: 'narrator' as const,
+            text: `mock ${input.targetLevel} dialogue about ${input.topic}.`,
+          },
+          {
+            speaker: '민수',
+            gender: 'male' as const,
+            text: `mock line about ${input.topic}.`,
+          },
+        ],
+        prompt: `mock listening comprehension question about ${input.topic}`,
+        choices: [
+          { kr: '정답', en: 'correct' },
+          { kr: '오답 1', en: 'wrong 1' },
+          { kr: '오답 2', en: 'wrong 2' },
+          { kr: '오답 3', en: 'wrong 3' },
+        ],
+        answerIndex: 0,
+        explain: 'mock explanation: the first choice is correct.',
+      },
+      metadata: { ...baseMeta, requestId: randomUUID() },
+    }),
     ocrImage: async () => ({
       // Deterministic OCR result: a fixed caption + 3 content words (no boxes).
       // Lets the /images upload route test assert the persisted caption + words

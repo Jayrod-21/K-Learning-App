@@ -24,12 +24,15 @@
 import { query, type Querier } from '../../db/pool.js';
 import type { DiagnosticTargetLevel } from '../claude/index.js';
 
-/** F-220 slice 1 wrote vocab/grammar rows; slice 2 (F-220) adds 'reading' —
- *  a generated, copyright-clean passage + comprehension MC item
- *  (kind='passage-mc', carries a non-null `passage`). Still narrower than
- *  the table's full forward-compat `section` CHECK ('listening'/'writing'
- *  are later slices). */
-export type GeneratedBankSection = 'vocab' | 'grammar' | 'reading';
+/** F-220 slice 1 wrote vocab/grammar rows; slice 2 added 'reading' — a
+ *  generated, copyright-clean passage + comprehension MC item
+ *  (kind='passage-mc', carries a non-null `passage`). Slice 3 adds
+ *  'listening' — a generated dialogue + comprehension MC item
+ *  (kind='audio-mc', carries NO passage/turns — see `GeneratedBankItem`'s
+ *  doc — and is only servable once its audio is synthesized, i.e.
+ *  `audio_source_id IS NOT NULL`). Still narrower than the table's full
+ *  forward-compat `section` CHECK ('writing' is a later slice). */
+export type GeneratedBankSection = 'vocab' | 'grammar' | 'reading' | 'listening';
 
 const CHOICE_IDS = ['a', 'b', 'c', 'd'] as const;
 type ChoiceId = (typeof CHOICE_IDS)[number];
@@ -49,10 +52,19 @@ export interface GeneratedBankItem {
   /** The question stem — maps to `ServerItem.prompt`. */
   readonly prompt: string;
   /** The shared reading passage — present (non-empty) only for a
-   *  section='reading' draw; `undefined` for vocab/grammar (mirrors
+   *  section='reading' draw; `undefined` for vocab/grammar/listening (mirrors
    *  `ServerItem.passage`'s optional-field posture — `toClientItem` already
-   *  forwards it verbatim when present). */
+   *  forwards it verbatim when present). A listening draw NEVER carries this
+   *  — the dialogue text must never reach the learner as readable text (see
+   *  the module doc + routes/diagnostic.ts's listening mapping). */
   readonly passage?: string;
+  /** Playable audio, present ONLY for a section='listening' draw — the
+   *  `/audio/tracks/:id/stream` URL of this item's ONE synthesized dialogue
+   *  blob, built here (mirrors `sourceRef`'s `bank:<id>` construction) so the
+   *  caller's mapping is a flat spread. `undefined` for every other section. */
+  readonly audioUrl?: string;
+  readonly audioStartMs?: number;
+  readonly audioEndMs?: number;
   readonly choices: readonly GeneratedBankChoice[];
   readonly correctAnswer: ChoiceId;
   readonly explain: string;
@@ -71,6 +83,15 @@ interface GeneratedItemRow {
   readonly choices: ReadonlyArray<{ readonly kr: string; readonly en?: string }>;
   readonly answer_index: number;
   readonly explain: string | null;
+  /** Only populated for a section='listening' row (the LEFT JOIN into
+   *  audio_tracks) — the id of this item's ONE synthesized dialogue track,
+   *  the stream route's path param. NULL for every other section (no join
+   *  target) and for a listening row whose audio isn't synthesized yet (the
+   *  WHERE clause already excludes those from ever reaching this row, but
+   *  the column stays nullable at the type level for the join's sake). */
+  readonly track_id: number | null;
+  readonly audio_start_ms: number | null;
+  readonly audio_end_ms: number | null;
 }
 
 /**
@@ -82,18 +103,29 @@ interface GeneratedItemRow {
  * the random-order shuffle over the (small, per-cell) approved slice.
  *
  * The `kind` predicate re-applies the SAME section<->kind contract the live
- * path enforces (routes/diagnostic.ts `buildGeneratedItem`/the reading draw
- * in `buildItemForSection`: grammar items are kind 'pattern', reading items
- * are kind 'passage-mc', vocab items are anything else) as a WHERE clause —
+ * path enforces (routes/diagnostic.ts `buildGeneratedItem`/the reading and
+ * listening draws in `buildItemForSection`: grammar items are kind
+ * 'pattern', reading items are kind 'passage-mc', listening items are kind
+ * 'audio-mc', vocab items are anything else) as a WHERE clause —
  * defense-in-depth so a future stray row (e.g. a hand-inserted admin fix)
  * can never surface through the draw path even if it slipped past the
  * ingest CLI's own guard.
  *
+ * LISTENING (F-220 slice 3): a listening row is servable ONLY once its audio
+ * is synthesized — `audio_source_id IS NOT NULL` is a HARD requirement in the
+ * WHERE clause (an authored-but-silent draft row, or one whose audio_source
+ * was deleted/un-cut, must never surface here — the learner cannot be handed
+ * an "audio-mc" item with nothing to listen to). The row's `turns` (the
+ * dialogue script) are NEVER selected — this function returns the audio
+ * URL/offsets, never the transcript, so it is structurally impossible for a
+ * caller to accidentally leak the dialogue text through this path.
+ *
  * `exec` is injectable (defaults to the shared pool's `query`) so tests can
  * run against a per-test database without touching module-level pool state.
  *
- * Returns null when no approved row matches the cell — the caller's cue to
- * fall through to live generation (vocab/grammar) or `pickTopikRow` (reading).
+ * Returns null when no approved (and, for listening, audio-ready) row
+ * matches the cell — the caller's cue to fall through to live generation
+ * (vocab/grammar) or `pickTopikRow` (reading/listening).
  */
 export async function pickGeneratedItem(
   section: GeneratedBankSection,
@@ -101,20 +133,29 @@ export async function pickGeneratedItem(
   exec: Querier = query,
 ): Promise<GeneratedBankItem | null> {
   // 'grammar' -> exactly kind='pattern'; 'reading' -> exactly
-  // kind='passage-mc' (both an exact-match `=`, section is ALSO in the WHERE
-  // clause so this is never ambiguous with the other's kind); 'vocab' ->
-  // anything EXCEPT 'pattern' (unchanged from slice 1 — a vocab row can
-  // never legitimately carry kind='passage-mc' in the first place, since the
-  // ingest CLI only ever writes that kind under section='reading').
+  // kind='passage-mc'; 'listening' -> exactly kind='audio-mc' (all an
+  // exact-match `=`, section is ALSO in the WHERE clause so this is never
+  // ambiguous with another section's kind); 'vocab' -> anything EXCEPT
+  // 'pattern' (unchanged from slice 1 — a vocab row can never legitimately
+  // carry kind='passage-mc'/'audio-mc' in the first place, since the ingest
+  // CLI only ever writes those kinds under section='reading'/'listening').
   const kindOp = section === 'vocab' ? '<>' : '=';
-  const kindValue = section === 'reading' ? 'passage-mc' : 'pattern';
+  const kindValue = section === 'reading' ? 'passage-mc' : section === 'listening' ? 'audio-mc' : 'pattern';
+  // See the function doc — a listening row must have synthesized audio to be
+  // servable. LEFT JOIN so vocab/grammar/reading rows (audio_source_id
+  // always NULL for them) are unaffected; the extra WHERE term is a no-op
+  // (`TRUE`) for every non-listening section.
+  const audioReadyClause = section === 'listening' ? 'AND gi.audio_source_id IS NOT NULL' : '';
   const { rows } = await exec<GeneratedItemRow>(
-    `SELECT id, kind, level, stem, passage, choices, answer_index, explain
-       FROM generated_items
-      WHERE section = $1
-        AND level = $2
-        AND status = 'approved'
-        AND kind ${kindOp} $3
+    `SELECT gi.id, gi.kind, gi.level, gi.stem, gi.passage, gi.choices, gi.answer_index,
+            gi.explain, at.id AS track_id, gi.audio_start_ms, gi.audio_end_ms
+       FROM generated_items gi
+       LEFT JOIN audio_tracks at ON at.source_id = gi.audio_source_id
+      WHERE gi.section = $1
+        AND gi.level = $2
+        AND gi.status = 'approved'
+        AND gi.kind ${kindOp} $3
+        ${audioReadyClause}
       ORDER BY random()
       LIMIT 1`,
     [section, level, kindValue],
@@ -132,12 +173,28 @@ export async function pickGeneratedItem(
   // defined for any row that passed those constraints.
   const correctAnswer = CHOICE_IDS[row.answer_index]!;
 
+  // Listening's audio fields — built here (mirrors sourceRef's `bank:<id>`
+  // construction) so routes/diagnostic.ts's mapping is a flat spread. The
+  // audioReadyClause above guarantees track_id/audio_start_ms/audio_end_ms
+  // are all non-null for any row that reaches this point when
+  // section='listening'; the `!`s are safe under that WHERE-clause proof,
+  // not a runtime assumption for other sections (which never take this arm).
+  const audioFields =
+    section === 'listening'
+      ? {
+          audioUrl: `/audio/tracks/${String(row.track_id!)}/stream`,
+          audioStartMs: row.audio_start_ms!,
+          audioEndMs: row.audio_end_ms!,
+        }
+      : {};
+
   return {
     id: row.id,
     kind: row.kind,
     level: row.level as DiagnosticTargetLevel,
     prompt: row.stem,
     ...(row.passage !== null ? { passage: row.passage } : {}),
+    ...audioFields,
     choices,
     correctAnswer,
     explain: row.explain ?? '',

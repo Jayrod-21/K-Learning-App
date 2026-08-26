@@ -47,7 +47,7 @@ function nextHash(): string {
 }
 
 async function insertItem(overrides: {
-  section?: 'vocab' | 'grammar' | 'reading';
+  section?: 'vocab' | 'grammar' | 'reading' | 'listening';
   level?: string;
   kind?: string;
   status?: 'draft' | 'approved' | 'retired';
@@ -56,10 +56,21 @@ async function insertItem(overrides: {
   choices?: readonly { kr: string; en?: string }[];
   answerIndex?: number;
   explain?: string | null;
+  /** F-220 slice 3 — set to make a listening row audio-ready. */
+  audioSourceId?: number | null;
+  audioStartMs?: number | null;
+  audioEndMs?: number | null;
 }): Promise<number> {
   const section = overrides.section ?? 'vocab';
   const kind =
-    overrides.kind ?? (section === 'grammar' ? 'pattern' : section === 'reading' ? 'passage-mc' : 'synonym');
+    overrides.kind ??
+    (section === 'grammar'
+      ? 'pattern'
+      : section === 'reading'
+        ? 'passage-mc'
+        : section === 'listening'
+          ? 'audio-mc'
+          : 'synonym');
   const choices = overrides.choices ?? [
     { kr: '정답', en: 'correct' },
     { kr: '오답1' },
@@ -70,9 +81,9 @@ async function insertItem(overrides: {
   const { rows } = await pg.pool.query<{ id: string }>(
     `INSERT INTO generated_items
        (section, level, kind, stem, passage, choices, answer_index, explain, source_ref,
-        status, created_by, model_id, prompt_hash)
+        status, created_by, model_id, prompt_hash, audio_source_id, audio_start_ms, audio_end_ms)
      VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, 'test-seed-ref',
-             $9, 'test-fixture', 'claude-sonnet-4-6', $10)
+             $9, 'test-fixture', 'claude-sonnet-4-6', $10, $11, $12, $13)
      RETURNING id`,
     [
       section,
@@ -85,9 +96,50 @@ async function insertItem(overrides: {
       overrides.explain ?? 'mock explain',
       overrides.status ?? 'approved',
       nextHash(),
+      overrides.audioSourceId ?? null,
+      overrides.audioStartMs ?? null,
+      overrides.audioEndMs ?? null,
     ],
   );
   return Number(rows[0]!.id);
+}
+
+let listeningFixtureUserId: number | null = null;
+let audioSlugSeq = 0;
+
+/** F-220 slice 3 — one real audio_sources + audio_tracks pair (mirrors the
+ *  synthesize-listening-audio CLI's own INSERT shape) so a listening
+ *  `pickGeneratedItem` draw can prove the returned audioUrl/offsets. Creates
+ *  a fixture "system owner" user lazily (once per test file run — TRUNCATEd
+ *  away between files, not between tests in this file, since no test here
+ *  mutates `users`). */
+async function seedAudioTrack(
+  pool: Pool,
+  opts: { durationMs?: number } = {},
+): Promise<{ sourceId: number; trackId: number }> {
+  if (listeningFixtureUserId === null) {
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO users (email, password_hash)
+       VALUES ('bank-listening-fixture@test.dev', '$argon2id$' || repeat('x', 70))
+       RETURNING id`,
+    );
+    listeningFixtureUserId = Number(rows[0]!.id);
+  }
+  audioSlugSeq += 1;
+  const src = await pool.query<{ id: string }>(
+    `INSERT INTO audio_sources (user_id, slug, title, kind, status, is_shared)
+     VALUES ($1, $2, 'mock listening audio', 'generated_listening', 'ready', true)
+     RETURNING id`,
+    [listeningFixtureUserId, `bank-listening-${String(audioSlugSeq)}`],
+  );
+  const sourceId = Number(src.rows[0]!.id);
+  const trk = await pool.query<{ id: string }>(
+    `INSERT INTO audio_tracks (source_id, user_id, track_number, title, blob_ref, byte_size, duration_ms, transcript_status)
+     VALUES ($1, $2, 1, 'mock', $3, 100, $4, 'done')
+     RETURNING id`,
+    [sourceId, listeningFixtureUserId, `${String(listeningFixtureUserId)}/mock-${String(audioSlugSeq)}.mp3`, opts.durationMs ?? 4000],
+  );
+  return { sourceId, trackId: Number(trk.rows[0]!.id) };
 }
 
 describe('pickGeneratedItem', () => {
@@ -225,6 +277,107 @@ describe('pickGeneratedItem — reading (F-220 slice 2)', () => {
 
   it('returns null when the reading bank is empty for the cell (falls through to pickTopikRow)', async () => {
     const result = await pickGeneratedItem('reading', 'L2', exec);
+    expect(result).toBeNull();
+  });
+});
+
+describe('pickGeneratedItem — listening (F-220 slice 3)', () => {
+  it('draws an approved, audio-ready listening row with audioUrl/offsets, NEVER a passage', async () => {
+    const { sourceId, trackId } = await seedAudioTrack(pg.pool, { durationMs: 5230 });
+    const id = await insertItem({
+      section: 'listening',
+      level: 'L3',
+      kind: 'audio-mc',
+      stem: '두 사람은 무엇에 대해 이야기합니까?',
+      choices: [
+        { kr: '날씨', en: 'weather' },
+        { kr: '음식' },
+        { kr: '교통' },
+        { kr: '건강' },
+      ],
+      answerIndex: 0,
+      explain: 'the dialogue is about the weather',
+      audioSourceId: sourceId,
+      audioStartMs: 0,
+      audioEndMs: 5230,
+    });
+
+    const result = await pickGeneratedItem('listening', 'L3', exec);
+    expect(result).not.toBeNull();
+    expect(result!.sourceRef).toBe(`bank:${String(id)}`);
+    expect(result!.kind).toBe('audio-mc');
+    expect(result!.prompt).toBe('두 사람은 무엇에 대해 이야기합니까?');
+    expect(result!.passage).toBeUndefined();
+    expect(result!.audioUrl).toBe(`/audio/tracks/${String(trackId)}/stream`);
+    expect(result!.audioStartMs).toBe(0);
+    expect(result!.audioEndMs).toBe(5230);
+    expect(result!.correctAnswer).toBe('a');
+  });
+
+  it('excludes a listening row with NO audio yet (audio_source_id NULL), even if approved', async () => {
+    await insertItem({ section: 'listening', level: 'L2', status: 'approved', audioSourceId: null });
+    const result = await pickGeneratedItem('listening', 'L2', exec);
+    expect(result).toBeNull();
+  });
+
+  it('excludes a listening row that is only draft, even with audio attached', async () => {
+    const { sourceId } = await seedAudioTrack(pg.pool);
+    await insertItem({
+      section: 'listening',
+      level: 'L2',
+      status: 'draft',
+      audioSourceId: sourceId,
+      audioStartMs: 0,
+      audioEndMs: 4000,
+    });
+    const result = await pickGeneratedItem('listening', 'L2', exec);
+    expect(result).toBeNull();
+  });
+
+  it('listening draw only matches kind="audio-mc" rows (never synonym/cloze/pattern/passage-mc)', async () => {
+    const { sourceId } = await seedAudioTrack(pg.pool);
+    await insertItem({
+      section: 'listening',
+      level: 'L3',
+      kind: 'passage-mc',
+      status: 'approved',
+      audioSourceId: sourceId,
+      audioStartMs: 0,
+      audioEndMs: 4000,
+    });
+    const miss = await pickGeneratedItem('listening', 'L3', exec);
+    expect(miss).toBeNull();
+  });
+
+  it('draws only from the requested (section=listening, level) cell, never a reading/vocab/grammar cell', async () => {
+    const { sourceId: wantedSourceId } = await seedAudioTrack(pg.pool);
+    const wantedId = await insertItem({
+      section: 'listening',
+      level: 'L4',
+      status: 'approved',
+      audioSourceId: wantedSourceId,
+      audioStartMs: 0,
+      audioEndMs: 4000,
+    });
+    const { sourceId: otherSourceId } = await seedAudioTrack(pg.pool);
+    await insertItem({
+      section: 'listening',
+      level: 'L3',
+      status: 'approved',
+      audioSourceId: otherSourceId,
+      audioStartMs: 0,
+      audioEndMs: 4000,
+    });
+    await insertItem({ section: 'reading', level: 'L4', status: 'approved' });
+    await insertItem({ section: 'vocab', level: 'L4', status: 'approved' });
+
+    const result = await pickGeneratedItem('listening', 'L4', exec);
+    expect(result).not.toBeNull();
+    expect(result!.sourceRef).toBe(`bank:${String(wantedId)}`);
+  });
+
+  it('returns null when the listening bank is empty for the cell (falls through to pickTopikRow)', async () => {
+    const result = await pickGeneratedItem('listening', 'L1', exec);
     expect(result).toBeNull();
   });
 });

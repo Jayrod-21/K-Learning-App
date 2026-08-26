@@ -1,0 +1,36 @@
+-- migrate: non-destructive
+-- 104 (up): add 'generate_listening_item' to claude_route.
+--
+-- F-220 slice 3 (generated, copyright-clean diagnostic LISTENING items —
+-- dialogue script + ElevenLabs multi-voice audio) adds ONE new proxy route
+-- to the code's RouteName union (server/src/services/claude/config.ts):
+--   * generate_listening_item — generateDiagnosticListeningItem; authors an
+--     original Korean dialogue (2-6 turns) + comprehension question from a
+--     bare topic, in a single call. Called only by the offline
+--     generate-item-bank CLI's --emit-batch mode (never invoked live — the
+--     live diagnostic draws from the pre-approved, pre-synthesized bank),
+--     but every call — batch or live — still writes a claude_usage row (and,
+--     for a future cacheTtl>0 route, a claude_cache row) typed against this
+--     enum.
+-- Without this enum value the call would fail its claude_usage write with
+-- `invalid input value for enum claude_route` — the exact defect 031/032
+-- fixed for the grammar-drill/image-OCR/diagnostic routes, and that
+-- 053/055/057/102 repeat the same "intentional friction" pattern for since.
+-- This migration is that friction: a new Claude-touching route requires a
+-- reviewed migration, authored HERE alongside the code instead of after the
+-- fact. server/tests/db/claude_route_enum.test.ts is the drift guard that
+-- would otherwise catch this silently missing.
+--
+-- SEPARATE FROM 103 (per the codebase precedent 102 itself documents): 103
+-- is generated_items/audio_sources DDL (a different table, different
+-- purpose — the item-bank schema); this is the claude_route enum, which
+-- must grow with every new RouteName exactly like every prior Claude-proxy
+-- route addition, in its OWN migration (031/032/053/055/057/102's pattern).
+--
+-- ADR-013: ADD VALUE is its own migration and safe inside migrate.py's
+-- per-migration transaction on PG12+ — the value just cannot be USED until
+-- COMMIT. Nothing in this file uses it; the server (separate runtime
+-- transactions, once this migration has landed) does. Mirrors 102/057/055/
+-- 053/032/031.
+
+ALTER TYPE claude_route ADD VALUE IF NOT EXISTS 'generate_listening_item';

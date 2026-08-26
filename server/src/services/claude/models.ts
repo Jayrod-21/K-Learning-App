@@ -595,6 +595,73 @@ export const StoryResultSchema = z.object({
 });
 export type StoryResult = z.infer<typeof StoryResultSchema>;
 
+// ---- 3e-2. generateDiagnosticListeningItem ----------------------------------
+// F-220 slice 3: ONE-SHOT generation of a copyright-clean diagnostic
+// LISTENING item. Mirrors generateDiagnosticReadingItem (slice 2) exactly,
+// but authors a spoken DIALOGUE (turns[]) instead of a printed passage: given
+// only a bare, neutral TOPIC string (the same readingTopics.ts list slice 2
+// seeds from), Claude writes ONE original short Korean dialogue (2-6 turns)
+// at the target band plus ONE 4-choice comprehension question about it, in a
+// single call. The dialogue is NEVER shown to the learner as text — a
+// SEPARATE, METERED CLI (scripts/synthesize-listening-audio.ts) turns `turns`
+// into ONE audio blob via the storyAudio multi-voice synth core (reusing
+// `StoryTurnGenderSchema`/the `assignVoices` palette this shares with F-210
+// story audio), and the diagnostic draw serves ONLY that audio + the
+// question — see routes/diagnostic.ts's listening mapping's "never set
+// ServerItem.passage from turns" rule.
+
+export const DiagnosticListeningItemInputSchema = z.object({
+  /** Target proficiency band the dialogue + question should be written at. */
+  targetLevel: DiagnosticTargetLevelSchema,
+  /** A bare, neutral topic word/phrase (e.g. '날씨', '취미') — an
+   *  uncopyrightable CONCEPT, never corpus prose. Claude authors the
+   *  dialogue 100% fresh from this alone. See
+   *  server/src/scripts/readingTopics.ts (the reading slice's list, reused
+   *  as-is here). */
+  topic: NonEmptyText.max(200),
+  /** Optional model override. */
+  model: z.enum(['haiku', 'sonnet', 'opus']).optional(),
+});
+export type DiagnosticListeningItemInput = z.infer<typeof DiagnosticListeningItemInputSchema>;
+
+/** One line of the generated dialogue. `speaker` is a short character label
+ *  (or the literal 'narrator'); `gender` is REQUIRED (unlike the optional-
+ *  for-back-compat `StoryTurnSchema.gender`) — a freshly generated listening
+ *  dialogue always has the model choose a voice-bearing gender, so
+ *  `assignVoices` (services/voicePalette.ts) can deterministically pick a
+ *  distinct Korean voice per speaker with no "old row, no tag" fallback case
+ *  to consider. Structurally compatible with `StoryTurn` (gender optional
+ *  there admits a required field here), so the synth CLI can pass
+ *  `DiagnosticListeningTurn[]` anywhere `readonly StoryTurn[]` is expected. */
+export const DiagnosticListeningTurnSchema = z.object({
+  speaker: NonEmptyText.max(100),
+  gender: StoryTurnGenderSchema,
+  text: NonEmptyText.max(300),
+});
+export type DiagnosticListeningTurn = z.infer<typeof DiagnosticListeningTurnSchema>;
+
+export const DiagnosticListeningItemResultSchema = z.object({
+  /** The original Korean dialogue, authored fresh from `topic` — the
+   *  copyright-clean core of F-220 slice 3. 2-6 turns: enough for a genuine
+   *  short exchange (a question needs at least two speakers/turns to be a
+   *  "listening" dialogue rather than a monologue) while staying well under
+   *  ElevenLabs' per-call char ceiling once synthesized turn-by-turn. */
+  turns: z.array(DiagnosticListeningTurnSchema).min(2).max(6),
+  /** The comprehension question stem the learner reads (Korean) — answerable
+   *  from LISTENING to the dialogue alone, never from reading it (the
+   *  dialogue text itself never reaches the learner — see the module doc). */
+  prompt: NonEmptyText.max(1000),
+  /** Exactly 4 choices, reusing the same {kr, en?} shape
+   *  `generateDiagnosticItem`/`generateDiagnosticReadingItem` use (the route
+   *  drops `en` before the choice reaches the learner). */
+  choices: z.array(DiagnosticGenChoiceSchema).length(4),
+  /** Index (0..3) of the single correct choice. */
+  answerIndex: z.number().int().min(0).max(3),
+  /** One- or two-sentence explanation, revealed only after the user answers. */
+  explain: NonEmptyText.max(800),
+});
+export type DiagnosticListeningItemResult = z.infer<typeof DiagnosticListeningItemResultSchema>;
+
 // ---- 3f. translatePassage ---------------------------------------------------
 // F-116: whole-passage/paragraph translation (Reading.tsx's `TranslateSheet`,
 // replacing the F-070 honest "coming soon" stub). Distinct from generateStory:
