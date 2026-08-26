@@ -131,11 +131,11 @@ def _configure_logging(level: str) -> structlog.stdlib.BoundLogger:
 # Path → (corpus, level). Resolved relative to the repo root at runtime so
 # the script works whether invoked from / or from Repository/.
 _DEFAULT_INPUTS: list[tuple[str, str, str]] = [
-    ("Repository/tools/ingest/output/grammar_kgiu_beginner.json",
+    ("tools/ingest/output/grammar_kgiu_beginner.json",
      "kgiu_beginner", "beginner"),
-    ("Repository/tools/ingest/output/grammar_kgiu_intermediate.json",
+    ("tools/ingest/output/grammar_kgiu_intermediate.json",
      "kgiu_intermediate", "intermediate"),
-    ("Repository/tools/ingest/output/grammar_kgiu_advanced.json",
+    ("tools/ingest/output/grammar_kgiu_advanced.json",
      "kgiu_advanced", "advanced"),
 ]
 
@@ -573,7 +573,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     a = sub.add_parser("apply", help="Populate canonical_grammar + backfill FKs.")
     a.add_argument("--output",
-                   default="Repository/tools/ingest/canonical_grammar_clusters.json",
+                   default="tools/ingest/canonical_grammar_clusters.json",
                    help="Cluster JSON to read (or regenerate).")
     a.add_argument("--regenerate", action="store_true",
                    help="Recompute clusters from source JSONs, ignoring the on-disk file.")
