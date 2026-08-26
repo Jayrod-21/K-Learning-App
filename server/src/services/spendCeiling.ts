@@ -9,7 +9,7 @@
  * their own cap can still sum to a runaway bill). Protects a multi-user
  * launch from cost runaway (D3/F-220's public-eventually gate).
  *
- * SOURCES (three tables, summed for the current UTC day):
+ * SOURCES (four tables, summed for the current UTC day):
  *   - claude_usage.cost_estimate_usd (004) — one row per completed Claude
  *     call; cache hits are already written at $0 by the writer
  *     (services/claude/usage.ts), so they contribute nothing extra here.
@@ -19,8 +19,14 @@
  *     single call count, so it is NULL and excluded by the WHERE clause).
  *   - story_image_jobs.cost_estimate_usd (096) — identical settle-only
  *     contract.
+ *   - generated_items.audio_cost_estimate_usd (103, F-220 slice 3) —
+ *     populated ONLY once `audio_synthesized_at` is set (the SAME settle-only
+ *     contract as the two story job tables above): the offline, operator-run
+ *     `scripts/synthesize-listening-audio.ts` CLI writes both columns in ONE
+ *     UPDATE per item, so this WHERE clause (`audio_synthesized_at >= since`)
+ *     never sums a not-yet-synthesized item's NULL cost.
  *
- * ENFORCEMENT (3 chokepoints, all calling `assertUnderSpendCeiling`):
+ * ENFORCEMENT (4 chokepoints, all calling `assertUnderSpendCeiling`):
  *   - services/claude/index.ts `runJsonRoute` + `generateConversation` — the
  *     SYNC path; a thrown SpendCeilingExceededError propagates to the route's
  *     error handler as a typed 503.
@@ -30,6 +36,10 @@
  *     slot so the user can retry once the day's total drops or an operator
  *     raises the ceiling.
  *   - services/storyImage.ts `runStoryImageTick` — BACKGROUND; same.
+ *   - scripts/synthesize-listening-audio.ts — OFFLINE/OPERATOR-RUN, per item
+ *     inside `--synth`; a ceiling hit stops that run before the item's
+ *     ElevenLabs call (never spending past the ceiling) rather than settling
+ *     any job state (this CLI has no job table — see its own module doc).
  *
  * DO NOT import the claude module from here (services/claude/**) — this file
  * is imported BY services/claude/index.ts, and a reverse import would form a
@@ -80,6 +90,12 @@ export interface SpendBreakdown {
   readonly claude: number;
   readonly tts: number;
   readonly images: number;
+  /** F-220 slice 3 — ElevenLabs spend on generated LISTENING item audio
+   *  (generated_items.audio_cost_estimate_usd, settled by the offline
+   *  synthesize-listening-audio CLI). Distinct from `tts` (story audio,
+   *  story_audio_jobs) — a different table/pipeline, summed separately so
+   *  the admin readout can attribute spend to its actual source. */
+  readonly listeningAudio: number;
 }
 
 export interface SpendCeilingStatus {
@@ -111,6 +127,18 @@ const IMAGE_SUM_SQL = `
   SELECT COALESCE(SUM(cost_estimate_usd), 0) AS total
     FROM story_image_jobs
    WHERE finished_at >= $1 AND status = 'done'
+`;
+
+// F-220 slice 3 — settle-only contract (103's design note): a draft/
+// not-yet-synthesized listening item has audio_cost_estimate_usd/
+// audio_synthesized_at both NULL, so the WHERE clause naturally excludes it
+// (mirrors TTS_SUM_SQL/IMAGE_SUM_SQL's status='done' guard, keyed on the
+// settle timestamp instead of a status column since generated_items has no
+// per-audio lifecycle status of its own).
+const LISTENING_AUDIO_SUM_SQL = `
+  SELECT COALESCE(SUM(audio_cost_estimate_usd), 0) AS total
+    FROM generated_items
+   WHERE audio_synthesized_at >= $1
 `;
 
 /** NUMERIC comes back from pg as a string (precision safety — the same
@@ -146,15 +174,23 @@ export async function getGlobalSpendUsdSince(
   since: Date,
   exec: Querier = query,
 ): Promise<SpendBreakdown> {
-  const [claudeRes, ttsRes, imagesRes] = await Promise.all([
+  const [claudeRes, ttsRes, imagesRes, listeningAudioRes] = await Promise.all([
     exec<{ total: unknown }>(CLAUDE_SUM_SQL, [since]),
     exec<{ total: unknown }>(TTS_SUM_SQL, [since]),
     exec<{ total: unknown }>(IMAGE_SUM_SQL, [since]),
+    exec<{ total: unknown }>(LISTENING_AUDIO_SUM_SQL, [since]),
   ]);
   const claude = toUsd(claudeRes.rows[0]?.total);
   const tts = toUsd(ttsRes.rows[0]?.total);
   const images = toUsd(imagesRes.rows[0]?.total);
-  return { total: claude + tts + images, claude, tts, images };
+  const listeningAudio = toUsd(listeningAudioRes.rows[0]?.total);
+  return {
+    total: claude + tts + images + listeningAudio,
+    claude,
+    tts,
+    images,
+    listeningAudio,
+  };
 }
 
 /**

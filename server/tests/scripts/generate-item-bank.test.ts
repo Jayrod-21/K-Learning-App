@@ -39,12 +39,14 @@ import { loadConfig } from '../../src/services/claude/config.js';
 import type {
   DiagnosticItemResult,
   DiagnosticReadingItemResult,
+  DiagnosticListeningItemResult,
 } from '../../src/services/claude/models.js';
 import {
   DEFAULT_PER_CELL,
   ItemBankInputError,
   LEVELS,
   SECTIONS,
+  buildListeningWorkOrderRequest,
   buildReadingWorkOrderRequest,
   buildWorkOrderRequest,
   countGrammarPatternSeeds,
@@ -169,6 +171,26 @@ function goodReadingResponse(passage = '오늘은 날씨가 좋습니다.', corr
   };
 }
 
+/** A schema-valid DiagnosticListeningItemResult (F-220 slice 3). */
+function goodListeningResponse(correctKr = '정답'): DiagnosticListeningItemResult {
+  return {
+    turns: [
+      { speaker: 'narrator', gender: 'narrator', text: '두 사람이 이야기합니다.' },
+      { speaker: '민수', gender: 'male', text: '오늘 날씨가 좋네요.' },
+      { speaker: '지은', gender: 'female', text: '네, 정말 좋아요.' },
+    ],
+    prompt: 'mock listening comprehension question',
+    choices: [
+      { kr: correctKr, en: 'correct' },
+      { kr: '오답1', en: '' },
+      { kr: '오답2', en: '' },
+      { kr: '오답3', en: '' },
+    ],
+    answerIndex: 0,
+    explain: 'mock explanation',
+  };
+}
+
 // ---------------------------------------------------------------------------
 // 1. THE $0 GUARANTEE
 // ---------------------------------------------------------------------------
@@ -184,6 +206,14 @@ describe('the $0 guarantee', () => {
     expect(src).not.toMatch(/\.generateDiagnosticItem\(/);
     // F-220 slice 2: the reading branch must be equally $0 — never a live call.
     expect(src).not.toMatch(/\.generateDiagnosticReadingItem\(/);
+    // F-220 slice 3: the listening SCRIPT branch is equally $0 — never a
+    // live call, and this file must never IMPORT the SEPARATE, metered
+    // audio-synth CLI (that tool's own $0-in-tests posture is proven in its
+    // own test file — a comment naming that file, e.g. this header's own
+    // docs, is fine; an `import ... from '.../synthesize-listening-audio'`
+    // is not).
+    expect(src).not.toMatch(/\.generateDiagnosticListeningItem\(/);
+    expect(src).not.toMatch(/from ['"].*synthesize-listening-audio/);
   });
 });
 
@@ -246,7 +276,9 @@ describe('parseCliArgs', () => {
 
   it('unknown flags / unknown section / unknown level throw', () => {
     expect(() => parseCliArgs(['--bogus'])).toThrow(ItemBankInputError);
-    expect(() => parseCliArgs(['--section=listening'])).toThrow(ItemBankInputError);
+    // 'listening' is now valid (F-220 slice 3) — a genuinely bogus section
+    // value proves the guard still works.
+    expect(() => parseCliArgs(['--section=writing'])).toThrow(ItemBankInputError);
     expect(() => parseCliArgs(['--level=L9'])).toThrow(ItemBankInputError);
   });
 
@@ -779,6 +811,206 @@ describe('F-220 slice 2 — reading count/emit/ingest', () => {
       response: goodReadingResponse(),
     })) as unknown as WorkOrderItem[];
     const inFile = await makeTmpFile('reading-idem-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+    const first = await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);
+    expect(first.written).toBe(1);
+    const second = await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);
+    expect(second.written).toBe(0);
+    expect(second.skippedAlreadyCached).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. F-220 slice 3 — listening section (SAME topic seeding, turns emit/ingest)
+// ---------------------------------------------------------------------------
+
+describe('F-220 slice 3 — listening count/emit/ingest', () => {
+  it('SECTIONS includes listening and --section=listening is valid', () => {
+    expect(SECTIONS).toContain('listening');
+    const opts = parseCliArgs(['--section=listening']);
+    expect(opts.sections).toEqual(['listening']);
+  });
+
+  it('runCount treats listening as repetition-unbounded (same topic list as reading): achievable == perCell', async () => {
+    const summary = await runCount(
+      pg.pool,
+      makeOpts({ sections: ['listening'], levels: ['L2'], perCell: 6 }),
+      silent,
+    );
+    expect(summary.cells).toHaveLength(1);
+    expect(summary.cells[0]!.achievable).toBe(6);
+    expect(await generatedItemCount()).toBe(0);
+  });
+
+  it('runEmitBatch emits a listening work-order with schema=DiagnosticListeningItemResult and independently-reproducible hashes; zero DB writes', async () => {
+    const outFile = await makeTmpFile('listening-batch.json');
+    const summary = await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['listening'], levels: ['L3'], perCell: 4, outFile }),
+      silent,
+    );
+    expect(summary.emitted).toBe(4);
+
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    expect(file.items).toHaveLength(4);
+    expect(file.meta.listeningModel).toBeTruthy();
+
+    const cfg = loadConfig();
+    for (const item of file.items) {
+      expect(item.section).toBe('listening');
+      expect(item.level).toBe('L3');
+      expect(item.schema).toBe('DiagnosticListeningItemResult');
+      expect(item.seedEnglish).toBeUndefined(); // topics never carry a gloss
+      expect(READING_TOPICS).toContain(item.seedKorean); // the SAME bare-topic list reading uses
+      expect(item.promptHash).toMatch(/^[0-9a-f]{64}$/);
+      const rebuilt = buildListeningWorkOrderRequest(
+        'L3',
+        { seedRef: item.seedRef, seedKorean: item.seedKorean },
+        file.meta.listeningModel,
+        cfg,
+      );
+      expect(rebuilt).not.toBeNull();
+      expect(rebuilt!.promptHash).toBe(item.promptHash);
+    }
+    expect(new Set(file.items.map((i) => i.promptHash)).size).toBe(4);
+
+    expect(await generatedItemCount()).toBe(0);
+  });
+
+  it('runIngest writes listening rows with turns landing (non-null JSONB), kind=audio-mc, section=listening, passage=NULL, audio_source_id=NULL', async () => {
+    const outFile = await makeTmpFile('listening-emit.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['listening'], levels: ['L4'], perCell: 2, outFile }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const filled = file.items.map((item, i) => ({
+      ...item,
+      response: goodListeningResponse(`정답-${String(i)}`),
+    })) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('listening-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+    const summary = await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);
+    expect(summary.written).toBe(2);
+    expect(summary.skippedInvalid).toBe(0);
+    expect(summary.skippedHashDrift).toBe(0);
+
+    const rows = await pg.pool.query<{
+      status: string;
+      section: string;
+      level: string;
+      kind: string;
+      stem: string;
+      passage: string | null;
+      choices: Array<{ kr: string; en: string }>;
+      answer_index: number;
+      turns: Array<{ speaker: string; gender: string; text: string }> | null;
+      audio_source_id: string | null;
+      audio_cost_estimate_usd: string | null;
+      audio_synthesized_at: string | null;
+    }>(
+      `SELECT status, section, level, kind, stem, passage, choices, answer_index,
+              turns, audio_source_id, audio_cost_estimate_usd, audio_synthesized_at
+         FROM generated_items ORDER BY id`,
+    );
+    expect(rows.rows).toHaveLength(2);
+    for (const [i, row] of rows.rows.entries()) {
+      expect(row.status).toBe('draft');
+      expect(row.section).toBe('listening');
+      expect(row.level).toBe('L4');
+      expect(row.kind).toBe('audio-mc');
+      expect(row.passage).toBeNull(); // NEVER a passage for a listening row
+      expect(row.audio_source_id).toBeNull(); // this CLI is the $0 script step — no audio yet
+      expect(row.audio_cost_estimate_usd).toBeNull();
+      expect(row.audio_synthesized_at).toBeNull();
+      // turns landed as a real JSONB array — the dialogue script the synth
+      // CLI will later consume.
+      expect(row.turns).not.toBeNull();
+      expect(row.turns).toHaveLength(3);
+      expect(row.turns![0]!.speaker).toBe('narrator');
+      expect(row.turns![1]!.gender).toBe('male');
+      expect(row.choices[row.answer_index]!.kr).toBe(`정답-${String(i)}`);
+    }
+  });
+
+  it('a reading row written alongside listening rows still has turns=NULL, and a listening row has passage=NULL', async () => {
+    const readingOut = await makeTmpFile('mixed2-reading.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['reading'], levels: ['L3'], perCell: 1, outFile: readingOut }),
+      silent,
+    );
+    const readingFile = JSON.parse(await readFile(readingOut, 'utf8')) as WorkOrderFile;
+    const readingFilled = readingFile.items.map((item) => ({
+      ...item,
+      response: goodReadingResponse(),
+    })) as unknown as WorkOrderItem[];
+    const readingIn = await makeTmpFile('mixed2-reading-filled.json');
+    await writeFile(readingIn, JSON.stringify({ meta: readingFile.meta, items: readingFilled }, null, 2));
+    await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile: readingIn }), silent);
+
+    const listeningOut = await makeTmpFile('mixed2-listening.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['listening'], levels: ['L3'], perCell: 1, outFile: listeningOut }),
+      silent,
+    );
+    const listeningFile = JSON.parse(await readFile(listeningOut, 'utf8')) as WorkOrderFile;
+    const listeningFilled = listeningFile.items.map((item) => ({
+      ...item,
+      response: goodListeningResponse(),
+    })) as unknown as WorkOrderItem[];
+    const listeningIn = await makeTmpFile('mixed2-listening-filled.json');
+    await writeFile(listeningIn, JSON.stringify({ meta: listeningFile.meta, items: listeningFilled }, null, 2));
+    await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile: listeningIn }), silent);
+
+    const rows = await pg.pool.query<{ section: string; passage: string | null; turns: unknown | null }>(
+      `SELECT section, passage, turns FROM generated_items ORDER BY id`,
+    );
+    expect(rows.rows).toHaveLength(2);
+    const readingRow = rows.rows.find((r) => r.section === 'reading')!;
+    const listeningRow = rows.rows.find((r) => r.section === 'listening')!;
+    expect(readingRow.passage).not.toBeNull();
+    expect(readingRow.turns).toBeNull();
+    expect(listeningRow.passage).toBeNull();
+    expect(listeningRow.turns).not.toBeNull();
+  });
+
+  it('rejects a malformed listening response (only 1 turn, below the 2-6 minimum) without writing', async () => {
+    const outFile = await makeTmpFile('listening-bad.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['listening'], levels: ['L3'], perCell: 1, outFile }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const badResponse = { ...goodListeningResponse(), turns: goodListeningResponse().turns.slice(0, 1) };
+    const filled = file.items.map((item) => ({ ...item, response: badResponse })) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('listening-bad-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+    await expect(runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent)).rejects.toThrow(
+      ItemBankInputError,
+    );
+    expect(await generatedItemCount()).toBe(0);
+  });
+
+  it('is idempotent: re-ingesting the same filled listening file writes 0 new rows', async () => {
+    const outFile = await makeTmpFile('listening-idem.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['listening'], levels: ['L3'], perCell: 1, outFile }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const filled = file.items.map((item) => ({
+      ...item,
+      response: goodListeningResponse(),
+    })) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('listening-idem-filled.json');
     await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
 
     const first = await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);

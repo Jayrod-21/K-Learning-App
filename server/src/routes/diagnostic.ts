@@ -1259,8 +1259,7 @@ async function buildItemForSection(
   const band = bandForTheta(theta);
   if (section === 'reading' || section === 'listening') {
     // F-220 slice 2 — default-OFF draw from the generated, copyright-clean
-    // reading bank (generated_items, migration 101), READING ONLY (listening
-    // stays on the topik path unchanged — audio is a later slice). Mirrors
+    // reading bank (generated_items, migration 101). Mirrors
     // buildGeneratedItem's vocab/grammar bank check exactly: with the flag
     // off (the default), this branch never runs and everything below is
     // byte-identical to before F-220. A `null` (bank empty/unreviewed for
@@ -1280,6 +1279,38 @@ async function buildItemForSection(
           choices: banked.choices,
           correctAnswer: banked.correctAnswer,
           explain: banked.explain,
+        };
+      }
+    }
+    // F-220 slice 3 — default-OFF draw from the generated, copyright-clean
+    // LISTENING bank (generated_items.turns + audio_source_id, migrations
+    // 101/103). `pickGeneratedItem('listening', …)` already REQUIRES
+    // `status='approved'` AND `audio_source_id IS NOT NULL` — a drafted-but-
+    // silent item never surfaces here — and never selects `turns`, so there
+    // is nothing to leak even by accident. CRITICAL: this mapping must NEVER
+    // set `passage` — PassageCard renders `ServerItem.passage` unconditionally
+    // (toClientItem forwards it verbatim), and the whole point of a listening
+    // item is that the learner LISTENS to the dialogue, never reads it. A
+    // `null` (bank empty/unreviewed/no-audio-yet for this cell) falls
+    // straight through to the unchanged pickTopikRow loop below.
+    if (section === 'listening' && loadConfig().DIAGNOSTIC_USE_GENERATED_BANK) {
+      const banked = await pickGeneratedItem('listening', band);
+      if (banked !== null && banked.audioUrl !== undefined) {
+        return {
+          section: 'listening',
+          sourceKind: 'generated',
+          sourceRef: banked.sourceRef,
+          difficulty: proficiencyToNumber(band),
+          kind: banked.kind,
+          level: banked.level,
+          prompt: banked.prompt,
+          // Deliberately NO `passage` key — see the comment above.
+          choices: banked.choices,
+          correctAnswer: banked.correctAnswer,
+          explain: banked.explain,
+          audioUrl: banked.audioUrl,
+          audioStartMs: banked.audioStartMs,
+          audioEndMs: banked.audioEndMs,
         };
       }
     }

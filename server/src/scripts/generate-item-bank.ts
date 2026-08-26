@@ -60,6 +60,18 @@
  *     it is never given, and therefore can never summarize/paraphrase, any
  *     existing text. This is the first F-220 slice that generates the
  *     PASSAGE itself, not just a question about existing content.
+ *   - listening (F-220 SLICE 3): seeds from the SAME `readingTopics.ts` list
+ *     — a bare neutral topic is exactly as safe a seed for a spoken dialogue
+ *     as it is for a printed passage, and reusing the list (rather than
+ *     forking a parallel one) keeps the "every entry is a bare concept"
+ *     copyright claim in ONE reviewable place. Claude authors an ORIGINAL
+ *     multi-turn dialogue 100% FRESH from the bare topic
+ *     (prompts/diagnostic_listening_item.ts) — never from an existing
+ *     transcript or conversation. This CLI writes the SCRIPT only (`turns`
+ *     JSONB + the question) at $0; the audio itself is a SEPARATE, METERED
+ *     step (`scripts/synthesize-listening-audio.ts`, run later by an
+ *     operator) — see that file's header for why script authoring and paid
+ *     ElevenLabs synthesis are split into two tools.
  *
  * MODES (— COUNT IS THE DEFAULT; nothing in this file ever spends money)
  *   --count / --dry-run   Enumerate the grid (SECTIONS x LEVELS) and how many
@@ -120,8 +132,11 @@ import {
   DiagnosticItemResultSchema,
   DiagnosticReadingItemInputSchema,
   DiagnosticReadingItemResultSchema,
+  DiagnosticListeningItemInputSchema,
+  DiagnosticListeningItemResultSchema,
   type DiagnosticItemResult,
   type DiagnosticReadingItemResult,
+  type DiagnosticListeningItemResult,
   type DiagnosticTargetLevel,
 } from '../services/claude/models.js';
 import {
@@ -132,6 +147,7 @@ import { loadConfig, type ClaudeModelId, type PublicClaudeConfig } from '../serv
 import { serializeMessages, stringifySystem } from '../services/claude/index.js';
 import { buildDiagnosticItemRequest } from '../services/claude/prompts/diagnostic_item.js';
 import { buildDiagnosticReadingItemRequest } from '../services/claude/prompts/diagnostic_reading_item.js';
+import { buildDiagnosticListeningItemRequest } from '../services/claude/prompts/diagnostic_listening_item.js';
 import { sanitizeUserInput } from '../services/claude/prompts/sanitize.js';
 import type { MessageRequest } from '../services/claude/client.js';
 import { shuffleGeneratedChoices } from '../routes/diagnostic.js';
@@ -145,7 +161,10 @@ const READING_TOPIC_COUNT = READING_TOPICS.length;
 // F-220 slice 2 adds 'reading': a generated, copyright-clean PASSAGE +
 // comprehension MC item, seeded from the static, app-owned topic list
 // (readingTopics.ts) instead of a DB table — see pickReadingSeeds below.
-export const SECTIONS: readonly GeneratedBankSection[] = ['vocab', 'grammar', 'reading'];
+// F-220 slice 3 adds 'listening': a generated, copyright-clean DIALOGUE
+// (turns[]) + comprehension MC item, seeded from the SAME topic list —
+// script only, at $0; audio synthesis is a separate metered CLI.
+export const SECTIONS: readonly GeneratedBankSection[] = ['vocab', 'grammar', 'reading', 'listening'];
 export const LEVELS: readonly DiagnosticTargetLevel[] = ['L1', 'L2', 'L3', 'L4', 'L5+'];
 export const DEFAULT_PER_CELL = 25;
 
@@ -451,12 +470,13 @@ export async function pickGrammarPatternSeeds(
   return picked.map((r) => ({ seedRef: r.id, seedKorean: r.pattern }));
 }
 
-/** Reading's "availability" is the topic list itself (F-220 slice 2) — NOT a
- *  DB query. Every topic is reusable (no per-row exhaustion, unlike
- *  vocab/grammar's finite corpus pools), so `targeted` and `total` are both
- *  the list length; `achievableForCell` (not this) decides how many the CLI
- *  will actually emit for a cell (repetition-unbounded). */
-function readingTopicAvailability(): SeedAvailability {
+/** Reading's/listening's "availability" is the SAME topic list itself
+ *  (F-220 slice 2, reused by slice 3) — NOT a DB query. Every topic is
+ *  reusable (no per-row exhaustion, unlike vocab/grammar's finite corpus
+ *  pools), so `targeted` and `total` are both the list length;
+ *  `achievableForCell` (not this) decides how many the CLI will actually
+ *  emit for a cell (repetition-unbounded). */
+function topicAvailability(): SeedAvailability {
   return { targeted: READING_TOPIC_COUNT, total: READING_TOPIC_COUNT };
 }
 
@@ -468,8 +488,9 @@ async function pickSeeds(
 ): Promise<SeedCandidate[]> {
   if (section === 'vocab') return pickVocabSeeds(pool, level, n);
   if (section === 'grammar') return pickGrammarPatternSeeds(pool, level, n);
-  // 'reading': topics are a static, app-owned list (readingTopics.ts), never
-  // a DB-backed/scarce resource — `pool` is unused for this branch.
+  // 'reading'/'listening': topics are a static, app-owned list
+  // (readingTopics.ts), never a DB-backed/scarce resource — `pool` is unused
+  // for this branch.
   return pickReadingTopics(level, n);
 }
 
@@ -480,19 +501,20 @@ async function countSeeds(
 ): Promise<SeedAvailability> {
   if (section === 'vocab') return countVocabSeeds(pool, level);
   if (section === 'grammar') return countGrammarPatternSeeds(pool, level);
-  return readingTopicAvailability();
+  return topicAvailability();
 }
 
 /** How many the CLI will emit for a cell. vocab/grammar: bounded by the real
- *  DB pool (`min(perCell, total)` — a scarce resource). reading: `perCell`
- *  ALWAYS — the topic list is reusable via repetition (readingTopics.ts),
- *  never a hard ceiling the way a finite corpus row-count is. */
+ *  DB pool (`min(perCell, total)` — a scarce resource). reading/listening:
+ *  `perCell` ALWAYS — the topic list is reusable via repetition
+ *  (readingTopics.ts), never a hard ceiling the way a finite corpus
+ *  row-count is. */
 function achievableForCell(
   section: GeneratedBankSection,
   perCell: number,
   availability: SeedAvailability,
 ): number {
-  return section === 'reading' ? perCell : Math.min(perCell, availability.total);
+  return section === 'reading' || section === 'listening' ? perCell : Math.min(perCell, availability.total);
 }
 
 // ---- Request building + prompt_hash (mirrors the live proxy's identity) ----
@@ -582,13 +604,20 @@ export function buildWorkOrderRequest(
  *  F-220 slice 2 reading branch. */
 const READING_ITEM_ROUTE = 'generate_reading_item' as const;
 
+/** `generate_listening_item`'s own route name — mirrors READING_ITEM_ROUTE
+ *  exactly, for the F-220 slice 3 listening branch. */
+const LISTENING_ITEM_ROUTE = 'generate_listening_item' as const;
+
 /** Which model config a section's generation route uses — vocab/grammar ride
- *  `diagnostic_item`; reading rides its own `generate_reading_item` route
- *  (both routes are read from the CURRENT config at both emit AND ingest
- *  time, exactly like `DIAGNOSTIC_ITEM_ROUTE`'s single-model precedent — no
- *  per-item model is stored in the work-order file itself). */
+ *  `diagnostic_item`; reading rides `generate_reading_item`; listening rides
+ *  `generate_listening_item` (all three routes are read from the CURRENT
+ *  config at both emit AND ingest time, exactly like `DIAGNOSTIC_ITEM_ROUTE`'s
+ *  single-model precedent — no per-item model is stored in the work-order
+ *  file itself). */
 function modelForSection(section: GeneratedBankSection, cfg: PublicClaudeConfig): ClaudeModelId {
-  return section === 'reading' ? cfg.modelDefaults.generate_reading_item : cfg.modelDefaults.diagnostic_item;
+  if (section === 'reading') return cfg.modelDefaults.generate_reading_item;
+  if (section === 'listening') return cfg.modelDefaults.generate_listening_item;
+  return cfg.modelDefaults.diagnostic_item;
 }
 
 /**
@@ -640,6 +669,55 @@ export function buildReadingWorkOrderRequest(
   };
 }
 
+/**
+ * Build the EXACT `generateDiagnosticListeningItem` request for a topic
+ * seed, and its prompt_hash. Mirrors `buildReadingWorkOrderRequest` exactly,
+ * but for the listening route/schema: `seed.seedKorean` holds the bare TOPIC
+ * string (the SAME `readingTopics.ts` list — see the module header). Returns
+ * the SAME `BuiltRequest` shape (the topic rides `seedKorean`, `seedEnglish`
+ * is always `undefined`) so the ingest path's per-item plumbing stays
+ * uniform across all three generated sections.
+ */
+export function buildListeningWorkOrderRequest(
+  level: DiagnosticTargetLevel,
+  seed: SeedCandidate,
+  model: ClaudeModelId,
+  cfg: PublicClaudeConfig,
+): BuiltRequest | null {
+  const parsed = DiagnosticListeningItemInputSchema.safeParse({
+    targetLevel: level,
+    topic: seed.seedKorean,
+  });
+  if (!parsed.success) return null;
+
+  let topic: string;
+  try {
+    topic = sanitizeUserInput(parsed.data.topic, {
+      maxLength: cfg.inputCaps.generate_listening_item,
+    });
+  } catch {
+    return null;
+  }
+
+  const cleaned = { ...parsed.data, topic };
+  const req = buildDiagnosticListeningItemRequest(cleaned, model);
+
+  const key: CacheKey = {
+    route: LISTENING_ITEM_ROUTE,
+    model,
+    systemText: stringifySystem(req.system),
+    userText: serializeMessages(req.messages),
+  };
+
+  return {
+    seedRef: seed.seedRef,
+    seedKorean: topic,
+    seedEnglish: undefined,
+    promptHash: hashCacheKey(key),
+    request: req,
+  };
+}
+
 // ---- count -------------------------------------------------------------------
 
 export interface CellCount {
@@ -667,7 +745,7 @@ export async function runCount(
       const achievable = achievableForCell(section, opts.perCell, availability);
       cells.push({ section, level, availability, achievable });
       print(
-        section === 'reading'
+        section === 'reading' || section === 'listening'
           ? `item-bank [COUNT]: ${section}/${level} — ${String(availability.total)} topics available ` +
               `(reusable via repetition, not a scarce pool) — would emit ${String(achievable)}/${String(opts.perCell)}`
           : `item-bank [COUNT]: ${section}/${level} — ${String(availability.targeted)} targeted-proficiency ` +
@@ -692,17 +770,18 @@ export interface WorkOrderItem {
   readonly section: GeneratedBankSection;
   readonly level: DiagnosticTargetLevel;
   /** Provenance: vocab_entries id (vocab) / canonical_grammar id (grammar) /
-   *  synthetic `topic-<level>-<n>` ref (reading — readingTopics.ts). */
+   *  synthetic `topic-<level>-<n>` ref (reading/listening — readingTopics.ts). */
   readonly seedRef: string;
   /** The seed WORD/PATTERN for vocab/grammar; the bare TOPIC STRING for
-   *  reading (F-220 slice 2) — same field, dual meaning by section, so the
-   *  work-order/ingest plumbing doesn't need a parallel path. */
+   *  reading (F-220 slice 2) / listening (F-220 slice 3) — same field, dual
+   *  meaning by section, so the work-order/ingest plumbing doesn't need a
+   *  parallel path. */
   readonly seedKorean: string;
   readonly seedEnglish?: string;
   readonly promptHash: string;
   /** The exact request a subscription Claude session should send. */
   readonly request: MessageRequest;
-  readonly schema: 'DiagnosticItemResult' | 'DiagnosticReadingItemResult';
+  readonly schema: 'DiagnosticItemResult' | 'DiagnosticReadingItemResult' | 'DiagnosticListeningItemResult';
 }
 
 export interface WorkOrderFile {
@@ -713,6 +792,9 @@ export interface WorkOrderFile {
      *  2). Always recorded (even when this file has no reading items) so a
      *  reading-only re-emit of the same file shape stays self-describing. */
     readonly readingModel: ClaudeModelId;
+    /** `generate_listening_item`'s model — governs listening items (F-220
+     *  slice 3). Always recorded (mirrors `readingModel`'s rationale). */
+    readonly listeningModel: ClaudeModelId;
     readonly perCell: number;
     readonly sections: readonly GeneratedBankSection[];
     readonly levels: readonly DiagnosticTargetLevel[];
@@ -751,6 +833,7 @@ export async function runEmitBatch(
   const cfg = loadConfig();
   const model = cfg.modelDefaults.diagnostic_item;
   const readingModel = cfg.modelDefaults.generate_reading_item;
+  const listeningModel = cfg.modelDefaults.generate_listening_item;
 
   const items: WorkOrderItem[] = [];
   let skippedSeedInvalid = 0;
@@ -763,7 +846,9 @@ export async function runEmitBatch(
         const built =
           section === 'reading'
             ? buildReadingWorkOrderRequest(level, seed, sectionModel, cfg)
-            : buildWorkOrderRequest(section, level, seed, sectionModel, cfg);
+            : section === 'listening'
+              ? buildListeningWorkOrderRequest(level, seed, sectionModel, cfg)
+              : buildWorkOrderRequest(section, level, seed, sectionModel, cfg);
         if (built === null) {
           skippedSeedInvalid += 1;
           continue;
@@ -778,7 +863,12 @@ export async function runEmitBatch(
           ...(built.seedEnglish !== undefined ? { seedEnglish: built.seedEnglish } : {}),
           promptHash: built.promptHash,
           request: built.request,
-          schema: section === 'reading' ? 'DiagnosticReadingItemResult' : 'DiagnosticItemResult',
+          schema:
+            section === 'reading'
+              ? 'DiagnosticReadingItemResult'
+              : section === 'listening'
+                ? 'DiagnosticListeningItemResult'
+                : 'DiagnosticItemResult',
         });
       }
       print(
@@ -792,6 +882,7 @@ export async function runEmitBatch(
     meta: {
       model,
       readingModel,
+      listeningModel,
       perCell: opts.perCell,
       sections: opts.sections,
       levels: opts.levels,
@@ -825,8 +916,8 @@ export async function runEmitBatch(
 
 const WorkOrderItemSchema = z.object({
   id: z.string().min(1),
-  // F-220 slice 2 adds 'reading'.
-  section: z.enum(['vocab', 'grammar', 'reading']),
+  // F-220 slice 2 added 'reading'; slice 3 adds 'listening'.
+  section: z.enum(['vocab', 'grammar', 'reading', 'listening']),
   level: z.enum(['L1', 'L2', 'L3', 'L4', 'L5+']),
   seedRef: z.string().min(1),
   seedKorean: z.string().min(1),
@@ -844,7 +935,11 @@ const WorkOrderItemSchema = z.object({
 const WorkOrderFileSchema = z.object({
   items: z.array(WorkOrderItemSchema),
   meta: z
-    .object({ model: z.string().min(1).optional(), readingModel: z.string().min(1).optional() })
+    .object({
+      model: z.string().min(1).optional(),
+      readingModel: z.string().min(1).optional(),
+      listeningModel: z.string().min(1).optional(),
+    })
     .passthrough()
     .optional(),
 });
@@ -918,8 +1013,10 @@ export async function runIngest(
   const cfg = loadConfig();
   const model = cfg.modelDefaults.diagnostic_item;
   const readingModel = cfg.modelDefaults.generate_reading_item;
+  const listeningModel = cfg.modelDefaults.generate_listening_item;
   const emitModel = parsedFile.data.meta?.model;
   const emitReadingModel = parsedFile.data.meta?.readingModel;
+  const emitListeningModel = parsedFile.data.meta?.listeningModel;
   if (emitModel !== undefined && emitModel !== model) {
     print(
       `item-bank [INGEST]: WARN — work-order meta.model "${sanitizeForLog(emitModel)}" != ` +
@@ -931,6 +1028,13 @@ export async function runIngest(
     print(
       `item-bank [INGEST]: WARN — work-order meta.readingModel "${sanitizeForLog(emitReadingModel)}" ` +
         `!= configured generate_reading_item model "${readingModel}"; every reading item will ` +
+        `hash-drift unless the model config matches the emit-time one`,
+    );
+  }
+  if (emitListeningModel !== undefined && emitListeningModel !== listeningModel) {
+    print(
+      `item-bank [INGEST]: WARN — work-order meta.listeningModel "${sanitizeForLog(emitListeningModel)}" ` +
+        `!= configured generate_listening_item model "${listeningModel}"; every listening item will ` +
         `hash-drift unless the model config matches the emit-time one`,
     );
   }
@@ -956,11 +1060,14 @@ export async function runIngest(
       seedKorean: item.seedKorean,
       ...(item.seedEnglish !== undefined ? { seedEnglish: item.seedEnglish } : {}),
     };
-    const itemModel = item.section === 'reading' ? readingModel : model;
+    const itemModel =
+      item.section === 'reading' ? readingModel : item.section === 'listening' ? listeningModel : model;
     const built =
       item.section === 'reading'
         ? buildReadingWorkOrderRequest(item.level, seed, itemModel, cfg)
-        : buildWorkOrderRequest(item.section, item.level, seed, itemModel, cfg);
+        : item.section === 'listening'
+          ? buildListeningWorkOrderRequest(item.level, seed, itemModel, cfg)
+          : buildWorkOrderRequest(item.section, item.level, seed, itemModel, cfg);
     if (built === null) {
       skippedSeedInvalid += 1;
       if (seedInvalidLogs < MAX_INVALID_LOGS) {
@@ -1043,6 +1150,81 @@ export async function runIngest(
           result.explain,
           item.seedRef,
           emitReadingModel ?? readingModel,
+          built.promptHash,
+        ],
+      );
+      if (rows.length > 0) {
+        written += 1;
+      } else {
+        skippedAlreadyCached += 1;
+      }
+      continue;
+    }
+
+    // F-220 slice 3 — listening items validate against a THIRD result schema
+    // (DiagnosticListeningItemResultSchema: turns[] + prompt, no `kind` — a
+    // listening item's kind is always the fixed 'audio-mc', never
+    // model-chosen) and write the `turns` column (NO `passage` — the
+    // dialogue text must never reach the learner as readable text, see
+    // services/diagnostic/generatedBank.ts's doc); `audio_source_id` is left
+    // NULL (this CLI is the $0 SCRIPT step — audio synthesis is the separate,
+    // METERED `synthesize-listening-audio` CLI, run later by an operator).
+    if (item.section === 'listening') {
+      const parsedListening = DiagnosticListeningItemResultSchema.safeParse(item.response);
+      if (!parsedListening.success) {
+        skippedInvalid += 1;
+        if (invalidLogs < MAX_INVALID_LOGS) {
+          invalidLogs += 1;
+          print(
+            `item-bank [INGEST]: item ${itemNo} (id="${sanitizeForLog(item.id)}") response invalid — ` +
+              parsedListening.error.issues
+                .slice(0, 3)
+                .map((iss) => `${iss.path.join('.')}: ${iss.message}`)
+                .join('; '),
+          );
+        }
+        continue;
+      }
+      const result: DiagnosticListeningItemResult = parsedListening.data;
+      // Belt-and-suspenders range check (schema already enforces 0..3 /
+      // length 4) — mirrors buildGeneratedItem's own defensive check.
+      if (
+        !Number.isInteger(result.answerIndex) ||
+        result.answerIndex < 0 ||
+        result.answerIndex >= result.choices.length
+      ) {
+        skippedInvalid += 1;
+        continue;
+      }
+
+      // SAME guard the live path uses — permute so the correct choice isn't
+      // parked at index 0 (LLM position bias). Only the CHOICES are
+      // shuffled — `turns` is the dialogue in its fixed speaking order and
+      // must never be reordered.
+      const { choices: shuffled, correctAnswer } = shuffleGeneratedChoices(
+        result.choices,
+        result.answerIndex,
+      );
+      const answerIndex = CHOICE_IDS.indexOf(correctAnswer);
+
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO generated_items
+           (section, level, kind, stem, passage, choices, answer_index, explain,
+            turns, audio_source_id, source_ref, status, created_by, model_id, prompt_hash)
+         VALUES ($1, $2, 'audio-mc', $3, NULL, $4::jsonb, $5, $6,
+                 $7::jsonb, NULL, $8, 'draft', 'claude-batch', $9, $10)
+         ON CONFLICT (prompt_hash) DO NOTHING
+         RETURNING id`,
+        [
+          item.section,
+          item.level,
+          result.prompt,
+          JSON.stringify(shuffled.map((c) => ({ kr: c.kr, en: c.en }))),
+          answerIndex,
+          result.explain,
+          JSON.stringify(result.turns),
+          item.seedRef,
+          emitListeningModel ?? listeningModel,
           built.promptHash,
         ],
       );

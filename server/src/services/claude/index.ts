@@ -54,6 +54,8 @@ import {
   DiagnosticItemResultSchema,
   DiagnosticReadingItemInputSchema,
   DiagnosticReadingItemResultSchema,
+  DiagnosticListeningItemInputSchema,
+  DiagnosticListeningItemResultSchema,
   EnrichmentInputSchema,
   EnrichmentResultSchema,
   GradeInputSchema,
@@ -87,6 +89,8 @@ import {
   type DiagnosticItemResult,
   type DiagnosticReadingItemInput,
   type DiagnosticReadingItemResult,
+  type DiagnosticListeningItemInput,
+  type DiagnosticListeningItemResult,
   type EnrichmentInput,
   type EnrichmentResult,
   type GradeInput,
@@ -116,6 +120,7 @@ import { buildConversationRequest } from './prompts/conversation';
 import { buildNameConversationRequest } from './prompts/name_conversation';
 import { buildDiagnosticItemRequest } from './prompts/diagnostic_item';
 import { buildDiagnosticReadingItemRequest } from './prompts/diagnostic_reading_item';
+import { buildDiagnosticListeningItemRequest } from './prompts/diagnostic_listening_item';
 import { buildEnrichRequest } from './prompts/enrich';
 import { buildGradeWritingRequest } from './prompts/grade_writing';
 import {
@@ -147,6 +152,9 @@ export type {
   DiagnosticItemResult,
   DiagnosticReadingItemInput,
   DiagnosticReadingItemResult,
+  DiagnosticListeningItemInput,
+  DiagnosticListeningItemResult,
+  DiagnosticListeningTurn,
   DiagnosticTargetLevel,
   EnrichmentInput,
   EnrichmentResult,
@@ -297,6 +305,19 @@ export interface ClaudeProxy {
     input: DiagnosticReadingItemInput,
     ctx?: CallContext,
   ): Promise<ProxyResult<DiagnosticReadingItemResult>>;
+  /**
+   * F-220 slice 3: author ONE original short Korean spoken DIALOGUE (2-6
+   * turns) plus ONE 4-choice comprehension question about it, from a bare
+   * topic string alone (never from existing corpus prose — see models.ts's
+   * copyright note). Unlike `generateDiagnosticReadingItem`, this method's
+   * output is never shown to the learner as text — a separate, METERED CLI
+   * (scripts/synthesize-listening-audio.ts) turns `turns` into audio; the
+   * live diagnostic never calls this route directly (offline CLI only).
+   */
+  generateDiagnosticListeningItem(
+    input: DiagnosticListeningItemInput,
+    ctx?: CallContext,
+  ): Promise<ProxyResult<DiagnosticListeningItemResult>>;
   /**
    * Run OCR + vocab-mining on ONE uploaded photo. The user message carries an
    * IMAGE content block (base64). Returns a caption + the distinct content
@@ -594,6 +615,34 @@ class ClaudeProxyImpl implements ClaudeProxy {
       request: req,
       cacheTtl: cfg.cacheTtlSeconds.generate_reading_item,
       outputSchema: DiagnosticReadingItemResultSchema,
+      parser: parseJsonContent,
+    });
+  }
+
+  async generateDiagnosticListeningItem(
+    rawInput: DiagnosticListeningItemInput,
+    ctx: CallContext = {},
+  ): Promise<ProxyResult<DiagnosticListeningItemResult>> {
+    const cfg = this.cfg;
+    const route: RouteName = 'generate_listening_item';
+    const input = parseInput(DiagnosticListeningItemInputSchema, rawInput, route);
+    // The topic is the only free-text field — sanitize through the SAME
+    // injection guard + length cap every other route uses (mirrors
+    // generateDiagnosticReadingItem's topic handling exactly).
+    const topic = sanitizeUserInput(input.topic, {
+      maxLength: cfg.inputCaps.generate_listening_item,
+    });
+    const cleaned: DiagnosticListeningItemInput = { ...input, topic };
+    const model = resolveModel(cfg, route, input.model);
+    const req = buildDiagnosticListeningItemRequest(cleaned, model);
+
+    return this.runJsonRoute({
+      route,
+      model,
+      ctx,
+      request: req,
+      cacheTtl: cfg.cacheTtlSeconds.generate_listening_item,
+      outputSchema: DiagnosticListeningItemResultSchema,
       parser: parseJsonContent,
     });
   }
