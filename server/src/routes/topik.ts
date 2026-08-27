@@ -42,6 +42,17 @@ import { NotFoundError } from '../middleware/errors.js';
 import { sharedPassageFor } from '../services/topik/passages.js';
 import { streamCorpusAudio } from '../services/corpusAudio.js';
 import { sendCorpusImage, CORPUS_IMAGE_NOT_FOUND } from '../services/corpusImage.js';
+import { loadConfig } from '../config/index.js';
+import {
+  assembleGeneratedMock,
+  toClientMockItem,
+  GENERATED_MOCK_SECTION_MINUTES,
+  type GeneratedMockClientItem,
+  type GeneratedMockSection,
+  type GeneratedMockTier,
+  type MockChoiceId as GeneratedMockChoiceId,
+  type SnapshotMockItem,
+} from '../services/topik/generatedMock.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -2292,6 +2303,418 @@ router.post(
         correct: isCorrect,
         correctChoiceId,
         explanation: dto.explanation,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// F-220 P3 — the generated-bank MOCK-EXAM surface (migration 107).
+//
+// THREE flag-gated routes, all behind `loadConfig().TOPIK_MOCK_USE_GENERATED_
+// BANK` (default FALSE): when off, every route here 404s with the SAME
+// uniform message the audio/image routes use for "nothing here" — a client
+// probing with the flag off cannot distinguish "route doesn't exist" from
+// "route exists but is disabled", and the REAL /topik/mock, /mock/submit, and
+// every route above this section are UNTOUCHED by this block (no shared
+// helper above is modified — `bandForPercentage`/`ATTEMPT_LOCK_SQL`/etc. are
+// only READ, never changed).
+//
+// COPYRIGHT / NO-LEAK: see server/src/services/topik/generatedMock.ts's
+// module doc — the assembler draws our OWN generated items and a listening
+// item's snapshot NEVER carries a transcript field structurally. The DTO
+// mapping below (`toClientMockItem`) is a second, TYPE-LEVEL belt on top of
+// that: the wire type Omits `correctChoiceId`/`explanation`, so a regression
+// that tried to leak them would fail to compile — mirrors `toMockItemDTO`'s
+// posture for the real mock exactly.
+//
+// GRADING: always server-side, from the ATTEMPT ROW'S OWN stored `item_set`
+// snapshot (never re-drawn from generated_items, never a client-asserted
+// `correct`) — see the submit route below.
+// ---------------------------------------------------------------------------
+
+const GENERATED_MOCK_DISABLED_MESSAGE = 'the generated mock surface is not enabled';
+
+/** True for a Postgres unique-constraint violation (SQLSTATE 23505) — mirrors
+ *  routes/diagnostic.ts's identical helper (kept local rather than shared so
+ *  this file's dependency surface stays exactly what it already was). */
+function isUniqueViolation(err: unknown): boolean {
+  return (
+    typeof err === 'object' && err !== null && (err as { code?: unknown }).code === '23505'
+  );
+}
+
+const GeneratedMockTierSchema = z.enum(['I', 'II']);
+/** Reading/listening only (writing is out of scope on both mock surfaces —
+ *  FU-NF-47). Deliberately NOT `SectionSchema`: this surface never accepts
+ *  the Korean-label alias, keeping its wire shape independent of the real
+ *  mock's. */
+const GeneratedMockSectionSchema = z.enum(['reading', 'listening']);
+
+const GeneratedMockAssembleBodySchema = z
+  .object({
+    tier: GeneratedMockTierSchema,
+    section: GeneratedMockSectionSchema,
+  })
+  .strict();
+
+/** A `generated_mock_attempts` row, selected for the assemble/resume + submit
+ *  routes. `item_set`/`picks` come back already parsed (node-postgres decodes
+ *  JSONB to a JS value). */
+interface GeneratedMockAttemptRow {
+  id: string;
+  tier: GeneratedMockTier;
+  section: GeneratedMockSection;
+  item_set: SnapshotMockItem[];
+  picks: Record<string, GeneratedMockChoiceId>;
+  current_index: number;
+  remaining_ms: number;
+}
+
+/** The shape both the fresh-assemble and the resume path respond with — a
+ *  resumed sitting and a freshly-started one look identical on the wire
+ *  except `resumed`/`currentIndex`/`picks`/`remainingMs`, so the client
+ *  doesn't need two response shapes. */
+interface GeneratedMockAssembleResponse {
+  attemptId: string | null;
+  tier: GeneratedMockTier;
+  section: GeneratedMockSection;
+  items: GeneratedMockClientItem[];
+  /** The blueprint's full target item count (may exceed `items.length` when
+   *  the bank is thin — see generatedMock.ts's `AssembleGeneratedMockResult`). */
+  requestedCount: number;
+  currentIndex: number;
+  picks: Record<string, GeneratedMockChoiceId>;
+  remainingMs: number;
+  resumed: boolean;
+}
+
+/**
+ * POST /topik/mock/generated — assemble a generated mock section, or resume
+ * the caller's already-in-progress one for the SAME `(tier, section)` (F-220
+ * P3's fold-resume-into-assemble design — there is no separate GET, unlike
+ * the real mock's F-007 `/topik/attempt`).
+ *
+ * Resume-first: at most one `in_progress` row exists per `(user, tier,
+ * section)` (migration 107's partial unique) — if one is found, it is
+ * returned AS-IS (its stored snapshot, answer-stripped, plus its saved
+ * `currentIndex`/`picks`/`remainingMs`), no new draw happens. Otherwise
+ * `assembleGeneratedMock` draws a fresh ordered snapshot and a new row is
+ * INSERTed with the FULL server-side snapshot (server-only fields included —
+ * grading reads them straight off this row, never re-derives them) and
+ * `remainingMs` seeded from `GENERATED_MOCK_SECTION_MINUTES`.
+ *
+ * A THIN BANK that yields zero items is a valid 200 with `items: []` and
+ * `attemptId: null` — no row is created for an unusable (empty) exam, mirroring
+ * the real `/mock`'s "no gradeable items" posture.
+ *
+ * Concurrency: two racing calls for the same `(user, tier, section)` can both
+ * pass the "no existing row" check; the loser's INSERT hits the partial
+ * unique (23505) — caught and re-served as a resume, exactly like
+ * `routes/diagnostic.ts`'s `/next` race guard, so a double-submit can never
+ * create two in-progress sittings for the same slot.
+ */
+router.post(
+  '/mock/generated',
+  cheapLimiter(),
+  validateBody(GeneratedMockAssembleBodySchema),
+  async (req, res, next) => {
+    try {
+      if (!loadConfig().TOPIK_MOCK_USE_GENERATED_BANK) {
+        throw new NotFoundError(GENERATED_MOCK_DISABLED_MESSAGE);
+      }
+      const userId = getUserId(req);
+      const body = req.body as z.infer<typeof GeneratedMockAssembleBodySchema>;
+
+      const respondFrom = (row: GeneratedMockAttemptRow, resumed: boolean): void => {
+        const payload: GeneratedMockAssembleResponse = {
+          attemptId: row.id,
+          tier: row.tier,
+          section: row.section,
+          items: row.item_set.map(toClientMockItem),
+          requestedCount: row.item_set.length,
+          currentIndex: row.current_index,
+          picks: row.picks,
+          remainingMs: row.remaining_ms,
+          resumed,
+        };
+        res.status(200).json(payload);
+      };
+
+      const existing = await query<GeneratedMockAttemptRow>(
+        `SELECT id::text AS id, tier, section, item_set, picks, current_index, remaining_ms
+           FROM generated_mock_attempts
+          WHERE user_id = $1 AND tier = $2 AND section = $3 AND status = 'in_progress'`,
+        [userId, body.tier, body.section],
+      );
+      const existingRow = existing.rows[0];
+      if (existingRow) {
+        respondFrom(existingRow, true);
+        return;
+      }
+
+      const assembled = await assembleGeneratedMock(body.tier, body.section);
+      if (assembled.items.length === 0) {
+        const empty: GeneratedMockAssembleResponse = {
+          attemptId: null,
+          tier: body.tier,
+          section: body.section,
+          items: [],
+          requestedCount: assembled.requestedCount,
+          currentIndex: 0,
+          picks: {},
+          remainingMs: GENERATED_MOCK_SECTION_MINUTES[body.section] * 60_000,
+          resumed: false,
+        };
+        res.status(200).json(empty);
+        return;
+      }
+
+      const initialRemainingMs = GENERATED_MOCK_SECTION_MINUTES[body.section] * 60_000;
+      try {
+        const inserted = await query<GeneratedMockAttemptRow>(
+          `INSERT INTO generated_mock_attempts
+             (user_id, tier, section, item_set, picks, current_index, remaining_ms)
+           VALUES ($1, $2, $3, $4::jsonb, '{}'::jsonb, 0, $5)
+           RETURNING id::text AS id, tier, section, item_set, picks, current_index, remaining_ms`,
+          [userId, body.tier, body.section, JSON.stringify(assembled.items), initialRemainingMs],
+        );
+        const row = inserted.rows[0]!;
+        respondFrom(row, false);
+      } catch (err) {
+        if (isUniqueViolation(err)) {
+          // A concurrent POST won the race and created the in_progress row
+          // first — serve ITS state instead of erroring (mirrors
+          // routes/diagnostic.ts's /next race guard).
+          const raced = await query<GeneratedMockAttemptRow>(
+            `SELECT id::text AS id, tier, section, item_set, picks, current_index, remaining_ms
+               FROM generated_mock_attempts
+              WHERE user_id = $1 AND tier = $2 AND section = $3 AND status = 'in_progress'`,
+            [userId, body.tier, body.section],
+          );
+          const racedRow = raced.rows[0];
+          if (racedRow) {
+            respondFrom(racedRow, true);
+            return;
+          }
+        }
+        throw err;
+      }
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// generated_mock_attempts.id is BIGINT — same MAX_SAFE_INTEGER boundary
+// posture as topik_items.id elsewhere in this file (AnswerParamsSchema).
+const GeneratedMockAttemptIdParamsSchema = z.object({
+  id: z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+});
+
+// A generated mock section is bounded by the largest blueprint total (50) —
+// cap the picks map generously above that so a malformed client cannot stuff
+// an unbounded JSONB blob into the row, mirroring AttemptBodySchema's
+// identical guard for the real mock's picks.
+const GENERATED_MOCK_MAX_PICKS = 60;
+
+const GeneratedMockProgressBodySchema = z
+  .object({
+    currentIndex: z.number().int().nonnegative().max(INT4_MAX),
+    // Keys are the snapshot's own synthetic item ids ("single:<id>" /
+    // "group:<groupId>:<ordinal>") — free-form TEXT, not a numeric pattern
+    // like the real mock's AttemptBodySchema.picks (whose keys are always
+    // topik_items ids). Length-bounded so a malformed key can't smuggle an
+    // oversized string into the JSONB column.
+    picks: z.record(z.string().min(1).max(80), z.enum(['a', 'b', 'c', 'd'])),
+    remainingMs: z.number().int().nonnegative().max(INT4_MAX),
+  })
+  .strict()
+  .refine((b) => Object.keys(b.picks).length <= GENERATED_MOCK_MAX_PICKS, {
+    message: 'too many picks for a single generated mock section',
+  });
+
+/**
+ * PUT /topik/mock/generated/:id — save progress on the caller's OWN
+ * in-progress generated-mock attempt.
+ *
+ * User- AND status-scoped in the WHERE clause (`user_id = $2 AND status =
+ * 'in_progress'`) — no IDOR (another user's attempt id 404s, indistinguishable
+ * from a nonexistent one) and no resurrecting a completed sitting (mirrors the
+ * real mock's F-UP-014 posture, simplified: this surface has no grace-window
+ * race to guard since submit and PUT both target the row by primary key with
+ * an unconditional `status = 'in_progress'` predicate — a PUT that loses the
+ * race to a submit simply matches zero rows and 404s, never resurrects).
+ */
+router.put(
+  '/mock/generated/:id',
+  cheapLimiter(),
+  validateParams(GeneratedMockAttemptIdParamsSchema),
+  validateBody(GeneratedMockProgressBodySchema),
+  async (req, res, next) => {
+    try {
+      if (!loadConfig().TOPIK_MOCK_USE_GENERATED_BANK) {
+        throw new NotFoundError(GENERATED_MOCK_DISABLED_MESSAGE);
+      }
+      const userId = getUserId(req);
+      const params = (req as typeof req & {
+        validatedParams: z.infer<typeof GeneratedMockAttemptIdParamsSchema>;
+      }).validatedParams;
+      const body = req.body as z.infer<typeof GeneratedMockProgressBodySchema>;
+
+      const { rowCount } = await query(
+        `UPDATE generated_mock_attempts
+            SET current_index = $3, picks = $4::jsonb, remaining_ms = $5, version = version + 1
+          WHERE id = $1 AND user_id = $2 AND status = 'in_progress'`,
+        [params.id, userId, body.currentIndex, JSON.stringify(body.picks), body.remainingMs],
+      );
+      if (rowCount === 0) {
+        throw new NotFoundError('generated mock attempt not found');
+      }
+      res.status(204).end();
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+const GeneratedMockSubmitBodySchema = z
+  .object({
+    // OPTIONAL final picks sync — when provided, OVERWRITES the attempt's
+    // stored `picks` before grading (so a client that never called PUT can
+    // still submit in one shot, and a client that DID PUT can still correct
+    // a last-second pick). When omitted, grading reads whatever `picks` PUT
+    // last saved. Same key/value shape as the progress route's `picks`.
+    picks: z
+      .record(z.string().min(1).max(80), z.enum(['a', 'b', 'c', 'd']))
+      .optional(),
+    durationMs: z.number().int().nonnegative().optional(),
+  })
+  .strict()
+  .refine((b) => (b.picks === undefined ? true : Object.keys(b.picks).length <= GENERATED_MOCK_MAX_PICKS), {
+    message: 'too many picks for a single generated mock section',
+  });
+
+/** One graded reveal in the generated-mock submit result — mirrors
+ *  `MockRevealDTO` (the real mock's shape) minus the fields the client
+ *  already has from the assemble response (prompt/passage/choices). */
+interface GeneratedMockRevealDTO {
+  readonly itemId: string;
+  readonly picked: GeneratedMockChoiceId | null;
+  readonly correctChoiceId: GeneratedMockChoiceId;
+  readonly isCorrect: boolean;
+  readonly explanation: string;
+}
+
+/**
+ * POST /topik/mock/generated/:id/submit — grade the caller's OWN in-progress
+ * generated-mock attempt server-side, from its STORED snapshot.
+ *
+ * Grading source of truth is `item_set` — the row's OWN snapshot taken at
+ * assembly time (migration 107) — NEVER a re-query of `generated_items`
+ * (which could have changed/been retired since assembly) and NEVER a
+ * client-asserted `correct` flag (there is no such field anywhere on this
+ * surface's wire — `GeneratedMockClientItem`/`GeneratedMockProgressBodySchema`
+ * both structurally lack one). `picks` graded against each item's own
+ * `correctChoiceId` come from the OPTIONAL body sync (if sent) merged over
+ * the row's last-saved `picks`, so a client can submit in one shot even if it
+ * never called PUT.
+ *
+ * User- AND status-scoped (`user_id = $2 AND status = 'in_progress'`) — same
+ * IDOR/no-resurrect posture as the PUT route. On success, the row transitions
+ * to `status = 'completed'` with `finished_at`/`score_percentage`/`band`
+ * stamped in the SAME UPDATE as the final `picks` — migration 107's
+ * completion-fields CHECK makes a half-graded row impossible at the DB layer.
+ */
+router.post(
+  '/mock/generated/:id/submit',
+  cheapLimiter(),
+  validateParams(GeneratedMockAttemptIdParamsSchema),
+  validateBody(GeneratedMockSubmitBodySchema),
+  async (req, res, next) => {
+    try {
+      if (!loadConfig().TOPIK_MOCK_USE_GENERATED_BANK) {
+        throw new NotFoundError(GENERATED_MOCK_DISABLED_MESSAGE);
+      }
+      const userId = getUserId(req);
+      const params = (req as typeof req & {
+        validatedParams: z.infer<typeof GeneratedMockAttemptIdParamsSchema>;
+      }).validatedParams;
+      const body = req.body as z.infer<typeof GeneratedMockSubmitBodySchema>;
+
+      const { rows } = await query<GeneratedMockAttemptRow>(
+        `SELECT id::text AS id, tier, section, item_set, picks, current_index, remaining_ms
+           FROM generated_mock_attempts
+          WHERE id = $1 AND user_id = $2 AND status = 'in_progress'`,
+        [params.id, userId],
+      );
+      const attempt = rows[0];
+      if (!attempt) {
+        throw new NotFoundError('generated mock attempt not found');
+      }
+
+      // Merge the optional final sync OVER the stored picks (last-write-wins
+      // per key) — never the reverse, so a client that submits with only a
+      // few final changes doesn't clobber earlier PUT-saved picks.
+      const finalPicks: Record<string, GeneratedMockChoiceId> = {
+        ...attempt.picks,
+        ...(body.picks ?? {}),
+      };
+
+      const reveals: GeneratedMockRevealDTO[] = [];
+      let correct = 0;
+      for (const item of attempt.item_set) {
+        const picked = finalPicks[item.id] ?? null;
+        const isCorrect = picked !== null && picked === item.correctChoiceId;
+        if (isCorrect) correct += 1;
+        reveals.push({
+          itemId: item.id,
+          picked,
+          correctChoiceId: item.correctChoiceId,
+          isCorrect,
+          explanation: item.explanation,
+        });
+      }
+      const totalItems = reveals.length;
+      // Only count picks for items ACTUALLY in this exam's snapshot — a
+      // stray key in the client's `picks` body for an id not in `item_set`
+      // (bug or tamper attempt) never inflates the answered count.
+      const answered = reveals.filter((r) => r.picked !== null).length;
+      // totalItems > 0 is guaranteed by construction (the assemble route
+      // never creates a row with an empty item_set — see POST
+      // /topik/mock/generated), but the guard costs nothing and keeps this
+      // route crash-proof even if that invariant is ever violated by a
+      // future writer.
+      const percentage = totalItems > 0 ? Math.round((correct / totalItems) * 1000) / 10 : 0;
+      const band = bandForPercentage(percentage);
+
+      const { rowCount } = await query(
+        `UPDATE generated_mock_attempts
+            SET status = 'completed', picks = $3::jsonb, score_percentage = $4, band = $5,
+                finished_at = now(), version = version + 1
+          WHERE id = $1 AND user_id = $2 AND status = 'in_progress'`,
+        [params.id, userId, JSON.stringify(finalPicks), percentage, band],
+      );
+      if (rowCount === 0) {
+        // Lost a race with a concurrent submit for the SAME attempt between
+        // the SELECT above and this UPDATE — the other request already
+        // completed it. Report the same uniform 404 rather than a partial
+        // "graded but not persisted" 200.
+        throw new NotFoundError('generated mock attempt not found');
+      }
+
+      res.status(200).json({
+        attemptId: attempt.id,
+        tier: attempt.tier,
+        section: attempt.section,
+        totalItems,
+        answered,
+        correct,
+        percentage,
+        band,
+        items: reveals,
       });
     } catch (err) {
       next(err);

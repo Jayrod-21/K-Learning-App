@@ -12,7 +12,9 @@ import { startPostgres, stopPostgres, type PgHandle } from '../../helpers/pg.js'
 import type { Querier } from '../../../src/db/pool.js';
 import {
   pickGeneratedItem,
+  pickGeneratedItemOfKind,
   pickGeneratedStimulusGroup,
+  pickGeneratedStimulusGroupExcludingGroups,
 } from '../../../src/services/diagnostic/generatedBank.js';
 
 let pg: PgHandle;
@@ -636,5 +638,182 @@ describe('pickGeneratedStimulusGroup — paired-listening (F-220 P1) + NO-LEAK p
   it('returns null when no paired-listening group exists for the cell', async () => {
     const result = await pickGeneratedStimulusGroup('listening', 'L1', exec);
     expect(result).toBeNull();
+  });
+});
+
+describe('pickGeneratedItemOfKind (F-220 P3 — the mock assembler kind-aware draw)', () => {
+  it('draws an EXACT kind match, unlike pickGeneratedItem\'s fixed section<->kind contract', async () => {
+    const id = await insertItem({
+      section: 'reading',
+      level: 'L3',
+      kind: 'fill-blank',
+      stem: '빈칸에 알맞은 것을 고르십시오.',
+      answerIndex: 1,
+      explain: 'fill-blank explain',
+    });
+    // pickGeneratedItem('reading', ...) would NEVER return this row — it only
+    // ever matches kind='passage-mc' for section='reading'.
+    const viaFixedContract = await pickGeneratedItem('reading', 'L3', exec);
+    expect(viaFixedContract).toBeNull();
+
+    const result = await pickGeneratedItemOfKind('reading', 'L3', 'fill-blank', [], exec);
+    expect(result).not.toBeNull();
+    expect(result!.id).toBe(id);
+    expect(result!.kind).toBe('fill-blank');
+    expect(result!.explain).toBe('fill-blank explain');
+    expect(result!.correctAnswer).toBe('b');
+  });
+
+  it('only matches approved rows, and only the requested (section, level, kind) cell', async () => {
+    await insertItem({ section: 'reading', level: 'L3', kind: 'fill-blank', status: 'draft' });
+    await insertItem({ section: 'reading', level: 'L4', kind: 'fill-blank', status: 'approved' }); // wrong level
+    await insertItem({ section: 'listening', level: 'L3', kind: 'fill-blank', status: 'approved' }); // wrong section
+    await insertItem({ section: 'reading', level: 'L3', kind: 'topic-id', status: 'approved' }); // wrong kind
+    const miss = await pickGeneratedItemOfKind('reading', 'L3', 'fill-blank', [], exec);
+    expect(miss).toBeNull();
+
+    const id = await insertItem({ section: 'reading', level: 'L3', kind: 'fill-blank', status: 'approved' });
+    const hit = await pickGeneratedItemOfKind('reading', 'L3', 'fill-blank', [], exec);
+    expect(hit).not.toBeNull();
+    expect(hit!.id).toBe(id);
+  });
+
+  it('excludeIds keeps repeated draws of the SAME kind within one assembly distinct', async () => {
+    const id1 = await insertItem({ section: 'reading', level: 'L3', kind: 'match-content' });
+    const id2 = await insertItem({ section: 'reading', level: 'L3', kind: 'match-content' });
+
+    const first = await pickGeneratedItemOfKind('reading', 'L3', 'match-content', [], exec);
+    expect(first).not.toBeNull();
+    const drawnIds = new Set<number>([first!.id]);
+
+    const second = await pickGeneratedItemOfKind('reading', 'L3', 'match-content', [...drawnIds], exec);
+    expect(second).not.toBeNull();
+    expect(second!.id).not.toBe(first!.id);
+    drawnIds.add(second!.id);
+    expect(drawnIds).toEqual(new Set([id1, id2]));
+
+    // Every row now excluded — the cell is exhausted, not an error.
+    const third = await pickGeneratedItemOfKind('reading', 'L3', 'match-content', [...drawnIds], exec);
+    expect(third).toBeNull();
+  });
+
+  it('excludes a paired-stimulus-group MEMBER row even if its kind matches — groups are drawn only via the group functions', async () => {
+    const gid = 'grp-fillblank-exclusion';
+    await insertItem({
+      section: 'reading',
+      level: 'L3',
+      kind: 'paired-passage-mc',
+      status: 'approved',
+      stimulusGroupId: gid,
+      stimulusGroupOrdinal: 1,
+    });
+    const result = await pickGeneratedItemOfKind('reading', 'L3', 'paired-passage-mc', [], exec);
+    expect(result).toBeNull();
+  });
+
+  it('listening kind draw requires synthesized audio (audio_source_id NOT NULL), NEVER returns the transcript', async () => {
+    const SECRET = '절대 유출되면 안 되는 리스닝 대본';
+    await insertItem({
+      section: 'listening',
+      level: 'L3',
+      kind: 'whats-next',
+      status: 'approved',
+      audioSourceId: null, // not synthesized yet
+      turns: [{ speaker: 'narrator', gender: 'narrator', text: SECRET }],
+    });
+    const notReady = await pickGeneratedItemOfKind('listening', 'L3', 'whats-next', [], exec);
+    expect(notReady).toBeNull();
+
+    const { sourceId, trackId } = await seedAudioTrack(pg.pool, { durationMs: 5000 });
+    const id = await insertItem({
+      section: 'listening',
+      level: 'L3',
+      kind: 'whats-next',
+      status: 'approved',
+      audioSourceId: sourceId,
+      audioStartMs: 0,
+      audioEndMs: 5000,
+      turns: [{ speaker: 'narrator', gender: 'narrator', text: SECRET }],
+    });
+    const ready = await pickGeneratedItemOfKind('listening', 'L3', 'whats-next', [], exec);
+    expect(ready).not.toBeNull();
+    expect(ready!.id).toBe(id);
+    expect(ready!.audioUrl).toBe(`/audio/tracks/${String(trackId)}/stream`);
+
+    const serialized = JSON.stringify(ready);
+    expect(serialized).not.toContain(SECRET);
+    expect(Object.keys(ready as object)).not.toContain('turns');
+  });
+});
+
+describe('pickGeneratedStimulusGroupExcludingGroups (F-220 P3 — repeated paired-block draws)', () => {
+  it('excludeGroupIds keeps repeated paired-block draws within one assembly distinct', async () => {
+    const gidA = 'grp-exclude-a';
+    const gidB = 'grp-exclude-b';
+    for (const gid of [gidA, gidB]) {
+      await insertItem({
+        section: 'reading',
+        level: 'L4',
+        kind: 'paired-passage-mc',
+        stimulusGroupId: gid,
+        stimulusGroupOrdinal: 1,
+      });
+      await insertItem({
+        section: 'reading',
+        level: 'L4',
+        kind: 'paired-passage-mc',
+        stimulusGroupId: gid,
+        stimulusGroupOrdinal: 2,
+      });
+    }
+
+    const first = await pickGeneratedStimulusGroupExcludingGroups('reading', 'L4', [], exec);
+    expect(first).not.toBeNull();
+    const drawnGroupIds = new Set<string>([first!.groupId]);
+
+    const second = await pickGeneratedStimulusGroupExcludingGroups(
+      'reading',
+      'L4',
+      [...drawnGroupIds],
+      exec,
+    );
+    expect(second).not.toBeNull();
+    expect(second!.groupId).not.toBe(first!.groupId);
+    drawnGroupIds.add(second!.groupId);
+    expect(drawnGroupIds).toEqual(new Set([gidA, gidB]));
+
+    // Both groups now excluded — the cell is exhausted, not an error.
+    const third = await pickGeneratedStimulusGroupExcludingGroups(
+      'reading',
+      'L4',
+      [...drawnGroupIds],
+      exec,
+    );
+    expect(third).toBeNull();
+  });
+
+  it('excludeGroupIds=[] behaves exactly like pickGeneratedStimulusGroup for a single available group', async () => {
+    const gid = 'grp-exclude-parity';
+    await insertItem({
+      section: 'reading',
+      level: 'L2',
+      kind: 'paired-passage-mc',
+      passage: '패리티 테스트용 지문입니다.',
+      stimulusGroupId: gid,
+      stimulusGroupOrdinal: 1,
+    });
+    await insertItem({
+      section: 'reading',
+      level: 'L2',
+      kind: 'paired-passage-mc',
+      passage: '패리티 테스트용 지문입니다.',
+      stimulusGroupId: gid,
+      stimulusGroupOrdinal: 2,
+    });
+    const viaExisting = await pickGeneratedStimulusGroup('reading', 'L2', exec);
+    const viaExcluding = await pickGeneratedStimulusGroupExcludingGroups('reading', 'L2', [], exec);
+    expect(viaExcluding).not.toBeNull();
+    expect(viaExcluding!.groupId).toBe(viaExisting!.groupId);
+    expect(viaExcluding!.questions).toHaveLength(viaExisting!.questions.length);
   });
 });

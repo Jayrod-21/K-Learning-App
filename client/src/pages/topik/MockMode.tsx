@@ -128,6 +128,9 @@ import {
   clearAttempt,
   fetchAvailableTests,
   fetchAttemptHistory,
+  fetchGeneratedMock,
+  saveGeneratedMockProgress,
+  submitGeneratedMock,
   type AttemptState,
   type TopikTestSummary,
   type TopikAttemptHistoryEntry,
@@ -142,6 +145,10 @@ import {
 import { buildAudioSrc } from '../../services/ttmik';
 import type {
   ChoiceId,
+  GeneratedMockAssembleResponse,
+  GeneratedMockItem,
+  GeneratedMockSubmitResult,
+  GeneratedMockTier,
   MockResult,
   MockSection,
   MockSubmitAnswer,
@@ -317,6 +324,18 @@ export function MockMode(): JSX.Element {
     },
     [setSearchParams],
   );
+
+  // F-220 P3 — the generated-bank mock surface: a SEPARATE, self-contained
+  // flow (`GeneratedMockFlow` below), toggled on from the section-select
+  // screen. Deliberately independent of the real mock's URL-driven
+  // `phase`/`urlSection`/`urlExam` state machine below — the generated
+  // surface has its own internal tier/section/exam/results steps and its
+  // own network calls, so entangling the two would risk the real flow's
+  // behavior for no benefit. There is no public "is this enabled" signal to
+  // gate the entry button on (no such surface exists yet), so it is always
+  // shown; if the server flag is off, `GeneratedMockFlow` surfaces the
+  // resulting 404 as a plain "not available yet" state rather than a crash.
+  const [showGeneratedMock, setShowGeneratedMock] = useState(false);
 
   // Exam phase machine.
   const [phase, setPhase] = useState<'select' | 'exam' | 'results'>('select');
@@ -665,6 +684,21 @@ export function MockMode(): JSX.Element {
     goToView(null, null);
   }, [goToView]);
 
+  // F-220 P3: an EARLY RETURN, not a conditional branch inside the JSX below
+  // — the generated-mock flow owns its own screen entirely and shares no
+  // state with the real-mock phase machine, so short-circuiting here keeps
+  // the real flow's render tree (and every hook order below this point)
+  // completely undisturbed by the toggle's existence.
+  if (showGeneratedMock) {
+    return (
+      <GeneratedMockFlow
+        onExit={() => {
+          setShowGeneratedMock(false);
+        }}
+      />
+    );
+  }
+
   return (
     // F-183 fix-pass (batch5): NOT `km-rain-sheen` here — `Topik.tsx`'s outer
     // `.screen.km-topik` wrapper (this component's parent, Topik.tsx:264/526)
@@ -736,6 +770,25 @@ export function MockMode(): JSX.Element {
                   goToView(section, null);
                 }}
               />
+              {/* F-220 P3 — the generated-bank mock surface's entry point.
+                  Always shown (no public "is it enabled" signal exists to
+                  gate on); GeneratedMockFlow itself handles the server flag
+                  being off as a plain not-available state, never a crash. */}
+              <p className="km-mock__generated-entry">
+                <button
+                  type="button"
+                  className="km-mock__generated-link focusring"
+                  onClick={() => {
+                    setShowGeneratedMock(true);
+                  }}
+                >
+                  <Bilingual
+                    en="Try a generated mock (beta) →"
+                    kr="생성형 모의고사 체험하기 (베타) →"
+                    compact
+                  />
+                </button>
+              </p>
             </>
           ) : null}
 
@@ -2671,6 +2724,450 @@ function buildMockResultsSummary(
       isCorrect: rev.isCorrect,
       pickedText:
         rev.picked === null ? SKIPPED_PICK : choiceText(item, rev.picked),
+      correctText: choiceText(item, rev.correctChoiceId),
+      explanation: rev.explanation,
+    };
+  });
+
+  return {
+    percentage: result.percentage,
+    band: result.band,
+    correct: result.correct,
+    totalItems: result.totalItems,
+    answered: result.answered,
+    rows,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
+// F-220 P3 — the generated-bank mock-exam flow.
+//
+// A MINIMAL, SELF-CONTAINED sibling of the real-mock flow above: tier +
+// section selection → the 3 generated-mock endpoints → the SAME shared
+// review screen (`TopikResults`), reusing `TopikPassage` for passage
+// rendering and `buildAudioSrc` for the F-119 audio allow-list. Deliberately
+// does NOT reuse `ExamRunner`/`ChoiceGroup`/`QuestionPalette`: those are
+// keyed by `Number(item.id)` (the real mock's numeric `topik_items` id),
+// while a generated-mock item's id is a synthetic STRING
+// ("single:<id>"/"group:<groupId>:<ordinal>") — forcing that shape through
+// `Number()` would silently key everything on `NaN`. This flow keeps its own
+// `Map<string, ChoiceId>` throughout instead.
+//
+// SECURITY (mirrors the real mock's posture): `GeneratedMockItem` carries no
+// answer field at all (not even a `correct`-shaped choice) — there is no
+// client-side grading path to tamper with. Progress saves and the submit
+// call are the only writes, both scoped server-side to the caller's own
+// attempt (IDOR-safe — see routes/topik.ts).
+//
+// The server flag being off is not distinguished from "the bank is thin" at
+// the network layer (both surface as an error/empty response) — either way
+// this flow degrades to an inline message, never a crash, and `onExit`
+// always returns the caller to the real-mock section select.
+// ─────────────────────────────────────────────────────────────
+
+interface GeneratedMockFlowProps {
+  onExit: () => void;
+}
+
+type GeneratedMockPhase = 'select' | 'loading' | 'exam' | 'submitting' | 'results' | 'error';
+
+const GENERATED_MOCK_TIERS: readonly { id: GeneratedMockTier; en: string; kr: string }[] = [
+  { id: 'I', en: 'TOPIK I (beginner)', kr: 'TOPIK I (초급)' },
+  { id: 'II', en: 'TOPIK II (intermediate+)', kr: 'TOPIK II (중고급)' },
+];
+
+const GENERATED_MOCK_SECTIONS: readonly { id: MockSection; en: string; kr: string }[] = [
+  { id: 'reading', en: 'Reading', kr: '읽기' },
+  { id: 'listening', en: 'Listening', kr: '듣기' },
+];
+
+function GeneratedMockFlow({ onExit }: GeneratedMockFlowProps): JSX.Element {
+  const [tier, setTier] = useState<GeneratedMockTier>('II');
+  const [section, setSection] = useState<MockSection>('reading');
+  const [phase, setPhase] = useState<GeneratedMockPhase>('select');
+  const [assembled, setAssembled] = useState<GeneratedMockAssembleResponse | null>(null);
+  const [idx, setIdx] = useState(0);
+  const [picks, setPicks] = useState<Map<string, ChoiceId>>(new Map());
+  const [remainingSec, setRemainingSec] = useState(0);
+  const [result, setResult] = useState<GeneratedMockSubmitResult | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [thinBankNotice, setThinBankNotice] = useState(false);
+
+  // Hides the shared chat FAB during the timed run, exactly like the real
+  // mock's ExamRunner.
+  const { setExamActive } = useExamActive();
+  useEffect(() => {
+    setExamActive(phase === 'exam');
+    return () => {
+      setExamActive(false);
+    };
+  }, [phase, setExamActive]);
+
+  const ctrlRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    return () => {
+      ctrlRef.current?.abort();
+    };
+  }, []);
+
+  // Wall-clock deadline (not a decrementing tick counter) — mirrors
+  // ExamRunner's drift-proof countdown, trimmed: no per-item time tracking,
+  // since this surface's submit accepts no per-item `timeMs`.
+  const deadlineRef = useRef<number>(0);
+  const submittedRef = useRef(false);
+
+  const startExam = useCallback((res: GeneratedMockAssembleResponse): void => {
+    setAssembled(res);
+    setIdx(res.currentIndex);
+    const restored = new Map<string, ChoiceId>();
+    for (const [k, v] of Object.entries(res.picks)) restored.set(k, v);
+    setPicks(restored);
+    deadlineRef.current = Date.now() + res.remainingMs;
+    setRemainingSec(Math.max(0, Math.round(res.remainingMs / 1000)));
+    submittedRef.current = false;
+    setPhase('exam');
+  }, []);
+
+  const handleAssemble = useCallback((): void => {
+    setPhase('loading');
+    setErrorMsg(null);
+    setThinBankNotice(false);
+    ctrlRef.current?.abort();
+    const ctrl = new AbortController();
+    ctrlRef.current = ctrl;
+    void (async () => {
+      try {
+        const res = await fetchGeneratedMock(tier, section, ctrl.signal);
+        if (res.items.length === 0) {
+          setThinBankNotice(true);
+          setPhase('select');
+          return;
+        }
+        startExam(res);
+      } catch (err) {
+        setErrorMsg(
+          toMessage(err, 'Could not load the generated mock — it may not be available yet.'),
+        );
+        setPhase('error');
+      }
+    })();
+  }, [tier, section, startExam]);
+
+  useEffect(() => {
+    if (phase !== 'exam') return;
+    const id = window.setInterval(() => {
+      setRemainingSec(Math.max(0, Math.round((deadlineRef.current - Date.now()) / 1000)));
+    }, 1000);
+    return () => {
+      window.clearInterval(id);
+    };
+  }, [phase]);
+
+  const savePicks = useCallback(
+    (nextIdx: number, nextPicks: ReadonlyMap<string, ChoiceId>): void => {
+      if (assembled?.attemptId == null) return;
+      const remainingMs = Math.max(0, deadlineRef.current - Date.now());
+      const picksObj: Record<string, ChoiceId> = {};
+      for (const [k, v] of nextPicks.entries()) picksObj[k] = v;
+      // Fire-and-forget: a lost progress save is recoverable (the next pick
+      // saves again); it must never block the UI the way the real mock's
+      // awaited save does not either.
+      void saveGeneratedMockProgress(assembled.attemptId, {
+        currentIndex: nextIdx,
+        picks: picksObj,
+        remainingMs,
+      });
+    },
+    [assembled],
+  );
+
+  const doSubmit = useCallback((): void => {
+    if (assembled?.attemptId == null || submittedRef.current) return;
+    submittedRef.current = true;
+    setPhase('submitting');
+    const picksObj: Record<string, ChoiceId> = {};
+    for (const [k, v] of picks.entries()) picksObj[k] = v;
+    void (async () => {
+      try {
+        const res = await submitGeneratedMock(assembled.attemptId!, { picks: picksObj });
+        setResult(res);
+        setPhase('results');
+      } catch (err) {
+        submittedRef.current = false;
+        setErrorMsg(toMessage(err, 'Could not submit the generated mock.'));
+        setPhase('error');
+      }
+    })();
+  }, [assembled, picks]);
+
+  // Auto-submit when the countdown reaches zero — same guard shape AND same
+  // deliberate lint-suppression as the real ExamRunner's identical effect
+  // (see its doc comment above): the timer hitting 0 must kick the grade
+  // call and flip phase, so the resulting set-state (inside doSubmit) is
+  // intentional, not a cascading render; `submittedRef` (inside doSubmit)
+  // prevents a double-fire against a manual submit landing the same tick.
+  useEffect(() => {
+    if (phase === 'exam' && remainingSec <= 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      doSubmit();
+    }
+  }, [phase, remainingSec, doSubmit]);
+
+  const current: GeneratedMockItem | undefined = assembled?.items[idx];
+
+  const pick = useCallback(
+    (choice: ChoiceId): void => {
+      if (current === undefined) return;
+      setPicks((prev) => {
+        const next = new Map(prev);
+        next.set(current.id, choice);
+        savePicks(idx, next);
+        return next;
+      });
+    },
+    [current, idx, savePicks],
+  );
+
+  const goTo = useCallback(
+    (nextIdx: number): void => {
+      if (assembled === null) return;
+      const clamped = Math.max(0, Math.min(assembled.items.length - 1, nextIdx));
+      setIdx(clamped);
+      savePicks(clamped, picks);
+    },
+    [assembled, picks, savePicks],
+  );
+
+  const restart = useCallback((): void => {
+    setAssembled(null);
+    setResult(null);
+    setPicks(new Map());
+    setIdx(0);
+    setErrorMsg(null);
+    setThinBankNotice(false);
+    setPhase('select');
+  }, []);
+
+  if (phase === 'select' || phase === 'loading' || phase === 'error') {
+    return (
+      <div className="km-mock" style={{ position: 'relative' }}>
+        <CityCard tone={SKILL_COLOR.topik.tone} rail className="km-mock__generated-select">
+          <Eyebrow>
+            <Bilingual en="Generated mock (beta)" kr="생성형 모의고사 (베타)" compact />
+          </Eyebrow>
+          <p className="km-mock__lead">
+            <Bilingual
+              en="Assembled from our own AI-generated practice items, shaped like a real TOPIK section — never real exam content. The bank grows over time, so a combination below may still be thin."
+              kr="AI로 생성한 자체 연습 문항으로 조립한, 실제 TOPIK 영역과 비슷한 구성이에요 — 실제 시험 내용은 전혀 포함하지 않아요. 문제 은행은 계속 커지고 있어서 일부 조합은 아직 문항이 적을 수 있어요."
+            />
+          </p>
+
+          <div className="km-mock__generated-picker" role="group" aria-label="Tier">
+            {GENERATED_MOCK_TIERS.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                aria-pressed={tier === t.id}
+                className={cn('km-mock__generated-choice focusring', tier === t.id && 'km-mock__generated-choice--active')}
+                onClick={() => {
+                  setTier(t.id);
+                }}
+              >
+                <Bilingual en={t.en} kr={t.kr} compact />
+              </button>
+            ))}
+          </div>
+          <div className="km-mock__generated-picker" role="group" aria-label="Section">
+            {GENERATED_MOCK_SECTIONS.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                aria-pressed={section === s.id}
+                className={cn('km-mock__generated-choice focusring', section === s.id && 'km-mock__generated-choice--active')}
+                onClick={() => {
+                  setSection(s.id);
+                }}
+              >
+                <Bilingual en={s.en} kr={s.kr} compact />
+              </button>
+            ))}
+          </div>
+
+          {thinBankNotice ? (
+            <p className="km-mock__resume-failed" role="status" style={{ marginTop: 12 }}>
+              <Bilingual
+                en="Not enough generated items for this combination yet — try a different tier or section."
+                kr="이 조합은 아직 생성된 문항이 충분하지 않아요 — 다른 등급이나 영역을 선택해 보세요."
+              />
+            </p>
+          ) : null}
+
+          {phase === 'error' && errorMsg !== null ? (
+            <div style={{ marginTop: 12 }}>
+              <ErrorCard message={errorMsg} onRetry={handleAssemble} retryLabel="Retry" />
+            </div>
+          ) : null}
+
+          {phase === 'loading' ? (
+            <p className="km-topik__state" role="status" style={{ marginTop: 12 }}>
+              <Bilingual en="Assembling your mock…" kr="모의고사를 조립하는 중…" />
+            </p>
+          ) : null}
+
+          <div className="km-topik__footer" style={{ marginTop: 16 }}>
+            <Button
+              variant="gold"
+              onClick={handleAssemble}
+              disabled={phase === 'loading'}
+              trailingIcon={<Icon name="arrow-right" size={14} />}
+            >
+              <Bilingual en="Start" kr="시작" compact />
+            </Button>
+            <Button variant="ghost" onClick={onExit}>
+              <Bilingual en="Back to mock" kr="모의고사로 돌아가기" compact />
+            </Button>
+          </div>
+        </CityCard>
+      </div>
+    );
+  }
+
+  if ((phase === 'exam' || phase === 'submitting') && assembled !== null && current !== undefined) {
+    const audioSrc = current.audioUrl !== undefined ? buildAudioSrc(current.audioUrl) : null;
+    const currentPick = picks.get(current.id) ?? null;
+    return (
+      <div className="km-mock" style={{ position: 'relative' }}>
+        <div className="km-mock__exam-head">
+          <span className="km-topik__num">
+            {String(idx + 1)} / {String(assembled.items.length)}
+          </span>
+          <span className="km-mock__timer" role="timer" aria-live="off">
+            {formatClock(remainingSec)}
+          </span>
+        </div>
+
+        <Card variant="flat" className="km-mock__item">
+          {current.passage !== undefined ? <TopikPassage text={current.passage} /> : null}
+          {audioSrc !== null ? (
+            // Generated listening items carry no caption track; the
+            // transcript is intentionally NEVER shipped to the client
+            // (NO-LEAK — see generatedMock.ts's module doc), so there is no
+            // source to caption from.
+            // eslint-disable-next-line jsx-a11y/media-has-caption
+            <audio key={current.id} controls src={audioSrc} className="km-mock__audio" />
+          ) : null}
+          <p className="kr km-mock__review-prompt">{current.prompt}</p>
+          <div className="km-topik__choices" role="radiogroup" aria-label="Answer choices">
+            {current.choices.map((o, i) => (
+              <button
+                key={o.id}
+                type="button"
+                role="radio"
+                aria-checked={currentPick === o.id}
+                className={cn('km-topik__choice focusring', currentPick === o.id && 'km-topik__choice--picked')}
+                disabled={phase === 'submitting'}
+                onClick={() => {
+                  pick(o.id);
+                }}
+              >
+                <span className="km-topik__marker">{CHOICE_MARKERS[i]}</span>
+                <span className="km-topik__choice-body">
+                  <span className="kr km-topik__choice-kr">{o.kr}</span>
+                  <span className="km-topik__choice-en">{o.en}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </Card>
+
+        <div className="km-mock__palette" role="group" aria-label="Question navigator">
+          {assembled.items.map((it, i) => (
+            <button
+              key={it.id}
+              type="button"
+              aria-current={i === idx ? 'true' : undefined}
+              className={cn(
+                'km-mock__palette-cell focusring',
+                i === idx && 'km-mock__palette-cell--current',
+                picks.has(it.id) && i !== idx && 'km-mock__palette-cell--answered',
+              )}
+              onClick={() => {
+                goTo(i);
+              }}
+            >
+              {String(i + 1)}
+            </button>
+          ))}
+        </div>
+
+        <div className="km-topik__footer">
+          <Button variant="ghost" onClick={() => goTo(idx - 1)} disabled={idx === 0 || phase === 'submitting'}>
+            <Bilingual en="Prev" kr="이전" compact />
+          </Button>
+          <Button variant="ghost" onClick={() => goTo(idx + 1)} disabled={idx === assembled.items.length - 1 || phase === 'submitting'}>
+            <Bilingual en="Next" kr="다음" compact />
+          </Button>
+          <Button variant="gold" onClick={doSubmit} disabled={phase === 'submitting'}>
+            <Bilingual en={phase === 'submitting' ? 'Submitting…' : 'Submit test'} kr={phase === 'submitting' ? '제출 중…' : '제출하기'} compact />
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (phase === 'results' && result !== null && assembled !== null) {
+    return (
+      <div className="km-mock" style={{ position: 'relative' }}>
+        <TopikResults
+          summary={buildGeneratedMockResultsSummary(result, assembled.items)}
+          onRestart={restart}
+          restartLabel={<Bilingual en="New generated mock" kr="새 생성형 모의고사" />}
+        />
+        <div className="km-topik__footer">
+          <Button variant="ghost" onClick={onExit}>
+            <Bilingual en="Back to mock" kr="모의고사로 돌아가기" compact />
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // Defensive fallback — should be unreachable (every phase is handled
+  // above), but never renders nothing silently.
+  return (
+    <div className="km-mock" style={{ position: 'relative' }}>
+      <ErrorCard message="Something went wrong loading the generated mock." onRetry={restart} retryLabel="Start over" />
+    </div>
+  );
+}
+
+/**
+ * Normalize a graded `GeneratedMockSubmitResult` + the exam's answer-stripped
+ * items into the shared `ResultsSummary` (F-008) — the generated-mock sibling
+ * of `buildMockResultsSummary` above, keyed by the snapshot's own STRING item
+ * ids rather than a numeric `topik_items` id.
+ */
+function buildGeneratedMockResultsSummary(
+  result: GeneratedMockSubmitResult,
+  items: readonly GeneratedMockItem[],
+): ResultsSummary {
+  const byId = new Map<string, GeneratedMockItem>(items.map((it) => [it.id, it]));
+
+  const choiceText = (item: GeneratedMockItem | undefined, id: ChoiceId | null): string => {
+    if (item === undefined || id === null) return '—';
+    const opt = item.choices.find((o) => o.id === id);
+    return opt ? opt.kr : id.toUpperCase();
+  };
+
+  const rows: ResultsReviewRow[] = result.items.map((rev, i) => {
+    const item = byId.get(rev.itemId);
+    return {
+      key: rev.itemId,
+      number: i + 1,
+      prompt: item?.prompt ?? '',
+      ...(item?.passage !== undefined ? { passage: item.passage } : {}),
+      isCorrect: rev.isCorrect,
+      pickedText: rev.picked === null ? SKIPPED_PICK : choiceText(item, rev.picked),
       correctText: choiceText(item, rev.correctChoiceId),
       explanation: rev.explanation,
     };
