@@ -47,6 +47,8 @@ import {
   DEFAULT_PER_CELL,
   ItemBankInputError,
   LEVELS,
+  LISTENING_QUESTION_TYPES,
+  READING_QUESTION_TYPES,
   SECTIONS,
   buildListeningWorkOrderRequest,
   buildPairedListeningWorkOrderRequest,
@@ -137,6 +139,7 @@ function makeOpts(overrides: Partial<ItemBankOptions> = {}): ItemBankOptions {
     perCell: DEFAULT_PER_CELL,
     outFile: undefined,
     inFile: undefined,
+    questionType: undefined,
     ...overrides,
   };
 }
@@ -1528,5 +1531,300 @@ describe('F-220 P1 — paired-listening count/emit/ingest (grouped rows, shared 
     expect(pairedReadingRows.every((r) => r.stimulus_group_id !== null)).toBe(true);
     expect(pairedListeningRows.every((r) => r.stimulus_group_id !== null)).toBe(true);
     expect(pairedListeningRows).toHaveLength(2); // questionCount fixed at 2
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. F-220 P2 — --kind single-item question-type support
+// ---------------------------------------------------------------------------
+
+describe('F-220 P2 — parseCliArgs --kind validation', () => {
+  it('READING_QUESTION_TYPES/LISTENING_QUESTION_TYPES include the original default plus the P2 additions', () => {
+    expect(READING_QUESTION_TYPES).toContain('passage-mc');
+    expect(READING_QUESTION_TYPES).toContain('fill-blank');
+    expect(READING_QUESTION_TYPES).toContain('sentence-insert');
+    expect(LISTENING_QUESTION_TYPES).toContain('audio-mc');
+    expect(LISTENING_QUESTION_TYPES).toContain('dialogue-complete');
+    expect(LISTENING_QUESTION_TYPES).toContain('infer-topic');
+  });
+
+  it('--kind=fill-blank --section=reading parses cleanly', () => {
+    const opts = parseCliArgs(['--section=reading', '--kind=fill-blank']);
+    expect(opts.questionType).toBe('fill-blank');
+    expect(opts.sections).toEqual(['reading']);
+  });
+
+  it('--kind=infer-topic --section=listening parses cleanly', () => {
+    const opts = parseCliArgs(['--section=listening', '--kind=infer-topic']);
+    expect(opts.questionType).toBe('infer-topic');
+  });
+
+  it('omitting --kind leaves questionType undefined (byte-identical to pre-P2)', () => {
+    const opts = parseCliArgs(['--section=reading']);
+    expect(opts.questionType).toBeUndefined();
+  });
+
+  it('--kind without --section is rejected', () => {
+    expect(() => parseCliArgs(['--kind=fill-blank'])).toThrow(ItemBankInputError);
+  });
+
+  it('--kind with --section=vocab is rejected (kind only applies to reading/listening)', () => {
+    expect(() => parseCliArgs(['--section=vocab', '--kind=fill-blank'])).toThrow(ItemBankInputError);
+  });
+
+  it('--kind with --section=paired-reading is rejected', () => {
+    expect(() => parseCliArgs(['--section=paired-reading', '--kind=fill-blank'])).toThrow(
+      ItemBankInputError,
+    );
+  });
+
+  it('a listening kind under --section=reading is rejected (wrong section for that type)', () => {
+    expect(() => parseCliArgs(['--section=reading', '--kind=infer-topic'])).toThrow(
+      ItemBankInputError,
+    );
+  });
+
+  it('an unknown --kind value is rejected', () => {
+    expect(() => parseCliArgs(['--section=reading', '--kind=not-a-real-type'])).toThrow(
+      ItemBankInputError,
+    );
+  });
+
+  it('--kind with --ingest is rejected (work-order items already carry their own questionType)', () => {
+    expect(() => parseCliArgs(['--ingest', '--in=/tmp/x.json', '--kind=fill-blank'])).toThrow(
+      ItemBankInputError,
+    );
+  });
+});
+
+describe('F-220 P2 — reading --kind emit/ingest', () => {
+  it('runEmitBatch with --kind=fill-blank emits work-order items carrying questionType=fill-blank, with hashes that only reproduce when the SAME kind is passed to buildReadingWorkOrderRequest', async () => {
+    const outFile = await makeTmpFile('reading-kind-batch.json');
+    const summary = await runEmitBatch(
+      pg.pool,
+      makeOpts({
+        mode: 'emit-batch',
+        sections: ['reading'],
+        levels: ['L3'],
+        perCell: 2,
+        outFile,
+        questionType: 'fill-blank',
+      }),
+      silent,
+    );
+    expect(summary.emitted).toBe(2);
+
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const cfg = loadConfig();
+    for (const item of file.items) {
+      expect(item.questionType).toBe('fill-blank');
+      const rebuiltWithKind = buildReadingWorkOrderRequest(
+        'L3',
+        { seedRef: item.seedRef, seedKorean: item.seedKorean },
+        file.meta.readingModel,
+        cfg,
+        'fill-blank',
+      );
+      expect(rebuiltWithKind).not.toBeNull();
+      expect(rebuiltWithKind!.promptHash).toBe(item.promptHash);
+
+      // Same seed/level/model, but the ORIGINAL default type — must hash
+      // DIFFERENTLY, proving questionType really is part of the request
+      // (and therefore of prompt_hash), not a cosmetic label.
+      const rebuiltDefault = buildReadingWorkOrderRequest(
+        'L3',
+        { seedRef: item.seedRef, seedKorean: item.seedKorean },
+        file.meta.readingModel,
+        cfg,
+      );
+      expect(rebuiltDefault).not.toBeNull();
+      expect(rebuiltDefault!.promptHash).not.toBe(item.promptHash);
+    }
+    expect(await generatedItemCount()).toBe(0);
+  });
+
+  it('runIngest writes generated_items.kind = the requested type for every P2 reading kind', async () => {
+    for (const kind of ['fill-blank', 'topic-id', 'match-content', 'choose-non-match', 'sentence-order', 'paragraph-cloze', 'headline-interpret', 'main-idea', 'sentence-insert'] as const) {
+      const outFile = await makeTmpFile(`reading-kind-${kind}-batch.json`);
+      await runEmitBatch(
+        pg.pool,
+        makeOpts({
+          mode: 'emit-batch',
+          sections: ['reading'],
+          levels: ['L3'],
+          perCell: 1,
+          outFile,
+          questionType: kind,
+        }),
+        silent,
+      );
+      const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+      const filled = file.items.map((item) => ({
+        ...item,
+        response: goodReadingResponse(`읽기 지문 (${kind}).`, `정답-${kind}`),
+      })) as unknown as WorkOrderItem[];
+      const inFile = await makeTmpFile(`reading-kind-${kind}-filled.json`);
+      await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+      const summary = await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);
+      expect(summary.written).toBe(1);
+    }
+
+    const rows = await pg.pool.query<{ kind: string; section: string }>(
+      `SELECT kind, section FROM generated_items WHERE section = 'reading' ORDER BY id`,
+    );
+    expect(rows.rows).toHaveLength(9);
+    expect(rows.rows.every((r) => r.section === 'reading')).toBe(true);
+    expect(new Set(rows.rows.map((r) => r.kind))).toEqual(
+      new Set([
+        'fill-blank',
+        'topic-id',
+        'match-content',
+        'choose-non-match',
+        'sentence-order',
+        'paragraph-cloze',
+        'headline-interpret',
+        'main-idea',
+        'sentence-insert',
+      ]),
+    );
+  });
+
+  it('without --kind, a reading row STILL lands kind=passage-mc (regression: default path unchanged)', async () => {
+    const outFile = await makeTmpFile('reading-nokind-batch.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['reading'], levels: ['L3'], perCell: 1, outFile }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    expect(file.items[0]!.questionType).toBe('passage-mc');
+    const filled = file.items.map((item) => ({
+      ...item,
+      response: goodReadingResponse(),
+    })) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('reading-nokind-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+    await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);
+
+    const rows = await pg.pool.query<{ kind: string }>(
+      `SELECT kind FROM generated_items WHERE section = 'reading'`,
+    );
+    expect(rows.rows).toHaveLength(1);
+    expect(rows.rows[0]!.kind).toBe('passage-mc');
+  });
+});
+
+describe('F-220 P2 — listening --kind emit/ingest', () => {
+  it('runEmitBatch with --kind=infer-location emits work-order items carrying questionType=infer-location, with hashes that only reproduce when the SAME kind is passed to buildListeningWorkOrderRequest', async () => {
+    const outFile = await makeTmpFile('listening-kind-batch.json');
+    const summary = await runEmitBatch(
+      pg.pool,
+      makeOpts({
+        mode: 'emit-batch',
+        sections: ['listening'],
+        levels: ['L3'],
+        perCell: 2,
+        outFile,
+        questionType: 'infer-location',
+      }),
+      silent,
+    );
+    expect(summary.emitted).toBe(2);
+
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const cfg = loadConfig();
+    for (const item of file.items) {
+      expect(item.questionType).toBe('infer-location');
+      const rebuiltWithKind = buildListeningWorkOrderRequest(
+        'L3',
+        { seedRef: item.seedRef, seedKorean: item.seedKorean },
+        file.meta.listeningModel,
+        cfg,
+        'infer-location',
+      );
+      expect(rebuiltWithKind).not.toBeNull();
+      expect(rebuiltWithKind!.promptHash).toBe(item.promptHash);
+
+      const rebuiltDefault = buildListeningWorkOrderRequest(
+        'L3',
+        { seedRef: item.seedRef, seedKorean: item.seedKorean },
+        file.meta.listeningModel,
+        cfg,
+      );
+      expect(rebuiltDefault).not.toBeNull();
+      expect(rebuiltDefault!.promptHash).not.toBe(item.promptHash);
+    }
+    expect(await generatedItemCount()).toBe(0);
+  });
+
+  it('runIngest writes generated_items.kind = the requested type for every P2 listening kind, with passage still NULL and turns still landing', async () => {
+    for (const kind of ['dialogue-complete', 'whats-next', 'infer-location', 'infer-topic'] as const) {
+      const outFile = await makeTmpFile(`listening-kind-${kind}-batch.json`);
+      await runEmitBatch(
+        pg.pool,
+        makeOpts({
+          mode: 'emit-batch',
+          sections: ['listening'],
+          levels: ['L3'],
+          perCell: 1,
+          outFile,
+          questionType: kind,
+        }),
+        silent,
+      );
+      const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+      const filled = file.items.map((item) => ({
+        ...item,
+        response: goodListeningResponse(`정답-${kind}`),
+      })) as unknown as WorkOrderItem[];
+      const inFile = await makeTmpFile(`listening-kind-${kind}-filled.json`);
+      await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+      const summary = await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);
+      expect(summary.written).toBe(1);
+    }
+
+    const rows = await pg.pool.query<{
+      kind: string;
+      section: string;
+      passage: string | null;
+      turns: unknown;
+      audio_source_id: number | null;
+    }>(`SELECT kind, section, passage, turns, audio_source_id FROM generated_items WHERE section = 'listening' ORDER BY id`);
+    expect(rows.rows).toHaveLength(4);
+    expect(new Set(rows.rows.map((r) => r.kind))).toEqual(
+      new Set(['dialogue-complete', 'whats-next', 'infer-location', 'infer-topic']),
+    );
+    for (const row of rows.rows) {
+      expect(row.section).toBe('listening');
+      expect(row.passage).toBeNull();
+      expect(row.turns).not.toBeNull();
+      expect(row.audio_source_id).toBeNull();
+    }
+  });
+
+  it('without --kind, a listening row STILL lands kind=audio-mc (regression: default path unchanged)', async () => {
+    const outFile = await makeTmpFile('listening-nokind-batch.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['listening'], levels: ['L3'], perCell: 1, outFile }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    expect(file.items[0]!.questionType).toBe('audio-mc');
+    const filled = file.items.map((item) => ({
+      ...item,
+      response: goodListeningResponse(),
+    })) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('listening-nokind-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+    await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);
+
+    const rows = await pg.pool.query<{ kind: string }>(
+      `SELECT kind FROM generated_items WHERE section = 'listening'`,
+    );
+    expect(rows.rows).toHaveLength(1);
+    expect(rows.rows[0]!.kind).toBe('audio-mc');
   });
 });
