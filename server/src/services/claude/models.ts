@@ -289,6 +289,74 @@ export type DiagnosticItemResult = z.infer<typeof DiagnosticItemResultSchema>;
 // (services/diagnostic/generatedBank.ts / the CLI ingest path), never chosen
 // by the model.
 
+// ---- F-220 P2: single-item question-type parameterization -------------------
+// The remaining single-item TOPIK reading/listening question types
+// (TOPIK_STRUCTURE_ANALYSIS.md §1/§6) are PROMPT-SHAPE VARIANTS on the same
+// generator, never a new route/schema/migration: `questionType` selects which
+// per-type instruction block `prompts/diagnostic_reading_item.ts`/
+// `diagnostic_listening_item.ts` uses, and the caller stamps the SAME string
+// onto `generated_items.kind` at ingest (open TEXT, migration 101 — no
+// change needed). The RESULT shape is unchanged for every type — every type
+// stays expressible as {passage|turns, prompt, choices[4], answerIndex,
+// explain}, exactly like the original single type (per the build brief's
+// "keep every type expressible as the existing 4-choice MCQ row" rule) — only
+// the CONTENT the model is instructed to put in those fields differs per
+// type. Defaults to the ORIGINAL slice-2/3 type ('passage-mc'/'audio-mc') so
+// every caller that predates P2 (including every existing test) is
+// byte-identical.
+
+/** Reading single-item question types. `passage-mc` is the original slice-2
+ *  shape (generic passage + comprehension MCQ, ≈ real-taxonomy R10/R11). The
+ *  rest are P2 additions, one per TOPIK_STRUCTURE_ANALYSIS.md §1 reading row
+ *  the analysis found missing a generator (§5/§6), skipping the image-
+ *  dependent chart variant of R4 (text-only match-content covers the
+ *  non-image majority) and the TOPIK-I-only R13 (infer-purpose, out of
+ *  scope for this pass per the P2 build brief):
+ *    fill-blank          ≈ R1  (bare single-sentence blank, no passage)
+ *    topic-id            ≈ R3  (choose the topic/genre of a short text)
+ *    match-content        ≈ R4  (choose the statement that MATCHES the text)
+ *    choose-non-match     ≈ R9  (choose the statement that does NOT match)
+ *    sentence-order       ≈ R5  (order 4 scrambled sentences)
+ *    paragraph-cloze      ≈ R6  (choose the SENTENCE/clause that fills a gap)
+ *    headline-interpret   ≈ R8  (interpret a compressed headline phrase)
+ *    main-idea            ≈ R11 (choose the passage's central thought)
+ *    sentence-insert      ≈ R12 (choose where an extracted sentence belongs)
+ */
+export const ReadingQuestionTypeSchema = z.enum([
+  'passage-mc',
+  'fill-blank',
+  'topic-id',
+  'match-content',
+  'choose-non-match',
+  'sentence-order',
+  'paragraph-cloze',
+  'headline-interpret',
+  'main-idea',
+  'sentence-insert',
+]);
+export type ReadingQuestionType = z.infer<typeof ReadingQuestionTypeSchema>;
+
+/** Listening single-item question types. `audio-mc` is the original slice-3
+ *  shape (generic dialogue + comprehension MCQ, ≈ real-taxonomy L7/L8). The
+ *  rest are P2 additions — only the four the analysis's §5/§6 flagged as
+ *  having NO adequate current-generator analog (L1 picture-matching is
+ *  skipped per the brief's "skip image-dependent types" rule; L6
+ *  infer-next-action is skipped because §6 marks it "✅ close to current
+ *  audio-mc" — no new type needed):
+ *    dialogue-complete ≈ L2 (choose the natural reply to ONE line)
+ *    whats-next        ≈ L3 (choose what continues an in-progress exchange)
+ *    infer-location    ≈ L4 (infer WHERE the conversation is happening)
+ *    infer-topic       ≈ L5 (infer WHAT the conversation is about)
+ */
+export const ListeningQuestionTypeSchema = z.enum([
+  'audio-mc',
+  'dialogue-complete',
+  'whats-next',
+  'infer-location',
+  'infer-topic',
+]);
+export type ListeningQuestionType = z.infer<typeof ListeningQuestionTypeSchema>;
+
 export const DiagnosticReadingItemInputSchema = z.object({
   /** Target proficiency band the passage + question should be written at. */
   targetLevel: DiagnosticTargetLevelSchema,
@@ -296,6 +364,10 @@ export const DiagnosticReadingItemInputSchema = z.object({
    *  uncopyrightable CONCEPT, never corpus prose. Claude authors the passage
    *  100% fresh from this alone. See server/src/scripts/readingTopics.ts. */
   topic: NonEmptyText.max(200),
+  /** F-220 P2: which single-item format to author (see
+   *  `ReadingQuestionTypeSchema`'s doc). Defaults to `'passage-mc'` — the
+   *  original slice-2 shape — so every pre-P2 caller is byte-identical. */
+  questionType: ReadingQuestionTypeSchema.default('passage-mc'),
   /** Optional model override. */
   model: z.enum(['haiku', 'sonnet', 'opus']).optional(),
 });
@@ -619,6 +691,10 @@ export const DiagnosticListeningItemInputSchema = z.object({
    *  server/src/scripts/readingTopics.ts (the reading slice's list, reused
    *  as-is here). */
   topic: NonEmptyText.max(200),
+  /** F-220 P2: which single-item format to author (see
+   *  `ListeningQuestionTypeSchema`'s doc). Defaults to `'audio-mc'` — the
+   *  original slice-3 shape — so every pre-P2 caller is byte-identical. */
+  questionType: ListeningQuestionTypeSchema.default('audio-mc'),
   /** Optional model override. */
   model: z.enum(['haiku', 'sonnet', 'opus']).optional(),
 });

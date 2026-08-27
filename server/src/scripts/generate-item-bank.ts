@@ -140,12 +140,16 @@ import {
   DiagnosticPairedReadingItemResultSchema,
   DiagnosticPairedListeningItemInputSchema,
   DiagnosticPairedListeningItemResultSchema,
+  ReadingQuestionTypeSchema,
+  ListeningQuestionTypeSchema,
   type DiagnosticItemResult,
   type DiagnosticReadingItemResult,
   type DiagnosticListeningItemResult,
   type DiagnosticPairedReadingItemResult,
   type DiagnosticPairedListeningItemResult,
   type DiagnosticTargetLevel,
+  type ReadingQuestionType,
+  type ListeningQuestionType,
 } from '../services/claude/models.js';
 import {
   hashCacheKey,
@@ -197,6 +201,15 @@ export const SECTIONS: readonly ItemBankSection[] = [
 export const LEVELS: readonly DiagnosticTargetLevel[] = ['L1', 'L2', 'L3', 'L4', 'L5+'];
 export const DEFAULT_PER_CELL = 25;
 
+/** F-220 P2: the single-item question TYPES `--kind=<type>` accepts for
+ *  `--section=reading`/`--section=listening` — mirrors
+ *  `ReadingQuestionTypeSchema`/`ListeningQuestionTypeSchema` (models.ts)
+ *  exactly (`.options` is the zod enum's own value list, so this can never
+ *  drift from the schema that actually validates the request). */
+export const READING_QUESTION_TYPES: readonly ReadingQuestionType[] = ReadingQuestionTypeSchema.options;
+export const LISTENING_QUESTION_TYPES: readonly ListeningQuestionType[] =
+  ListeningQuestionTypeSchema.options;
+
 /** Sections whose stimulus is a bare topic word from the static
  *  `readingTopics.ts` list (never a scarce DB pool) — reading/listening's
  *  singular items AND both paired sections. */
@@ -221,6 +234,14 @@ export interface ItemBankOptions {
   readonly outFile: string | undefined;
   /** ingest: path of the FILLED work-order to read. */
   readonly inFile: string | undefined;
+  /** F-220 P2: `--kind=<type>` — which single-item question TYPE to emit,
+   *  for `count`/`emit-batch` runs scoped to `--section=reading` or
+   *  `--section=listening` ONLY (validated against `READING_QUESTION_TYPES`/
+   *  `LISTENING_QUESTION_TYPES` in `parseCliArgs`). `undefined` preserves the
+   *  ORIGINAL slice-2/3 behavior byte-identically — every reading/listening
+   *  item emitted without `--kind` is still `questionType`-defaulted to
+   *  `'passage-mc'`/`'audio-mc'` by the input schema, exactly as before P2. */
+  readonly questionType: string | undefined;
 }
 
 /** Bad CLI input / bad work-order file → exit 2. */
@@ -273,6 +294,7 @@ export function parseCliArgs(argv: readonly string[]): ItemBankOptions {
   let perCell: number | undefined;
   let outFile: string | undefined;
   let inFile: string | undefined;
+  let kind: string | undefined;
 
   for (const arg of argv) {
     if (arg === '--count' || arg === '--dry-run') {
@@ -311,6 +333,13 @@ export function parseCliArgs(argv: readonly string[]): ItemBankOptions {
         throw new ItemBankInputError(`unknown --level "${raw}" (valid: ${LEVELS.join(', ')})`);
       }
       level = raw as DiagnosticTargetLevel;
+    } else if (arg.startsWith('--kind=')) {
+      // F-220 P2: the single-item question TYPE to emit — validated below
+      // (after `section` is fully parsed) against the section-appropriate
+      // type list, since the SAME flag name means a different enum depending
+      // on --section.
+      assignOnce(kind !== undefined, '--kind');
+      kind = parseNonEmptyString(arg, '--kind');
     } else {
       throw new ItemBankInputError(`unknown argument "${arg}"`);
     }
@@ -335,6 +364,25 @@ export function parseCliArgs(argv: readonly string[]): ItemBankOptions {
       '--section/--level/--per-cell do not apply to --ingest (the work-order file is replayed verbatim)',
     );
   }
+  if (kind !== undefined) {
+    if (resolvedMode === 'ingest') {
+      throw new ItemBankInputError(
+        '--kind does not apply to --ingest (the work-order file is replayed verbatim — each item already carries its own questionType)',
+      );
+    }
+    if (section !== 'reading' && section !== 'listening') {
+      throw new ItemBankInputError(
+        '--kind requires --section=reading or --section=listening (a single-item question type only applies to those two sections)',
+      );
+    }
+    const validKinds: readonly string[] =
+      section === 'reading' ? READING_QUESTION_TYPES : LISTENING_QUESTION_TYPES;
+    if (!validKinds.includes(kind)) {
+      throw new ItemBankInputError(
+        `unknown --kind "${kind}" for --section=${section} (valid: ${validKinds.join(', ')})`,
+      );
+    }
+  }
 
   return {
     mode: resolvedMode,
@@ -343,6 +391,7 @@ export function parseCliArgs(argv: readonly string[]): ItemBankOptions {
     perCell: perCell ?? DEFAULT_PER_CELL,
     outFile,
     inFile,
+    questionType: kind,
   };
 }
 
@@ -580,6 +629,15 @@ export interface BuiltRequest {
   readonly seedEnglish: string | undefined;
   readonly promptHash: string;
   readonly request: MessageRequest;
+  /** F-220 P2: the RESOLVED (schema-defaulted) `questionType` for a
+   *  reading/listening build — the exact string ingest must write to
+   *  `generated_items.kind`. `undefined` for vocab/grammar/paired builds
+   *  (those sections don't have a `questionType`, their `kind` is derived
+   *  differently — see `runIngest`). Always DEFINED for a successful
+   *  reading/listening build, even when the caller passed no `questionType`
+   *  (the input schema's `.default('passage-mc' | 'audio-mc')` fills it) —
+   *  so ingest never has to re-derive or hardcode the fallback kind itself. */
+  readonly questionType?: string;
 }
 
 /**
@@ -682,10 +740,16 @@ export function buildReadingWorkOrderRequest(
   seed: SeedCandidate,
   model: ClaudeModelId,
   cfg: PublicClaudeConfig,
+  // F-220 P2: optional — omitted/undefined means "let the input schema
+  // default to 'passage-mc'", the ORIGINAL slice-2 behavior. Appended as the
+  // 5th (optional) param, not inserted earlier, so every pre-P2 call site
+  // (including every existing test's 4-arg call) is unaffected.
+  questionType?: ReadingQuestionType,
 ): BuiltRequest | null {
   const parsed = DiagnosticReadingItemInputSchema.safeParse({
     targetLevel: level,
     topic: seed.seedKorean,
+    ...(questionType !== undefined ? { questionType } : {}),
   });
   if (!parsed.success) return null;
 
@@ -714,6 +778,7 @@ export function buildReadingWorkOrderRequest(
     seedEnglish: undefined,
     promptHash: hashCacheKey(key),
     request: req,
+    questionType: cleaned.questionType,
   };
 }
 
@@ -731,10 +796,14 @@ export function buildListeningWorkOrderRequest(
   seed: SeedCandidate,
   model: ClaudeModelId,
   cfg: PublicClaudeConfig,
+  // F-220 P2: mirrors buildReadingWorkOrderRequest's identical optional
+  // 5th-param rationale exactly — omitted/undefined defaults to 'audio-mc'.
+  questionType?: ListeningQuestionType,
 ): BuiltRequest | null {
   const parsed = DiagnosticListeningItemInputSchema.safeParse({
     targetLevel: level,
     topic: seed.seedKorean,
+    ...(questionType !== undefined ? { questionType } : {}),
   });
   if (!parsed.success) return null;
 
@@ -763,6 +832,7 @@ export function buildListeningWorkOrderRequest(
     seedEnglish: undefined,
     promptHash: hashCacheKey(key),
     request: req,
+    questionType: cleaned.questionType,
   };
 }
 
@@ -939,12 +1009,19 @@ export async function runCount(
       const availability = await countSeeds(pool, section, level);
       const achievable = achievableForCell(section, opts.perCell, availability);
       cells.push({ section, level, availability, achievable });
+      // F-220 P2: when --kind scopes this run (only valid for
+      // section='reading'/'listening' — parseCliArgs enforces that), name
+      // the kind in the report so a kind-scoped --count is self-describing.
+      const kindSuffix =
+        opts.questionType !== undefined && (section === 'reading' || section === 'listening')
+          ? ` (kind=${opts.questionType})`
+          : '';
       print(
         isTopicSeededSection(section)
-          ? `item-bank [COUNT]: ${section}/${level} — ${String(availability.total)} topics available ` +
+          ? `item-bank [COUNT]: ${section}/${level}${kindSuffix} — ${String(availability.total)} topics available ` +
               `(reusable via repetition, not a scarce pool) — would emit ${String(achievable)}/${String(opts.perCell)} ` +
               `${section === 'paired-reading' || section === 'paired-listening' ? 'stimulus group(s)' : 'item(s)'}`
-          : `item-bank [COUNT]: ${section}/${level} — ${String(availability.targeted)} targeted-proficiency ` +
+          : `item-bank [COUNT]: ${section}/${level}${kindSuffix} — ${String(availability.targeted)} targeted-proficiency ` +
               `seeds, ${String(availability.total)} total eligible — would emit ${String(achievable)}/${String(opts.perCell)}`,
       );
     }
@@ -985,6 +1062,16 @@ export interface WorkOrderItem {
    *  `buildPairedReadingWorkOrderRequest`/`buildPairedListeningWorkOrderRequest`.
    *  Absent/ignored for every non-paired section. */
   readonly questionCount?: number;
+  /** reading/listening ONLY (F-220 P2): the RESOLVED single-item question
+   *  TYPE this item authored (see `ReadingQuestionTypeSchema`/
+   *  `ListeningQuestionTypeSchema`, models.ts) — always the schema-defaulted
+   *  value ('passage-mc'/'audio-mc' when `--kind` wasn't given), never
+   *  absent for these two sections, so ingest can rebuild the EXACT
+   *  emit-time request (the type rides the prompt payload — see
+   *  `buildReadingWorkOrderRequest`/`buildListeningWorkOrderRequest`) and
+   *  write the matching `generated_items.kind`. Absent/ignored for every
+   *  other section. */
+  readonly questionType?: string;
   readonly promptHash: string;
   /** The exact request a subscription Claude session should send. */
   readonly request: MessageRequest;
@@ -1073,11 +1160,27 @@ export async function runEmitBatch(
             : section === 'paired-listening'
               ? 2
               : undefined;
+        // F-220 P2: opts.questionType is only ever set (parseCliArgs
+        // enforces this) when section is EXACTLY 'reading' or 'listening' —
+        // safe to thread into both builders unconditionally; the other
+        // branches ignore it entirely (their builders don't take it).
         const built =
           section === 'reading'
-            ? buildReadingWorkOrderRequest(level, seed, sectionModel, cfg)
+            ? buildReadingWorkOrderRequest(
+                level,
+                seed,
+                sectionModel,
+                cfg,
+                opts.questionType as ReadingQuestionType | undefined,
+              )
             : section === 'listening'
-              ? buildListeningWorkOrderRequest(level, seed, sectionModel, cfg)
+              ? buildListeningWorkOrderRequest(
+                  level,
+                  seed,
+                  sectionModel,
+                  cfg,
+                  opts.questionType as ListeningQuestionType | undefined,
+                )
               : section === 'paired-reading'
                 ? buildPairedReadingWorkOrderRequest(level, seed, questionCount!, sectionModel, cfg)
                 : section === 'paired-listening'
@@ -1096,6 +1199,7 @@ export async function runEmitBatch(
           seedKorean: built.seedKorean,
           ...(built.seedEnglish !== undefined ? { seedEnglish: built.seedEnglish } : {}),
           ...(questionCount !== undefined ? { questionCount } : {}),
+          ...(built.questionType !== undefined ? { questionType: built.questionType } : {}),
           promptHash: built.promptHash,
           request: built.request,
           schema:
@@ -1169,6 +1273,16 @@ const WorkOrderItemSchema = z.object({
   // — the question count this group's ONE call was asked to author, needed
   // to rebuild the exact emit-time request. Ignored for every other section.
   questionCount: z.number().int().min(2).max(3).optional(),
+  // F-220 P2: the resolved single-item question TYPE (reading/listening
+  // only) — see WorkOrderItem's own doc. Loosely typed (`z.string()`, not
+  // the models.ts enum) at this outer-file layer deliberately: the REAL
+  // validation happens when `buildReadingWorkOrderRequest`/
+  // `buildListeningWorkOrderRequest` re-parses it through
+  // `DiagnosticReadingItemInputSchema`/`DiagnosticListeningItemInputSchema`
+  // below (an unknown/stale kind value fails THAT parse -> `built === null`
+  // -> the SAME "seed no longer sanitizable" skip every other bad-seed case
+  // already takes, not a separate error path to maintain here).
+  questionType: z.string().min(1).optional(),
   promptHash: z.string().min(1),
   // `z.unknown()` alone makes the key OPTIONAL in zod 3 — an UNFILLED
   // work-order (emit output fed straight back, no `response` keys) would
@@ -1359,9 +1473,21 @@ export async function runIngest(
     }
     const built =
       item.section === 'reading'
-        ? buildReadingWorkOrderRequest(item.level, seed, itemModel, cfg)
+        ? buildReadingWorkOrderRequest(
+            item.level,
+            seed,
+            itemModel,
+            cfg,
+            item.questionType as ReadingQuestionType | undefined,
+          )
         : item.section === 'listening'
-          ? buildListeningWorkOrderRequest(item.level, seed, itemModel, cfg)
+          ? buildListeningWorkOrderRequest(
+              item.level,
+              seed,
+              itemModel,
+              cfg,
+              item.questionType as ListeningQuestionType | undefined,
+            )
           : item.section === 'paired-reading'
             ? buildPairedReadingWorkOrderRequest(item.level, seed, item.questionCount!, itemModel, cfg)
             : item.section === 'paired-listening'
@@ -1557,12 +1683,17 @@ export async function runIngest(
       continue;
     }
 
-    // F-220 slice 2 — reading items validate against a DIFFERENT result
-    // schema (DiagnosticReadingItemResultSchema: passage + prompt, no `kind`
-    // — a reading item's kind is always the fixed 'passage-mc', never
-    // model-chosen) and write the `passage` column; vocab/grammar keep the
-    // slice-1 path (DiagnosticItemResultSchema, section<->kind contract,
-    // passage always NULL) completely unchanged below.
+    // F-220 slice 2 (extended by P2) — reading items validate against a
+    // DIFFERENT result schema (DiagnosticReadingItemResultSchema: passage +
+    // prompt, no `kind` in the RESULT — the kind is the REQUEST's
+    // `questionType`, never model-chosen) and write the `passage` column;
+    // vocab/grammar keep the slice-1 path (DiagnosticItemResultSchema,
+    // section<->kind contract, passage always NULL) completely unchanged
+    // below. `kind` is `built.questionType` — 'passage-mc' for every
+    // pre-P2 work-order item (no `questionType` echoed -> the input schema's
+    // default) and the requested type for a P2 `--kind`-scoped one;
+    // `buildReadingWorkOrderRequest` guarantees it's always defined for a
+    // successful reading build (see BuiltRequest's doc).
     if (item.section === 'reading') {
       const parsedReading = DiagnosticReadingItemResultSchema.safeParse(item.response);
       if (!parsedReading.success) {
@@ -1603,12 +1734,13 @@ export async function runIngest(
         `INSERT INTO generated_items
            (section, level, kind, stem, passage, choices, answer_index, explain,
             source_ref, status, created_by, model_id, prompt_hash)
-         VALUES ($1, $2, 'passage-mc', $3, $4, $5::jsonb, $6, $7, $8, 'draft', 'claude-batch', $9, $10)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, 'draft', 'claude-batch', $10, $11)
          ON CONFLICT (prompt_hash) DO NOTHING
          RETURNING id`,
         [
           item.section,
           item.level,
+          built.questionType ?? 'passage-mc',
           result.prompt,
           result.passage,
           JSON.stringify(shuffled.map((c) => ({ kr: c.kr, en: c.en }))),
@@ -1627,14 +1759,16 @@ export async function runIngest(
       continue;
     }
 
-    // F-220 slice 3 — listening items validate against a THIRD result schema
-    // (DiagnosticListeningItemResultSchema: turns[] + prompt, no `kind` — a
-    // listening item's kind is always the fixed 'audio-mc', never
-    // model-chosen) and write the `turns` column (NO `passage` — the
-    // dialogue text must never reach the learner as readable text, see
-    // services/diagnostic/generatedBank.ts's doc); `audio_source_id` is left
-    // NULL (this CLI is the $0 SCRIPT step — audio synthesis is the separate,
-    // METERED `synthesize-listening-audio` CLI, run later by an operator).
+    // F-220 slice 3 (extended by P2) — listening items validate against a
+    // THIRD result schema (DiagnosticListeningItemResultSchema: turns[] +
+    // prompt, no `kind` in the RESULT — the kind is the REQUEST's
+    // `questionType`, never model-chosen) and write the `turns` column (NO
+    // `passage` — the dialogue text must never reach the learner as
+    // readable text, see services/diagnostic/generatedBank.ts's doc);
+    // `audio_source_id` is left NULL (this CLI is the $0 SCRIPT step — audio
+    // synthesis is the separate, METERED `synthesize-listening-audio` CLI,
+    // run later by an operator). `kind` is `built.questionType` — mirrors
+    // the reading branch's identical rationale above.
     if (item.section === 'listening') {
       const parsedListening = DiagnosticListeningItemResultSchema.safeParse(item.response);
       if (!parsedListening.success) {
@@ -1677,13 +1811,14 @@ export async function runIngest(
         `INSERT INTO generated_items
            (section, level, kind, stem, passage, choices, answer_index, explain,
             turns, audio_source_id, source_ref, status, created_by, model_id, prompt_hash)
-         VALUES ($1, $2, 'audio-mc', $3, NULL, $4::jsonb, $5, $6,
-                 $7::jsonb, NULL, $8, 'draft', 'claude-batch', $9, $10)
+         VALUES ($1, $2, $3, $4, NULL, $5::jsonb, $6, $7,
+                 $8::jsonb, NULL, $9, 'draft', 'claude-batch', $10, $11)
          ON CONFLICT (prompt_hash) DO NOTHING
          RETURNING id`,
         [
           item.section,
           item.level,
+          built.questionType ?? 'audio-mc',
           result.prompt,
           JSON.stringify(shuffled.map((c) => ({ kr: c.kr, en: c.en }))),
           answerIndex,
