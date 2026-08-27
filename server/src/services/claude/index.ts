@@ -56,6 +56,10 @@ import {
   DiagnosticReadingItemResultSchema,
   DiagnosticListeningItemInputSchema,
   DiagnosticListeningItemResultSchema,
+  DiagnosticPairedReadingItemInputSchema,
+  DiagnosticPairedReadingItemResultSchema,
+  DiagnosticPairedListeningItemInputSchema,
+  DiagnosticPairedListeningItemResultSchema,
   EnrichmentInputSchema,
   EnrichmentResultSchema,
   GradeInputSchema,
@@ -91,6 +95,10 @@ import {
   type DiagnosticReadingItemResult,
   type DiagnosticListeningItemInput,
   type DiagnosticListeningItemResult,
+  type DiagnosticPairedReadingItemInput,
+  type DiagnosticPairedReadingItemResult,
+  type DiagnosticPairedListeningItemInput,
+  type DiagnosticPairedListeningItemResult,
   type EnrichmentInput,
   type EnrichmentResult,
   type GradeInput,
@@ -121,6 +129,8 @@ import { buildNameConversationRequest } from './prompts/name_conversation';
 import { buildDiagnosticItemRequest } from './prompts/diagnostic_item';
 import { buildDiagnosticReadingItemRequest } from './prompts/diagnostic_reading_item';
 import { buildDiagnosticListeningItemRequest } from './prompts/diagnostic_listening_item';
+import { buildDiagnosticPairedReadingItemRequest } from './prompts/diagnostic_paired_reading_item';
+import { buildDiagnosticPairedListeningItemRequest } from './prompts/diagnostic_paired_listening_item';
 import { buildEnrichRequest } from './prompts/enrich';
 import { buildGradeWritingRequest } from './prompts/grade_writing';
 import {
@@ -155,6 +165,10 @@ export type {
   DiagnosticListeningItemInput,
   DiagnosticListeningItemResult,
   DiagnosticListeningTurn,
+  DiagnosticPairedReadingItemInput,
+  DiagnosticPairedReadingItemResult,
+  DiagnosticPairedListeningItemInput,
+  DiagnosticPairedListeningItemResult,
   DiagnosticTargetLevel,
   EnrichmentInput,
   EnrichmentResult,
@@ -318,6 +332,33 @@ export interface ClaudeProxy {
     input: DiagnosticListeningItemInput,
     ctx?: CallContext,
   ): Promise<ProxyResult<DiagnosticListeningItemResult>>;
+  /**
+   * F-220 P1: author ONE original Korean reading passage plus N (2-3)
+   * INDEPENDENT 4-choice comprehension questions about it — the
+   * PAIRED-PASSAGE family, the largest single reading question type in a
+   * real TOPIK section. Unlike `generateDiagnosticReadingItem`, one call
+   * produces a whole shared-stimulus question BLOCK, never from existing
+   * corpus prose or a real TOPIK item (see models.ts's copyright note).
+   */
+  generateDiagnosticPairedReadingItem(
+    input: DiagnosticPairedReadingItemInput,
+    ctx?: CallContext,
+  ): Promise<ProxyResult<DiagnosticPairedReadingItemResult>>;
+  /**
+   * F-220 P1: author ONE original short Korean spoken DIALOGUE plus EXACTLY
+   * 2 INDEPENDENT 4-choice comprehension questions about it — the
+   * PAIRED-MONOLOGUE family, the largest single listening question type in a
+   * real TOPIK section. Unlike `generateDiagnosticListeningItem`, one call
+   * produces a whole shared-stimulus question BLOCK. As with
+   * `generateDiagnosticListeningItem`, this method's output is never shown
+   * to the learner as text — a separate, METERED CLI turns `turns` into
+   * audio; the live diagnostic never calls this route directly (offline CLI
+   * only, and unwired to any live surface in P1).
+   */
+  generateDiagnosticPairedListeningItem(
+    input: DiagnosticPairedListeningItemInput,
+    ctx?: CallContext,
+  ): Promise<ProxyResult<DiagnosticPairedListeningItemResult>>;
   /**
    * Run OCR + vocab-mining on ONE uploaded photo. The user message carries an
    * IMAGE content block (base64). Returns a caption + the distinct content
@@ -643,6 +684,62 @@ class ClaudeProxyImpl implements ClaudeProxy {
       request: req,
       cacheTtl: cfg.cacheTtlSeconds.generate_listening_item,
       outputSchema: DiagnosticListeningItemResultSchema,
+      parser: parseJsonContent,
+    });
+  }
+
+  async generateDiagnosticPairedReadingItem(
+    rawInput: DiagnosticPairedReadingItemInput,
+    ctx: CallContext = {},
+  ): Promise<ProxyResult<DiagnosticPairedReadingItemResult>> {
+    const cfg = this.cfg;
+    const route: RouteName = 'generate_paired_reading_item';
+    const input = parseInput(DiagnosticPairedReadingItemInputSchema, rawInput, route);
+    // The topic is the only free-text field — sanitize through the SAME
+    // injection guard + length cap every other route uses (mirrors
+    // generateDiagnosticReadingItem's topic handling exactly). questionCount
+    // is a closed 2..3 integer, no sanitization needed.
+    const topic = sanitizeUserInput(input.topic, {
+      maxLength: cfg.inputCaps.generate_paired_reading_item,
+    });
+    const cleaned: DiagnosticPairedReadingItemInput = { ...input, topic };
+    const model = resolveModel(cfg, route, input.model);
+    const req = buildDiagnosticPairedReadingItemRequest(cleaned, model);
+
+    return this.runJsonRoute({
+      route,
+      model,
+      ctx,
+      request: req,
+      cacheTtl: cfg.cacheTtlSeconds.generate_paired_reading_item,
+      outputSchema: DiagnosticPairedReadingItemResultSchema,
+      parser: parseJsonContent,
+    });
+  }
+
+  async generateDiagnosticPairedListeningItem(
+    rawInput: DiagnosticPairedListeningItemInput,
+    ctx: CallContext = {},
+  ): Promise<ProxyResult<DiagnosticPairedListeningItemResult>> {
+    const cfg = this.cfg;
+    const route: RouteName = 'generate_paired_listening_item';
+    const input = parseInput(DiagnosticPairedListeningItemInputSchema, rawInput, route);
+    // The topic is the only free-text field — mirrors
+    // generateDiagnosticPairedReadingItem's topic handling exactly.
+    const topic = sanitizeUserInput(input.topic, {
+      maxLength: cfg.inputCaps.generate_paired_listening_item,
+    });
+    const cleaned: DiagnosticPairedListeningItemInput = { ...input, topic };
+    const model = resolveModel(cfg, route, input.model);
+    const req = buildDiagnosticPairedListeningItemRequest(cleaned, model);
+
+    return this.runJsonRoute({
+      route,
+      model,
+      ctx,
+      request: req,
+      cacheTtl: cfg.cacheTtlSeconds.generate_paired_listening_item,
+      outputSchema: DiagnosticPairedListeningItemResultSchema,
       parser: parseJsonContent,
     });
   }

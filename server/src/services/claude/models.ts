@@ -662,6 +662,126 @@ export const DiagnosticListeningItemResultSchema = z.object({
 });
 export type DiagnosticListeningItemResult = z.infer<typeof DiagnosticListeningItemResultSchema>;
 
+// ---- 3e-3. generateDiagnosticPairedReadingItem / generateDiagnosticPairedListeningItem
+// F-220 P1: PAIRED-STIMULUS generation — the single highest-leverage
+// authentic TOPIK question family (20-60% of every real section per
+// TOPIK_STRUCTURE_ANALYSIS.md §1/§4/§6: R7 paired-passage reading, L9
+// paired-monologue listening). Unlike generateDiagnosticReadingItem/
+// generateDiagnosticListeningItem (ONE stimulus -> ONE question),
+// these author ONE stimulus -> N INDEPENDENT comprehension questions about
+// DIFFERENT aspects of it, in a SINGLE call. Mirrors the singular routes'
+// input/output shape exactly, just with `questions[]` in place of the
+// singular prompt/choices/answerIndex/explain fields.
+//
+// COPYRIGHT — same posture as the singular reading/listening routes: the
+// topic is a bare, uncopyrightable CONCEPT (readingTopics.ts, reused as-is),
+// never corpus prose. The prompt instructs the model to author BOTH the
+// stimulus and every question 100% FRESH — it is never given, and can
+// therefore never summarize/paraphrase, any existing passage/dialogue or
+// real TOPIK item. This generates the FORMAT (a shared-stimulus
+// multi-question block), never any real exam's content.
+//
+// Ships DARK in P1: `generate-item-bank.ts`'s ingest writes grouped rows
+// (`stimulus_group_id`, migration 105) but nothing yet DRAWS a group live —
+// `pickGeneratedStimulusGroup` (services/diagnostic/generatedBank.ts) is
+// built and tested here but wired into no route until a later slice (P3).
+
+const PairedQuestionSchema = z.object({
+  /** The comprehension question stem the learner reads (Korean). Each
+   *  question must probe a DIFFERENT aspect of the shared stimulus (detail
+   *  recall, main idea, inference, a speaker's attitude, etc.) — never a
+   *  near-duplicate of another question in the same group. */
+  prompt: NonEmptyText.max(1000),
+  /** Exactly 4 choices, reusing the same {kr, en?} shape every diagnostic
+   *  generation route uses (the route drops `en` before the choice reaches
+   *  the learner). */
+  choices: z.array(DiagnosticGenChoiceSchema).length(4),
+  /** Index (0..3) of the single correct choice — DISTINCT correct answers
+   *  across a group's questions are the prompt's job, not this schema's;
+   *  the schema only bounds the shape of any ONE question. */
+  answerIndex: z.number().int().min(0).max(3),
+  /** One- or two-sentence explanation, revealed only after the user answers. */
+  explain: NonEmptyText.max(800),
+});
+export type PairedQuestion = z.infer<typeof PairedQuestionSchema>;
+
+export const DiagnosticPairedReadingItemInputSchema = z.object({
+  /** Target proficiency band the passage + questions should be written at. */
+  targetLevel: DiagnosticTargetLevelSchema,
+  /** A bare, neutral topic word/phrase — see
+   *  DiagnosticReadingItemInputSchema's identical field for the full
+   *  copyright rationale (server/src/scripts/readingTopics.ts). */
+  topic: NonEmptyText.max(200),
+  /** How many INDEPENDENT comprehension questions to author about the ONE
+   *  shared passage — 2 or 3, mirroring the real R7 paired-passage block's
+   *  size (TOPIK_STRUCTURE_ANALYSIS.md §1). */
+  questionCount: z.number().int().min(2).max(3),
+  /** Optional model override. */
+  model: z.enum(['haiku', 'sonnet', 'opus']).optional(),
+});
+export type DiagnosticPairedReadingItemInput = z.infer<
+  typeof DiagnosticPairedReadingItemInputSchema
+>;
+
+export const DiagnosticPairedReadingItemResultSchema = z.object({
+  /** The ONE original Korean reading passage, authored fresh from `topic` —
+   *  shared verbatim by every question in `questions`. Capped higher than
+   *  the singular DiagnosticReadingItemResultSchema.passage (1500): a
+   *  passage that must support 2-3 INDEPENDENT questions (each probing a
+   *  different aspect) needs more content than a single-question passage,
+   *  while staying well under generated_items.passage's DB CHECK ceiling
+   *  (1..20000, migration 101). */
+  passage: NonEmptyText.max(2500),
+  /** 2-3 independent comprehension questions about the shared passage
+   *  above — each answerable from the passage alone, each probing a
+   *  DIFFERENT aspect (the prompt's job to enforce; this schema only bounds
+   *  count + per-question shape). */
+  questions: z.array(PairedQuestionSchema).min(2).max(3),
+});
+export type DiagnosticPairedReadingItemResult = z.infer<
+  typeof DiagnosticPairedReadingItemResultSchema
+>;
+
+export const DiagnosticPairedListeningItemInputSchema = z.object({
+  /** Target proficiency band the dialogue + questions should be written at. */
+  targetLevel: DiagnosticTargetLevelSchema,
+  /** A bare, neutral topic word/phrase — see
+   *  DiagnosticListeningItemInputSchema's identical field for the full
+   *  copyright rationale (the same readingTopics.ts list). */
+  topic: NonEmptyText.max(200),
+  /** Fixed at 2 — mirrors the real L9 paired-monologue block's per-pair
+   *  question count (TOPIK_STRUCTURE_ANALYSIS.md §1: "one longer
+   *  monologue... drives 2 questions"). A literal (not a 2..N range like
+   *  the reading side) because every real L9 pair is exactly 2 questions;
+   *  the field still exists (rather than being implicit) so the CLI's
+   *  paired-reading/paired-listening request-building stays structurally
+   *  uniform. */
+  questionCount: z.literal(2),
+  /** Optional model override. */
+  model: z.enum(['haiku', 'sonnet', 'opus']).optional(),
+});
+export type DiagnosticPairedListeningItemInput = z.infer<
+  typeof DiagnosticPairedListeningItemInputSchema
+>;
+
+export const DiagnosticPairedListeningItemResultSchema = z.object({
+  /** The ONE original Korean dialogue, authored fresh from `topic` — shared
+   *  by both questions in `questions`. Reuses the exact turn shape/bounds
+   *  DiagnosticListeningItemResultSchema.turns uses (2-6 turns) — a paired
+   *  dialogue is the same kind of spoken exchange as a singular one, just
+   *  answered by two questions instead of one. NEVER shown to the learner
+   *  as text — see that field's doc for the full "never leak the
+   *  transcript" posture, which `pickGeneratedStimulusGroup` also upholds. */
+  turns: z.array(DiagnosticListeningTurnSchema).min(2).max(6),
+  /** Exactly 2 independent comprehension questions about the shared
+   *  dialogue above — each answerable from LISTENING to it alone, each
+   *  probing a DIFFERENT aspect (the prompt's job to enforce). */
+  questions: z.array(PairedQuestionSchema).length(2),
+});
+export type DiagnosticPairedListeningItemResult = z.infer<
+  typeof DiagnosticPairedListeningItemResultSchema
+>;
+
 // ---- 3f. translatePassage ---------------------------------------------------
 // F-116: whole-passage/paragraph translation (Reading.tsx's `TranslateSheet`,
 // replacing the F-070 honest "coming soon" stub). Distinct from generateStory:

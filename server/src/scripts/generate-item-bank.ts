@@ -76,7 +76,8 @@
  * MODES (— COUNT IS THE DEFAULT; nothing in this file ever spends money)
  *   --count / --dry-run   Enumerate the grid (SECTIONS x LEVELS) and how many
  *                         seed entries are available per cell. ZERO writes.
- *   --emit-batch --out=<file> [--per-cell=N] [--section=vocab|grammar|reading]
+ *   --emit-batch --out=<file> [--per-cell=N] [--section=vocab|grammar|reading|
+ *                         listening|paired-reading|paired-listening]
  *                         [--level=L1..L5+]
  *                         For each cell, pick up to N (default 25) DISTINCT
  *                         seed entries and build the EXACT
@@ -121,6 +122,7 @@
  *   docker exec km-server-<active> node dist/scripts/generate-item-bank.js \
  *     --ingest --in=/tmp/batch-filled.json
  */
+import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import type { Pool } from 'pg';
 import { z } from 'zod';
@@ -134,9 +136,15 @@ import {
   DiagnosticReadingItemResultSchema,
   DiagnosticListeningItemInputSchema,
   DiagnosticListeningItemResultSchema,
+  DiagnosticPairedReadingItemInputSchema,
+  DiagnosticPairedReadingItemResultSchema,
+  DiagnosticPairedListeningItemInputSchema,
+  DiagnosticPairedListeningItemResultSchema,
   type DiagnosticItemResult,
   type DiagnosticReadingItemResult,
   type DiagnosticListeningItemResult,
+  type DiagnosticPairedReadingItemResult,
+  type DiagnosticPairedListeningItemResult,
   type DiagnosticTargetLevel,
 } from '../services/claude/models.js';
 import {
@@ -148,6 +156,8 @@ import { serializeMessages, stringifySystem } from '../services/claude/index.js'
 import { buildDiagnosticItemRequest } from '../services/claude/prompts/diagnostic_item.js';
 import { buildDiagnosticReadingItemRequest } from '../services/claude/prompts/diagnostic_reading_item.js';
 import { buildDiagnosticListeningItemRequest } from '../services/claude/prompts/diagnostic_listening_item.js';
+import { buildDiagnosticPairedReadingItemRequest } from '../services/claude/prompts/diagnostic_paired_reading_item.js';
+import { buildDiagnosticPairedListeningItemRequest } from '../services/claude/prompts/diagnostic_paired_listening_item.js';
 import { sanitizeUserInput } from '../services/claude/prompts/sanitize.js';
 import type { MessageRequest } from '../services/claude/client.js';
 import { shuffleGeneratedChoices } from '../routes/diagnostic.js';
@@ -164,15 +174,46 @@ const READING_TOPIC_COUNT = READING_TOPICS.length;
 // F-220 slice 3 adds 'listening': a generated, copyright-clean DIALOGUE
 // (turns[]) + comprehension MC item, seeded from the SAME topic list —
 // script only, at $0; audio synthesis is a separate metered CLI.
-export const SECTIONS: readonly GeneratedBankSection[] = ['vocab', 'grammar', 'reading', 'listening'];
+// F-220 P1 adds 'paired-reading'/'paired-listening': the SAME topic seeding,
+// but ONE call authors a whole shared-stimulus BLOCK (one passage/dialogue +
+// 2-3 independent questions) instead of a single question — see
+// `ItemBankSection` below. These are CLI-level section flags only; the DB
+// `generated_items.section` column a paired row lands under is still plain
+// 'reading'/'listening' (`kind` distinguishes the paired shape —
+// 'paired-passage-mc'/'paired-audio-mc' — from the singular one), so
+// `GeneratedBankSection` (the DRAW-path type) is deliberately left
+// unchanged: `pickGeneratedItem` never serves a paired row, only
+// `pickGeneratedStimulusGroup` does.
+export type ItemBankSection = GeneratedBankSection | 'paired-reading' | 'paired-listening';
+
+export const SECTIONS: readonly ItemBankSection[] = [
+  'vocab',
+  'grammar',
+  'reading',
+  'listening',
+  'paired-reading',
+  'paired-listening',
+];
 export const LEVELS: readonly DiagnosticTargetLevel[] = ['L1', 'L2', 'L3', 'L4', 'L5+'];
 export const DEFAULT_PER_CELL = 25;
+
+/** Sections whose stimulus is a bare topic word from the static
+ *  `readingTopics.ts` list (never a scarce DB pool) — reading/listening's
+ *  singular items AND both paired sections. */
+function isTopicSeededSection(section: ItemBankSection): boolean {
+  return (
+    section === 'reading' ||
+    section === 'listening' ||
+    section === 'paired-reading' ||
+    section === 'paired-listening'
+  );
+}
 
 export type ItemBankMode = 'count' | 'emit-batch' | 'ingest';
 
 export interface ItemBankOptions {
   readonly mode: ItemBankMode;
-  readonly sections: readonly GeneratedBankSection[];
+  readonly sections: readonly ItemBankSection[];
   readonly levels: readonly DiagnosticTargetLevel[];
   /** emit-batch: how many DISTINCT seeds to draw per (section, level) cell. */
   readonly perCell: number;
@@ -227,7 +268,7 @@ function parseNonEmptyString(arg: string, flag: string): string {
  */
 export function parseCliArgs(argv: readonly string[]): ItemBankOptions {
   let mode: ItemBankMode | null = null;
-  let section: GeneratedBankSection | undefined;
+  let section: ItemBankSection | undefined;
   let level: DiagnosticTargetLevel | undefined;
   let perCell: number | undefined;
   let outFile: string | undefined;
@@ -262,7 +303,7 @@ export function parseCliArgs(argv: readonly string[]): ItemBankOptions {
           `unknown --section "${raw}" (valid: ${SECTIONS.join(', ')})`,
         );
       }
-      section = raw as GeneratedBankSection;
+      section = raw as ItemBankSection;
     } else if (arg.startsWith('--level=')) {
       assignOnce(level !== undefined, '--level');
       const raw = arg.slice('--level='.length);
@@ -482,21 +523,23 @@ function topicAvailability(): SeedAvailability {
 
 async function pickSeeds(
   pool: Pool,
-  section: GeneratedBankSection,
+  section: ItemBankSection,
   level: DiagnosticTargetLevel,
   n: number,
 ): Promise<SeedCandidate[]> {
   if (section === 'vocab') return pickVocabSeeds(pool, level, n);
   if (section === 'grammar') return pickGrammarPatternSeeds(pool, level, n);
-  // 'reading'/'listening': topics are a static, app-owned list
-  // (readingTopics.ts), never a DB-backed/scarce resource — `pool` is unused
-  // for this branch.
+  // 'reading'/'listening'/'paired-reading'/'paired-listening': topics are a
+  // static, app-owned list (readingTopics.ts), never a DB-backed/scarce
+  // resource — `pool` is unused for this branch. One topic seeds ONE work-
+  // order item regardless of section: a singular item (one question) or a
+  // paired GROUP (N questions) both start from one bare topic string.
   return pickReadingTopics(level, n);
 }
 
 async function countSeeds(
   pool: Pool,
-  section: GeneratedBankSection,
+  section: ItemBankSection,
   level: DiagnosticTargetLevel,
 ): Promise<SeedAvailability> {
   if (section === 'vocab') return countVocabSeeds(pool, level);
@@ -505,16 +548,18 @@ async function countSeeds(
 }
 
 /** How many the CLI will emit for a cell. vocab/grammar: bounded by the real
- *  DB pool (`min(perCell, total)` — a scarce resource). reading/listening:
- *  `perCell` ALWAYS — the topic list is reusable via repetition
- *  (readingTopics.ts), never a hard ceiling the way a finite corpus
- *  row-count is. */
+ *  DB pool (`min(perCell, total)` — a scarce resource). reading/listening/
+ *  paired-reading/paired-listening: `perCell` ALWAYS — the topic list is
+ *  reusable via repetition (readingTopics.ts), never a hard ceiling the way
+ *  a finite corpus row-count is. For the paired sections, `perCell` counts
+ *  GROUPS (work-order items), not individual questions — each group yields
+ *  2-3 `generated_items` rows at ingest. */
 function achievableForCell(
-  section: GeneratedBankSection,
+  section: ItemBankSection,
   perCell: number,
   availability: SeedAvailability,
 ): number {
-  return section === 'reading' || section === 'listening' ? perCell : Math.min(perCell, availability.total);
+  return isTopicSeededSection(section) ? perCell : Math.min(perCell, availability.total);
 }
 
 // ---- Request building + prompt_hash (mirrors the live proxy's identity) ----
@@ -610,13 +655,16 @@ const LISTENING_ITEM_ROUTE = 'generate_listening_item' as const;
 
 /** Which model config a section's generation route uses — vocab/grammar ride
  *  `diagnostic_item`; reading rides `generate_reading_item`; listening rides
- *  `generate_listening_item` (all three routes are read from the CURRENT
- *  config at both emit AND ingest time, exactly like `DIAGNOSTIC_ITEM_ROUTE`'s
- *  single-model precedent — no per-item model is stored in the work-order
- *  file itself). */
-function modelForSection(section: GeneratedBankSection, cfg: PublicClaudeConfig): ClaudeModelId {
+ *  `generate_listening_item`; the two paired sections ride their OWN routes
+ *  (`generate_paired_reading_item`/`generate_paired_listening_item` — F-220
+ *  P1). All routes are read from the CURRENT config at both emit AND ingest
+ *  time, exactly like `DIAGNOSTIC_ITEM_ROUTE`'s single-model precedent — no
+ *  per-item model is stored in the work-order file itself. */
+function modelForSection(section: ItemBankSection, cfg: PublicClaudeConfig): ClaudeModelId {
   if (section === 'reading') return cfg.modelDefaults.generate_reading_item;
   if (section === 'listening') return cfg.modelDefaults.generate_listening_item;
+  if (section === 'paired-reading') return cfg.modelDefaults.generate_paired_reading_item;
+  if (section === 'paired-listening') return cfg.modelDefaults.generate_paired_listening_item;
   return cfg.modelDefaults.diagnostic_item;
 }
 
@@ -718,10 +766,157 @@ export function buildListeningWorkOrderRequest(
   };
 }
 
+/** `generate_paired_reading_item`'s own route name — mirrors
+ *  READING_ITEM_ROUTE, for the F-220 P1 paired-reading branch. */
+const PAIRED_READING_ITEM_ROUTE = 'generate_paired_reading_item' as const;
+
+/** `generate_paired_listening_item`'s own route name — mirrors
+ *  LISTENING_ITEM_ROUTE, for the F-220 P1 paired-listening branch. */
+const PAIRED_LISTENING_ITEM_ROUTE = 'generate_paired_listening_item' as const;
+
+/**
+ * Build the EXACT `generateDiagnosticPairedReadingItem` request for a topic
+ * seed + question count, and its prompt_hash. Mirrors
+ * `buildReadingWorkOrderRequest` exactly, but for the paired route/schema:
+ * `questionCount` (2 or 3) rides alongside the topic and is PART of the hash
+ * (a different question count is a genuinely different request). The
+ * returned `promptHash` identifies the whole GROUP's request — one call
+ * authors the shared passage + every question in it — NOT a single row's
+ * `prompt_hash` (see `rowPromptHash` below, used at ingest to derive each
+ * row's own unique hash from this group hash).
+ */
+export function buildPairedReadingWorkOrderRequest(
+  level: DiagnosticTargetLevel,
+  seed: SeedCandidate,
+  questionCount: number,
+  model: ClaudeModelId,
+  cfg: PublicClaudeConfig,
+): BuiltRequest | null {
+  const parsed = DiagnosticPairedReadingItemInputSchema.safeParse({
+    targetLevel: level,
+    topic: seed.seedKorean,
+    questionCount,
+  });
+  if (!parsed.success) return null;
+
+  let topic: string;
+  try {
+    topic = sanitizeUserInput(parsed.data.topic, {
+      maxLength: cfg.inputCaps.generate_paired_reading_item,
+    });
+  } catch {
+    return null;
+  }
+
+  const cleaned = { ...parsed.data, topic };
+  const req = buildDiagnosticPairedReadingItemRequest(cleaned, model);
+
+  const key: CacheKey = {
+    route: PAIRED_READING_ITEM_ROUTE,
+    model,
+    systemText: stringifySystem(req.system),
+    userText: serializeMessages(req.messages),
+  };
+
+  return {
+    seedRef: seed.seedRef,
+    seedKorean: topic,
+    seedEnglish: undefined,
+    promptHash: hashCacheKey(key),
+    request: req,
+  };
+}
+
+/**
+ * Build the EXACT `generateDiagnosticPairedListeningItem` request for a
+ * topic seed, and its prompt_hash. Mirrors `buildPairedReadingWorkOrderRequest`
+ * exactly, but for the paired-listening route/schema: `questionCount` is
+ * always 2 (`DiagnosticPairedListeningItemInputSchema.questionCount` is a
+ * literal), still threaded through for structural symmetry with the reading
+ * builder and so the CLI's per-item plumbing stays uniform across all
+ * sections.
+ */
+export function buildPairedListeningWorkOrderRequest(
+  level: DiagnosticTargetLevel,
+  seed: SeedCandidate,
+  questionCount: number,
+  model: ClaudeModelId,
+  cfg: PublicClaudeConfig,
+): BuiltRequest | null {
+  const parsed = DiagnosticPairedListeningItemInputSchema.safeParse({
+    targetLevel: level,
+    topic: seed.seedKorean,
+    questionCount,
+  });
+  if (!parsed.success) return null;
+
+  let topic: string;
+  try {
+    topic = sanitizeUserInput(parsed.data.topic, {
+      maxLength: cfg.inputCaps.generate_paired_listening_item,
+    });
+  } catch {
+    return null;
+  }
+
+  const cleaned = { ...parsed.data, topic };
+  const req = buildDiagnosticPairedListeningItemRequest(cleaned, model);
+
+  const key: CacheKey = {
+    route: PAIRED_LISTENING_ITEM_ROUTE,
+    model,
+    systemText: stringifySystem(req.system),
+    userText: serializeMessages(req.messages),
+  };
+
+  return {
+    seedRef: seed.seedRef,
+    seedKorean: topic,
+    seedEnglish: undefined,
+    promptHash: hashCacheKey(key),
+    request: req,
+  };
+}
+
+/** How many questions to request for a paired-reading GROUP at a given
+ *  1-based position within its (section, level) cell — alternates 2, 3, 2,
+ *  3, … so a batch emits a genuine MIX of both real group sizes
+ *  (TOPIK_STRUCTURE_ANALYSIS.md §1: real R7 blocks are 2 OR 3 items) rather
+ *  than always the same count. Deterministic (no RNG) so `--emit-batch`
+ *  output is reproducible for a given seed order. */
+export function pairedReadingQuestionCountFor(position: number): 2 | 3 {
+  return position % 2 === 0 ? 3 : 2;
+}
+
+/** Deterministically derive a stimulus GROUP id from the group's own request
+ *  hash (the first 32 hex characters of its `hashCacheKey` value — 128 bits,
+ *  plenty unique for a group key). Deterministic-from-the-request (NOT a
+ *  fresh `randomUUID()` per ingest run) so retrying the SAME work-order item
+ *  (e.g. after a partial failure left some of its rows unwritten) reproduces
+ *  the IDENTICAL group id for the rows still missing — see migration 105's
+ *  up header. */
+export function stimulusGroupIdFromHash(groupPromptHash: string): string {
+  return groupPromptHash.slice(0, 32);
+}
+
+/** Derive a PER-ROW-unique `prompt_hash` from a group's request hash + the
+ *  question's 1-based ordinal within the group — satisfies
+ *  `generated_items`'s `UNIQUE(prompt_hash)` (migration 101) while every row
+ *  in a group shares the SAME group-level request (and therefore the same
+ *  `groupPromptHash`). SHA-256 hex, matching
+ *  `ck_generated_items_prompt_hash_shape`'s `^[0-9a-f]{64}$` shape exactly
+ *  like `hashCacheKey`'s own output. Deterministic: re-ingesting the same
+ *  work-order item reproduces the identical per-row hash for each ordinal,
+ *  which is what makes `ON CONFLICT (prompt_hash) DO NOTHING` an idempotent
+ *  per-ROW retry, not just a per-group one. */
+export function rowPromptHash(groupPromptHash: string, ordinal: number): string {
+  return createHash('sha256').update(`${groupPromptHash}:${String(ordinal)}`).digest('hex');
+}
+
 // ---- count -------------------------------------------------------------------
 
 export interface CellCount {
-  readonly section: GeneratedBankSection;
+  readonly section: ItemBankSection;
   readonly level: DiagnosticTargetLevel;
   readonly availability: SeedAvailability;
   readonly achievable: number;
@@ -745,9 +940,10 @@ export async function runCount(
       const achievable = achievableForCell(section, opts.perCell, availability);
       cells.push({ section, level, availability, achievable });
       print(
-        section === 'reading' || section === 'listening'
+        isTopicSeededSection(section)
           ? `item-bank [COUNT]: ${section}/${level} — ${String(availability.total)} topics available ` +
-              `(reusable via repetition, not a scarce pool) — would emit ${String(achievable)}/${String(opts.perCell)}`
+              `(reusable via repetition, not a scarce pool) — would emit ${String(achievable)}/${String(opts.perCell)} ` +
+              `${section === 'paired-reading' || section === 'paired-listening' ? 'stimulus group(s)' : 'item(s)'}`
           : `item-bank [COUNT]: ${section}/${level} — ${String(availability.targeted)} targeted-proficiency ` +
               `seeds, ${String(availability.total)} total eligible — would emit ${String(achievable)}/${String(opts.perCell)}`,
       );
@@ -767,21 +963,37 @@ export async function runCount(
 export interface WorkOrderItem {
   /** Operator-facing label, e.g. "vocab-L3-0007". Not used for hashing. */
   readonly id: string;
-  readonly section: GeneratedBankSection;
+  readonly section: ItemBankSection;
   readonly level: DiagnosticTargetLevel;
   /** Provenance: vocab_entries id (vocab) / canonical_grammar id (grammar) /
-   *  synthetic `topic-<level>-<n>` ref (reading/listening — readingTopics.ts). */
+   *  synthetic `topic-<level>-<n>` ref (reading/listening/paired-reading/
+   *  paired-listening — readingTopics.ts). For a paired section this ref
+   *  identifies the GROUP (one topic -> one call -> one stimulus group), not
+   *  an individual question. */
   readonly seedRef: string;
   /** The seed WORD/PATTERN for vocab/grammar; the bare TOPIC STRING for
-   *  reading (F-220 slice 2) / listening (F-220 slice 3) — same field, dual
-   *  meaning by section, so the work-order/ingest plumbing doesn't need a
-   *  parallel path. */
+   *  reading/listening/paired-reading/paired-listening (F-220 slices 2-3, P1)
+   *  — same field, dual meaning by section, so the work-order/ingest
+   *  plumbing doesn't need a parallel path. */
   readonly seedKorean: string;
   readonly seedEnglish?: string;
+  /** paired-reading/paired-listening ONLY: how many questions this group's
+   *  ONE call was asked to author about its ONE shared passage/dialogue (2
+   *  or 3 for paired-reading; always 2 for paired-listening). Required at
+   *  ingest to rebuild the EXACT emit-time request (question count is part
+   *  of the prompt payload, and therefore part of the request hash) — see
+   *  `buildPairedReadingWorkOrderRequest`/`buildPairedListeningWorkOrderRequest`.
+   *  Absent/ignored for every non-paired section. */
+  readonly questionCount?: number;
   readonly promptHash: string;
   /** The exact request a subscription Claude session should send. */
   readonly request: MessageRequest;
-  readonly schema: 'DiagnosticItemResult' | 'DiagnosticReadingItemResult' | 'DiagnosticListeningItemResult';
+  readonly schema:
+    | 'DiagnosticItemResult'
+    | 'DiagnosticReadingItemResult'
+    | 'DiagnosticListeningItemResult'
+    | 'DiagnosticPairedReadingItemResult'
+    | 'DiagnosticPairedListeningItemResult';
 }
 
 export interface WorkOrderFile {
@@ -795,8 +1007,16 @@ export interface WorkOrderFile {
     /** `generate_listening_item`'s model — governs listening items (F-220
      *  slice 3). Always recorded (mirrors `readingModel`'s rationale). */
     readonly listeningModel: ClaudeModelId;
+    /** `generate_paired_reading_item`'s model — governs paired-reading
+     *  GROUPS (F-220 P1). Always recorded (mirrors `readingModel`'s
+     *  rationale). */
+    readonly pairedReadingModel: ClaudeModelId;
+    /** `generate_paired_listening_item`'s model — governs paired-listening
+     *  GROUPS (F-220 P1). Always recorded (mirrors `readingModel`'s
+     *  rationale). */
+    readonly pairedListeningModel: ClaudeModelId;
     readonly perCell: number;
-    readonly sections: readonly GeneratedBankSection[];
+    readonly sections: readonly ItemBankSection[];
     readonly levels: readonly DiagnosticTargetLevel[];
     readonly emitted: number;
   };
@@ -834,6 +1054,8 @@ export async function runEmitBatch(
   const model = cfg.modelDefaults.diagnostic_item;
   const readingModel = cfg.modelDefaults.generate_reading_item;
   const listeningModel = cfg.modelDefaults.generate_listening_item;
+  const pairedReadingModel = cfg.modelDefaults.generate_paired_reading_item;
+  const pairedListeningModel = cfg.modelDefaults.generate_paired_listening_item;
 
   const items: WorkOrderItem[] = [];
   let skippedSeedInvalid = 0;
@@ -842,13 +1064,25 @@ export async function runEmitBatch(
     for (const level of opts.levels) {
       const seeds = await pickSeeds(pool, section, level, opts.perCell);
       let cellIndex = 0;
+      let seedPosition = 0;
       for (const seed of seeds) {
+        seedPosition += 1;
+        const questionCount =
+          section === 'paired-reading'
+            ? pairedReadingQuestionCountFor(seedPosition)
+            : section === 'paired-listening'
+              ? 2
+              : undefined;
         const built =
           section === 'reading'
             ? buildReadingWorkOrderRequest(level, seed, sectionModel, cfg)
             : section === 'listening'
               ? buildListeningWorkOrderRequest(level, seed, sectionModel, cfg)
-              : buildWorkOrderRequest(section, level, seed, sectionModel, cfg);
+              : section === 'paired-reading'
+                ? buildPairedReadingWorkOrderRequest(level, seed, questionCount!, sectionModel, cfg)
+                : section === 'paired-listening'
+                  ? buildPairedListeningWorkOrderRequest(level, seed, questionCount!, sectionModel, cfg)
+                  : buildWorkOrderRequest(section, level, seed, sectionModel, cfg);
         if (built === null) {
           skippedSeedInvalid += 1;
           continue;
@@ -861,6 +1095,7 @@ export async function runEmitBatch(
           seedRef: built.seedRef,
           seedKorean: built.seedKorean,
           ...(built.seedEnglish !== undefined ? { seedEnglish: built.seedEnglish } : {}),
+          ...(questionCount !== undefined ? { questionCount } : {}),
           promptHash: built.promptHash,
           request: built.request,
           schema:
@@ -868,7 +1103,11 @@ export async function runEmitBatch(
               ? 'DiagnosticReadingItemResult'
               : section === 'listening'
                 ? 'DiagnosticListeningItemResult'
-                : 'DiagnosticItemResult',
+                : section === 'paired-reading'
+                  ? 'DiagnosticPairedReadingItemResult'
+                  : section === 'paired-listening'
+                    ? 'DiagnosticPairedListeningItemResult'
+                    : 'DiagnosticItemResult',
         });
       }
       print(
@@ -883,6 +1122,8 @@ export async function runEmitBatch(
       model,
       readingModel,
       listeningModel,
+      pairedReadingModel,
+      pairedListeningModel,
       perCell: opts.perCell,
       sections: opts.sections,
       levels: opts.levels,
@@ -916,12 +1157,18 @@ export async function runEmitBatch(
 
 const WorkOrderItemSchema = z.object({
   id: z.string().min(1),
-  // F-220 slice 2 added 'reading'; slice 3 adds 'listening'.
-  section: z.enum(['vocab', 'grammar', 'reading', 'listening']),
+  // F-220 slice 2 added 'reading'; slice 3 adds 'listening'; P1 adds
+  // 'paired-reading'/'paired-listening'.
+  section: z.enum(['vocab', 'grammar', 'reading', 'listening', 'paired-reading', 'paired-listening']),
   level: z.enum(['L1', 'L2', 'L3', 'L4', 'L5+']),
   seedRef: z.string().min(1),
   seedKorean: z.string().min(1),
   seedEnglish: z.string().optional(),
+  // F-220 P1: required (at the ingest branch, not at the schema level, to
+  // keep the schema simple) for section='paired-reading'/'paired-listening'
+  // — the question count this group's ONE call was asked to author, needed
+  // to rebuild the exact emit-time request. Ignored for every other section.
+  questionCount: z.number().int().min(2).max(3).optional(),
   promptHash: z.string().min(1),
   // `z.unknown()` alone makes the key OPTIONAL in zod 3 — an UNFILLED
   // work-order (emit output fed straight back, no `response` keys) would
@@ -939,6 +1186,8 @@ const WorkOrderFileSchema = z.object({
       model: z.string().min(1).optional(),
       readingModel: z.string().min(1).optional(),
       listeningModel: z.string().min(1).optional(),
+      pairedReadingModel: z.string().min(1).optional(),
+      pairedListeningModel: z.string().min(1).optional(),
     })
     .passthrough()
     .optional(),
@@ -1014,9 +1263,13 @@ export async function runIngest(
   const model = cfg.modelDefaults.diagnostic_item;
   const readingModel = cfg.modelDefaults.generate_reading_item;
   const listeningModel = cfg.modelDefaults.generate_listening_item;
+  const pairedReadingModel = cfg.modelDefaults.generate_paired_reading_item;
+  const pairedListeningModel = cfg.modelDefaults.generate_paired_listening_item;
   const emitModel = parsedFile.data.meta?.model;
   const emitReadingModel = parsedFile.data.meta?.readingModel;
   const emitListeningModel = parsedFile.data.meta?.listeningModel;
+  const emitPairedReadingModel = parsedFile.data.meta?.pairedReadingModel;
+  const emitPairedListeningModel = parsedFile.data.meta?.pairedListeningModel;
   if (emitModel !== undefined && emitModel !== model) {
     print(
       `item-bank [INGEST]: WARN — work-order meta.model "${sanitizeForLog(emitModel)}" != ` +
@@ -1036,6 +1289,20 @@ export async function runIngest(
       `item-bank [INGEST]: WARN — work-order meta.listeningModel "${sanitizeForLog(emitListeningModel)}" ` +
         `!= configured generate_listening_item model "${listeningModel}"; every listening item will ` +
         `hash-drift unless the model config matches the emit-time one`,
+    );
+  }
+  if (emitPairedReadingModel !== undefined && emitPairedReadingModel !== pairedReadingModel) {
+    print(
+      `item-bank [INGEST]: WARN — work-order meta.pairedReadingModel "${sanitizeForLog(emitPairedReadingModel)}" ` +
+        `!= configured generate_paired_reading_item model "${pairedReadingModel}"; every paired-reading ` +
+        `group will hash-drift unless the model config matches the emit-time one`,
+    );
+  }
+  if (emitPairedListeningModel !== undefined && emitPairedListeningModel !== pairedListeningModel) {
+    print(
+      `item-bank [INGEST]: WARN — work-order meta.pairedListeningModel "${sanitizeForLog(emitPairedListeningModel)}" ` +
+        `!= configured generate_paired_listening_item model "${pairedListeningModel}"; every ` +
+        `paired-listening group will hash-drift unless the model config matches the emit-time one`,
     );
   }
 
@@ -1061,13 +1328,45 @@ export async function runIngest(
       ...(item.seedEnglish !== undefined ? { seedEnglish: item.seedEnglish } : {}),
     };
     const itemModel =
-      item.section === 'reading' ? readingModel : item.section === 'listening' ? listeningModel : model;
+      item.section === 'reading'
+        ? readingModel
+        : item.section === 'listening'
+          ? listeningModel
+          : item.section === 'paired-reading'
+            ? pairedReadingModel
+            : item.section === 'paired-listening'
+              ? pairedListeningModel
+              : model;
+    // Both paired sections REQUIRE questionCount to rebuild the exact
+    // emit-time request (it rides the prompt payload — see
+    // buildPairedReadingWorkOrderRequest/buildPairedListeningWorkOrderRequest).
+    // A work-order item missing it (hand-edited, or from a stale emitter) is
+    // a bad seed, not a hash-drift or a response-shape problem — reject the
+    // SAME way an unsanitizable seed is rejected, before any hash comparison.
+    if (
+      (item.section === 'paired-reading' || item.section === 'paired-listening') &&
+      item.questionCount === undefined
+    ) {
+      skippedSeedInvalid += 1;
+      if (seedInvalidLogs < MAX_INVALID_LOGS) {
+        seedInvalidLogs += 1;
+        print(
+          `item-bank [INGEST]: item ${itemNo} (id="${sanitizeForLog(item.id)}") is missing ` +
+            `questionCount (required for ${item.section}) — skipped`,
+        );
+      }
+      continue;
+    }
     const built =
       item.section === 'reading'
         ? buildReadingWorkOrderRequest(item.level, seed, itemModel, cfg)
         : item.section === 'listening'
           ? buildListeningWorkOrderRequest(item.level, seed, itemModel, cfg)
-          : buildWorkOrderRequest(item.section, item.level, seed, itemModel, cfg);
+          : item.section === 'paired-reading'
+            ? buildPairedReadingWorkOrderRequest(item.level, seed, item.questionCount!, itemModel, cfg)
+            : item.section === 'paired-listening'
+              ? buildPairedListeningWorkOrderRequest(item.level, seed, item.questionCount!, itemModel, cfg)
+              : buildWorkOrderRequest(item.section, item.level, seed, itemModel, cfg);
     if (built === null) {
       skippedSeedInvalid += 1;
       if (seedInvalidLogs < MAX_INVALID_LOGS) {
@@ -1086,6 +1385,173 @@ export async function runIngest(
         print(
           `item-bank [INGEST]: item ${itemNo} (id="${sanitizeForLog(item.id)}") hash drift — ` +
             `emitted ${sanitizeForLog(item.promptHash, 16)} vs recomputed ${built.promptHash.slice(0, 16)}… — skipped`,
+        );
+      }
+      continue;
+    }
+
+    // F-220 P1 — paired-reading: ONE call authored a shared passage + an
+    // ARRAY of independent questions (DiagnosticPairedReadingItemResultSchema).
+    // Each question becomes its OWN `generated_items` ROW: same `section`
+    // ('reading'), same `level`, same `passage` (denormalized onto every
+    // row, exactly like a standalone reading row), same `stimulus_group_id`
+    // (migration 105, deterministically derived from this group's OWN
+    // `built.promptHash` — see `stimulusGroupIdFromHash`); per row:
+    // `stimulus_group_ordinal` = 1..N, `kind` = 'paired-passage-mc', and a
+    // PER-ROW-unique `prompt_hash` (`rowPromptHash`) so the UNIQUE
+    // constraint is satisfied and a retried ingest of this SAME work-order
+    // item completes any rows that didn't land last time (idempotent, one
+    // ON CONFLICT DO NOTHING INSERT per row — no cross-row transaction, same
+    // posture as every other ingest branch in this file).
+    if (item.section === 'paired-reading') {
+      const parsedPaired = DiagnosticPairedReadingItemResultSchema.safeParse(item.response);
+      if (!parsedPaired.success) {
+        skippedInvalid += 1;
+        if (invalidLogs < MAX_INVALID_LOGS) {
+          invalidLogs += 1;
+          print(
+            `item-bank [INGEST]: item ${itemNo} (id="${sanitizeForLog(item.id)}") response invalid — ` +
+              parsedPaired.error.issues
+                .slice(0, 3)
+                .map((iss) => `${iss.path.join('.')}: ${iss.message}`)
+                .join('; '),
+          );
+        }
+        continue;
+      }
+      const result: DiagnosticPairedReadingItemResult = parsedPaired.data;
+      const groupId = stimulusGroupIdFromHash(built.promptHash);
+      let groupWritten = 0;
+      let groupSkippedInvalid = 0;
+      for (const [qi, q] of result.questions.entries()) {
+        const ordinal = qi + 1;
+        // Belt-and-suspenders range check (schema already enforces 0..3 /
+        // length 4) — mirrors every other branch's identical defensive check.
+        if (!Number.isInteger(q.answerIndex) || q.answerIndex < 0 || q.answerIndex >= q.choices.length) {
+          groupSkippedInvalid += 1;
+          continue;
+        }
+        // SAME guard the live path uses — permute so the correct choice
+        // isn't parked at the same index for every question in the group.
+        const { choices: shuffled, correctAnswer } = shuffleGeneratedChoices(q.choices, q.answerIndex);
+        const rowAnswerIndex = CHOICE_IDS.indexOf(correctAnswer);
+        const { rows } = await pool.query<{ id: string }>(
+          `INSERT INTO generated_items
+             (section, level, kind, stem, passage, choices, answer_index, explain,
+              stimulus_group_id, stimulus_group_ordinal, source_ref, status,
+              created_by, model_id, prompt_hash)
+           VALUES ('reading', $1, 'paired-passage-mc', $2, $3, $4::jsonb, $5, $6,
+                   $7, $8, $9, 'draft', 'claude-batch', $10, $11)
+           ON CONFLICT (prompt_hash) DO NOTHING
+           RETURNING id`,
+          [
+            item.level,
+            q.prompt,
+            result.passage,
+            JSON.stringify(shuffled.map((c) => ({ kr: c.kr, en: c.en }))),
+            rowAnswerIndex,
+            q.explain,
+            groupId,
+            ordinal,
+            item.seedRef,
+            emitPairedReadingModel ?? pairedReadingModel,
+            rowPromptHash(built.promptHash, ordinal),
+          ],
+        );
+        if (rows.length > 0) {
+          groupWritten += 1;
+        } else {
+          skippedAlreadyCached += 1;
+        }
+      }
+      written += groupWritten;
+      skippedInvalid += groupSkippedInvalid;
+      if (groupSkippedInvalid > 0 && invalidLogs < MAX_INVALID_LOGS) {
+        invalidLogs += 1;
+        print(
+          `item-bank [INGEST]: item ${itemNo} (id="${sanitizeForLog(item.id)}") group ${groupId} had ` +
+            `${String(groupSkippedInvalid)} out-of-range question(s) skipped`,
+        );
+      }
+      continue;
+    }
+
+    // F-220 P1 — paired-listening: mirrors the paired-reading branch above,
+    // but ONE call authored a shared DIALOGUE (`turns`) + exactly 2
+    // independent questions (DiagnosticPairedListeningItemResultSchema).
+    // Each question becomes its OWN row: same `turns` JSONB on every row
+    // (NO `passage` — the dialogue text must never reach the learner, same
+    // posture as the singular listening branch below), same
+    // `stimulus_group_id`; `audio_source_id` is left NULL on every row (this
+    // CLI is the $0 SCRIPT step — the separate, METERED
+    // `synthesize-listening-audio` CLI synthesizes the group's ONE shared
+    // clip later and stamps it onto every row in the group at once).
+    if (item.section === 'paired-listening') {
+      const parsedPaired = DiagnosticPairedListeningItemResultSchema.safeParse(item.response);
+      if (!parsedPaired.success) {
+        skippedInvalid += 1;
+        if (invalidLogs < MAX_INVALID_LOGS) {
+          invalidLogs += 1;
+          print(
+            `item-bank [INGEST]: item ${itemNo} (id="${sanitizeForLog(item.id)}") response invalid — ` +
+              parsedPaired.error.issues
+                .slice(0, 3)
+                .map((iss) => `${iss.path.join('.')}: ${iss.message}`)
+                .join('; '),
+          );
+        }
+        continue;
+      }
+      const result: DiagnosticPairedListeningItemResult = parsedPaired.data;
+      const groupId = stimulusGroupIdFromHash(built.promptHash);
+      let groupWritten = 0;
+      let groupSkippedInvalid = 0;
+      for (const [qi, q] of result.questions.entries()) {
+        const ordinal = qi + 1;
+        if (!Number.isInteger(q.answerIndex) || q.answerIndex < 0 || q.answerIndex >= q.choices.length) {
+          groupSkippedInvalid += 1;
+          continue;
+        }
+        // Only the CHOICES are shuffled — `turns` is the dialogue in its
+        // fixed speaking order and must never be reordered.
+        const { choices: shuffled, correctAnswer } = shuffleGeneratedChoices(q.choices, q.answerIndex);
+        const rowAnswerIndex = CHOICE_IDS.indexOf(correctAnswer);
+        const { rows } = await pool.query<{ id: string }>(
+          `INSERT INTO generated_items
+             (section, level, kind, stem, passage, choices, answer_index, explain,
+              turns, audio_source_id, stimulus_group_id, stimulus_group_ordinal,
+              source_ref, status, created_by, model_id, prompt_hash)
+           VALUES ('listening', $1, 'paired-audio-mc', $2, NULL, $3::jsonb, $4, $5,
+                   $6::jsonb, NULL, $7, $8, $9, 'draft', 'claude-batch', $10, $11)
+           ON CONFLICT (prompt_hash) DO NOTHING
+           RETURNING id`,
+          [
+            item.level,
+            q.prompt,
+            JSON.stringify(shuffled.map((c) => ({ kr: c.kr, en: c.en }))),
+            rowAnswerIndex,
+            q.explain,
+            JSON.stringify(result.turns),
+            groupId,
+            ordinal,
+            item.seedRef,
+            emitPairedListeningModel ?? pairedListeningModel,
+            rowPromptHash(built.promptHash, ordinal),
+          ],
+        );
+        if (rows.length > 0) {
+          groupWritten += 1;
+        } else {
+          skippedAlreadyCached += 1;
+        }
+      }
+      written += groupWritten;
+      skippedInvalid += groupSkippedInvalid;
+      if (groupSkippedInvalid > 0 && invalidLogs < MAX_INVALID_LOGS) {
+        invalidLogs += 1;
+        print(
+          `item-bank [INGEST]: item ${itemNo} (id="${sanitizeForLog(item.id)}") group ${groupId} had ` +
+            `${String(groupSkippedInvalid)} out-of-range question(s) skipped`,
         );
       }
       continue;

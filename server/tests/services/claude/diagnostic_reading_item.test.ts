@@ -54,6 +54,8 @@ function setupProxy(responses: Array<StubResponseSpec | { error: unknown }>) {
     diagnostic_item: 20,
     generate_reading_item: 20,
     generate_listening_item: 20,
+    generate_paired_reading_item: 20,
+    generate_paired_listening_item: 20,
     image_ocr: 10,
     generate_conversation: 10,
     generate_grammar_drill: 20,

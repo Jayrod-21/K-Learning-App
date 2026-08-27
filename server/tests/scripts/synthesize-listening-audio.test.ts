@@ -115,6 +115,42 @@ async function seedListeningDraft(
   return Number(rows[0]!.id);
 }
 
+/** F-220 P1 — insert a paired-listening GROUP: `n` rows (default 2) sharing
+ *  ONE `stimulus_group_id`, the SAME `turns`, `kind='paired-audio-mc'`, no
+ *  audio yet — the exact shape the paired-reading/paired-listening ingest
+ *  branch of generate-item-bank.ts leaves behind. Returns the ids in ordinal
+ *  order (`ids[0]` is the ordinal=1 "primary"/cost-bearing row). */
+async function seedPairedListeningGroup(
+  groupId: string,
+  turns: unknown = TURNS,
+  opts: { n?: number; status?: 'draft' | 'approved'; level?: string } = {},
+): Promise<number[]> {
+  const n = opts.n ?? 2;
+  const ids: number[] = [];
+  for (let ordinal = 1; ordinal <= n; ordinal += 1) {
+    const { rows } = await pg.pool.query<{ id: string }>(
+      `INSERT INTO generated_items
+         (section, level, kind, stem, choices, answer_index, explain, status,
+          created_by, model_id, prompt_hash, turns, stimulus_group_id, stimulus_group_ordinal)
+       VALUES ('listening', $1, 'paired-audio-mc', $2, $3::jsonb, 0,
+               'mock explain', $4, 'test-fixture', 'claude-sonnet-4-6', $5, $6::jsonb, $7, $8)
+       RETURNING id`,
+      [
+        opts.level ?? 'L3',
+        `mock paired listening stem ${String(ordinal)}`,
+        JSON.stringify(GOOD_CHOICES),
+        opts.status ?? 'approved',
+        nextHash(),
+        JSON.stringify(turns),
+        groupId,
+        ordinal,
+      ],
+    );
+    ids.push(Number(rows[0]!.id));
+  }
+  return ids;
+}
+
 /** Seed the SAME account share-corpus.ts's DEFAULT_OWNER_EMAIL names — the
  *  synth CLI resolves this exact user as its "system owner". Direct SQL
  *  (mirrors generatedBank.test.ts's fixture-user pattern) since registerUser
@@ -559,5 +595,202 @@ describe('runSynth — failure modes', () => {
 
     const sources = await pg.pool.query(`SELECT count(*)::int AS n FROM audio_sources`);
     expect(sources.rows[0]!.n).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F-220 P1 — paired-audio GROUPS: one shared clip synthesized ONCE per
+// group, stamped onto every row in the group, billed ONCE (never
+// double-counted). The pre-existing single-item path above is unaffected.
+// ---------------------------------------------------------------------------
+
+describe('runCount — paired-audio groups counted ONCE, not once per row', () => {
+  it('a 3-row paired group contributes its char/cost estimate exactly ONCE (not x3), and counts as ONE backlog entry', async () => {
+    await seedPairedListeningGroup('grp-count-1', TURNS, { n: 3 });
+    const summary = await runCount(silent);
+    const cfg = loadConfig();
+    expect(summary.backlogCount).toBe(1); // ONE representative row, not 3
+    expect(summary.totalCharCount).toBe(TOTAL_CHARS); // NOT TOTAL_CHARS * 3
+    expect(summary.estimatedCostUsd).toBeCloseTo((TOTAL_CHARS / 1000) * cfg.ELEVENLABS_USD_PER_1K_CHARS, 6);
+  });
+
+  it('a mix of one standalone item + one 2-row paired group counts as 2 backlog entries, chars summed once per group', async () => {
+    await seedListeningDraft(TURNS, { status: 'approved' });
+    await seedPairedListeningGroup('grp-count-mix', TURNS, { n: 2 });
+    const summary = await runCount(silent);
+    expect(summary.backlogCount).toBe(2);
+    expect(summary.totalCharCount).toBe(TOTAL_CHARS * 2); // 1 standalone + 1 group-once
+  });
+
+  it('a group row that already has audio (audio_source_id set on the ordinal=1 row) is NOT in the backlog', async () => {
+    const seededOwnerId = await seedSystemOwner();
+    const src = await pg.pool.query<{ id: string }>(
+      `INSERT INTO audio_sources (user_id, slug, title, kind, status, is_shared)
+       VALUES ($1, 'x', 'x', 'generated_listening', 'ready', true) RETURNING id`,
+      [seededOwnerId],
+    );
+    const sourceId = Number(src.rows[0]!.id);
+    const ids = await seedPairedListeningGroup('grp-count-done', TURNS, { n: 2 });
+    await pg.pool.query(
+      `UPDATE generated_items SET audio_source_id = $2, audio_start_ms = 0, audio_end_ms = 100
+        WHERE id = $1`,
+      [ids[0], sourceId],
+    );
+    const summary = await runCount(silent);
+    expect(summary.backlogCount).toBe(0);
+  });
+});
+
+describe('runSynth — paired-audio groups (happy path)', () => {
+  it('synthesizes the shared dialogue ONCE, stamps the SAME audio_source_id/offsets on EVERY row in the group, and charges audio_cost_estimate_usd ONLY on the ordinal=1 row', async () => {
+    await seedSystemOwner();
+    await seedPairedListeningGroup('grp-synth-1', TURNS, { n: 2, level: 'L3' });
+
+    const synthCalls: Array<{ text: string; voiceId: string | undefined }> = [];
+    setTtsProvider(recordingProvider(synthCalls));
+    const { helper, concatCalls } = mockConcat();
+    setMp3Concat(helper);
+
+    const summary = await runSynth({ mode: 'synth', limit: undefined, maxCostUsd: undefined }, silent);
+    expect(summary.attempted).toBe(1); // ONE group = ONE synth attempt
+    expect(summary.synthesized).toBe(1);
+    expect(summary.failed).toBe(0);
+
+    // Exactly ONE synth pass over the shared turns (not once per row).
+    expect(synthCalls.map((c) => c.text)).toEqual(TURNS.map((tn) => tn.text));
+    expect(concatCalls).toHaveLength(1);
+
+    // Exactly ONE audio_sources + audio_tracks pair for the whole group.
+    const src = await pg.pool.query<{ id: string; kind: string; is_shared: boolean }>(
+      `SELECT id, kind, is_shared FROM audio_sources`,
+    );
+    expect(src.rows).toHaveLength(1);
+    expect(src.rows[0]!.kind).toBe('generated_listening');
+    expect(src.rows[0]!.is_shared).toBe(true);
+    const tracks = await pg.pool.query(`SELECT count(*)::int AS n FROM audio_tracks`);
+    expect(tracks.rows[0]!.n).toBe(1);
+
+    const rows = await pg.pool.query<{
+      id: string;
+      audio_source_id: string | null;
+      audio_start_ms: number | null;
+      audio_end_ms: number | null;
+      audio_cost_estimate_usd: string | null;
+      audio_synthesized_at: string | null;
+      stimulus_group_ordinal: number;
+    }>(
+      `SELECT id, audio_source_id, audio_start_ms, audio_end_ms, audio_cost_estimate_usd,
+              audio_synthesized_at, stimulus_group_ordinal
+         FROM generated_items WHERE stimulus_group_id = 'grp-synth-1'
+        ORDER BY stimulus_group_ordinal`,
+    );
+    expect(rows.rows).toHaveLength(2);
+
+    // EVERY row in the group got the SAME audio_source_id/offsets/timestamp.
+    const sourceIds = new Set(rows.rows.map((r) => r.audio_source_id));
+    expect(sourceIds.size).toBe(1);
+    expect([...sourceIds][0]).toBe(src.rows[0]!.id);
+    for (const row of rows.rows) {
+      expect(row.audio_start_ms).toBe(0);
+      expect(row.audio_end_ms).toBe(TOTAL_DUR_MS);
+      expect(row.audio_synthesized_at).not.toBeNull();
+    }
+
+    // The COST is charged EXACTLY ONCE — only the ordinal=1 row.
+    const ordinal1 = rows.rows.find((r) => r.stimulus_group_ordinal === 1)!;
+    const ordinal2 = rows.rows.find((r) => r.stimulus_group_ordinal === 2)!;
+    expect(ordinal1.audio_cost_estimate_usd).not.toBeNull();
+    expect(ordinal2.audio_cost_estimate_usd).toBeNull();
+    const cfg = loadConfig();
+    expect(Number(ordinal1.audio_cost_estimate_usd)).toBeCloseTo(
+      (TOTAL_CHARS / 1000) * cfg.ELEVENLABS_USD_PER_1K_CHARS,
+      6,
+    );
+
+    // NO DOUBLE-COUNT: spendCeiling.ts's SUM(audio_cost_estimate_usd) sees
+    // the group's spend exactly once, not once per row.
+    const sum = await pg.pool.query<{ total: string }>(
+      `SELECT COALESCE(SUM(audio_cost_estimate_usd), 0)::text AS total FROM generated_items`,
+    );
+    expect(Number(sum.rows[0]!.total)).toBeCloseTo(Number(ordinal1.audio_cost_estimate_usd), 6);
+  });
+
+  it('is idempotent: a re-run after a successful group synth finds an EMPTY backlog for that group', async () => {
+    await seedSystemOwner();
+    await seedPairedListeningGroup('grp-synth-idem', TURNS, { n: 2 });
+    setTtsProvider(recordingProvider([]));
+    setMp3Concat(mockConcat().helper);
+
+    const first = await runSynth({ mode: 'synth', limit: undefined, maxCostUsd: undefined }, silent);
+    expect(first.synthesized).toBe(1);
+
+    const second = await runSynth({ mode: 'synth', limit: undefined, maxCostUsd: undefined }, silent);
+    expect(second.attempted).toBe(0);
+    expect(second.synthesized).toBe(0);
+
+    const sources = await pg.pool.query(`SELECT count(*)::int AS n FROM audio_sources`);
+    expect(sources.rows[0]!.n).toBe(1); // still just the one from the first run
+  });
+
+  it('a mix of one standalone item + one paired group in the SAME run: both synthesize, each gets its OWN audio_sources row, and the standalone item is completely unaffected (regression)', async () => {
+    await seedSystemOwner();
+    const standaloneId = await seedListeningDraft(TURNS, { status: 'approved' });
+    await seedPairedListeningGroup('grp-synth-mixed', TURNS, { n: 2 });
+    setTtsProvider(recordingProvider([]));
+    setMp3Concat(mockConcat().helper);
+
+    const summary = await runSynth({ mode: 'synth', limit: undefined, maxCostUsd: undefined }, silent);
+    expect(summary.attempted).toBe(2); // 1 standalone + 1 group
+    expect(summary.synthesized).toBe(2);
+
+    const sources = await pg.pool.query(`SELECT count(*)::int AS n FROM audio_sources`);
+    expect(sources.rows[0]!.n).toBe(2); // one per unit, not shared across them
+
+    const standalone = await pg.pool.query<{
+      audio_source_id: string | null;
+      audio_cost_estimate_usd: string | null;
+    }>(`SELECT audio_source_id, audio_cost_estimate_usd FROM generated_items WHERE id = $1`, [standaloneId]);
+    expect(standalone.rows[0]!.audio_source_id).not.toBeNull();
+    expect(standalone.rows[0]!.audio_cost_estimate_usd).not.toBeNull(); // standalone path unchanged: cost IS set on it
+
+    const groupRows = await pg.pool.query<{ audio_source_id: string | null }>(
+      `SELECT audio_source_id FROM generated_items WHERE stimulus_group_id = 'grp-synth-mixed'`,
+    );
+    expect(groupRows.rows.every((r) => r.audio_source_id !== null)).toBe(true);
+    const standaloneSourceId = standalone.rows[0]!.audio_source_id;
+    expect(groupRows.rows.every((r) => r.audio_source_id !== standaloneSourceId)).toBe(true);
+  });
+
+  it('--limit counts a paired GROUP as one unit toward the cap', async () => {
+    await seedSystemOwner();
+    await seedPairedListeningGroup('grp-synth-limit-a', TURNS, { n: 2 });
+    await seedPairedListeningGroup('grp-synth-limit-b', TURNS, { n: 2 });
+    setTtsProvider(recordingProvider([]));
+    setMp3Concat(mockConcat().helper);
+
+    const summary = await runSynth({ mode: 'synth', limit: 1, maxCostUsd: undefined }, silent);
+    expect(summary.attempted).toBe(1);
+    expect(summary.synthesized).toBe(1);
+
+    const remaining = await runCount(silent);
+    expect(remaining.backlogCount).toBe(1); // the second group untouched
+  });
+
+  it('a per-turn ElevenLabs failure fails the WHOLE group loudly; no row in the group gets partial audio', async () => {
+    await seedSystemOwner();
+    await seedPairedListeningGroup('grp-synth-fail', TURNS, { n: 2 });
+    setTtsProvider(recordingProvider([], 2)); // the 2nd of 3 turns fails
+    setMp3Concat(mockConcat().helper);
+
+    const summary = await runSynth({ mode: 'synth', limit: undefined, maxCostUsd: undefined }, silent);
+    expect(summary.failed).toBe(1);
+    expect(summary.synthesized).toBe(0);
+
+    const sources = await pg.pool.query(`SELECT count(*)::int AS n FROM audio_sources`);
+    expect(sources.rows[0]!.n).toBe(0);
+    const groupRows = await pg.pool.query<{ audio_source_id: string | null }>(
+      `SELECT audio_source_id FROM generated_items WHERE stimulus_group_id = 'grp-synth-fail'`,
+    );
+    expect(groupRows.rows.every((r) => r.audio_source_id === null)).toBe(true);
   });
 });
