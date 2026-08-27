@@ -1,0 +1,43 @@
+-- migrate: non-destructive
+-- 106 (up): add 'generate_paired_reading_item' and
+-- 'generate_paired_listening_item' to claude_route.
+--
+-- F-220 P1 (paired-stimulus reading/listening generators) adds TWO new proxy
+-- routes to the code's RouteName union (server/src/services/claude/config.ts):
+--   * generate_paired_reading_item — generateDiagnosticPairedReadingItem;
+--     authors ONE original Korean passage plus 2-3 INDEPENDENT comprehension
+--     questions about it, in a single call.
+--   * generate_paired_listening_item — generateDiagnosticPairedListeningItem;
+--     authors ONE original Korean dialogue plus 2 INDEPENDENT comprehension
+--     questions about it, in a single call.
+-- Both are called only by the offline generate-item-bank CLI's --emit-batch
+-- mode (never invoked live — the live diagnostic never serves paired groups
+-- in P1; that is a later slice), but every call — batch or live — still
+-- writes a claude_usage row (and, for a future cacheTtl>0 route, a
+-- claude_cache row) typed against this enum.
+-- Without these enum values the calls would fail their claude_usage write
+-- with `invalid input value for enum claude_route` — the exact defect
+-- 031/032 fixed for the grammar-drill/image-OCR/diagnostic routes, and that
+-- 053/055/057/102/104 repeat the same "intentional friction" pattern for
+-- since. This migration is that friction: a new Claude-touching route
+-- requires a reviewed migration, authored HERE alongside the code instead of
+-- after the fact. server/tests/db/claude_route_enum.test.ts is the drift
+-- guard that would otherwise catch this silently missing.
+--
+-- BOTH VALUES IN ONE MIGRATION (mirrors 104's own precedent of putting a
+-- single new route in its own migration, extended here to two routes added
+-- together): neither value is used in the SAME transaction that adds it —
+-- ADD VALUE is safe inside migrate.py's per-migration transaction on PG12+,
+-- the value just cannot be USED until COMMIT (ADR-013) — and grouping the
+-- two sibling P1 routes in one migration file avoids a needless third
+-- migration for what is, functionally, one feature landing at once.
+--
+-- SEPARATE FROM 105 (per the codebase precedent 102/104 themselves
+-- document): 105 is generated_items DDL (a different table, different
+-- purpose — the stimulus-group schema); this is the claude_route enum,
+-- which must grow with every new RouteName exactly like every prior
+-- Claude-proxy route addition, in its OWN migration
+-- (031/032/053/055/057/102/104's pattern).
+
+ALTER TYPE claude_route ADD VALUE IF NOT EXISTS 'generate_paired_reading_item';
+ALTER TYPE claude_route ADD VALUE IF NOT EXISTS 'generate_paired_listening_item';

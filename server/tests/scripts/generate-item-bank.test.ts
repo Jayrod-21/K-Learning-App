@@ -40,6 +40,8 @@ import type {
   DiagnosticItemResult,
   DiagnosticReadingItemResult,
   DiagnosticListeningItemResult,
+  DiagnosticPairedReadingItemResult,
+  DiagnosticPairedListeningItemResult,
 } from '../../src/services/claude/models.js';
 import {
   DEFAULT_PER_CELL,
@@ -47,17 +49,22 @@ import {
   LEVELS,
   SECTIONS,
   buildListeningWorkOrderRequest,
+  buildPairedListeningWorkOrderRequest,
+  buildPairedReadingWorkOrderRequest,
   buildReadingWorkOrderRequest,
   buildWorkOrderRequest,
   countGrammarPatternSeeds,
   countVocabSeeds,
   exitCodeFor,
+  pairedReadingQuestionCountFor,
   parseCliArgs,
   pickGrammarPatternSeeds,
   pickVocabSeeds,
+  rowPromptHash,
   runCount,
   runEmitBatch,
   runIngest,
+  stimulusGroupIdFromHash,
   type ItemBankOptions,
   type WorkOrderFile,
   type WorkOrderItem,
@@ -188,6 +195,65 @@ function goodListeningResponse(correctKr = '정답'): DiagnosticListeningItemRes
     ],
     answerIndex: 0,
     explain: 'mock explanation',
+  };
+}
+
+/** A schema-valid DiagnosticPairedReadingItemResult (F-220 P1) — `n` questions,
+ *  each independent, each a distinct correctKr by default so a test can tell
+ *  rows apart. */
+function goodPairedReadingResponse(
+  n: 2 | 3 = 2,
+  passage = '오늘은 날씨가 맑고 따뜻합니다. 사람들이 공원에서 산책을 합니다. 어떤 사람들은 자전거를 탑니다.',
+): DiagnosticPairedReadingItemResult {
+  return {
+    passage,
+    questions: Array.from({ length: n }, (_, i) => ({
+      prompt: `mock paired reading question ${String(i + 1)}`,
+      choices: [
+        { kr: `정답-${String(i)}`, en: 'correct' },
+        { kr: '오답1', en: '' },
+        { kr: '오답2', en: '' },
+        { kr: '오답3', en: '' },
+      ],
+      answerIndex: 0,
+      explain: `mock explanation ${String(i + 1)}`,
+    })),
+  };
+}
+
+/** A schema-valid DiagnosticPairedListeningItemResult (F-220 P1) — always
+ *  exactly 2 questions (the schema's literal questionCount). */
+function goodPairedListeningResponse(): DiagnosticPairedListeningItemResult {
+  return {
+    turns: [
+      { speaker: 'narrator', gender: 'narrator', text: '두 친구가 카페에서 이야기합니다.' },
+      { speaker: '민수', gender: 'male', text: '오늘 날씨가 참 좋네요.' },
+      { speaker: '지은', gender: 'female', text: '네, 산책하기 좋은 날씨예요.' },
+    ],
+    questions: [
+      {
+        prompt: 'mock paired listening question 1',
+        choices: [
+          { kr: '정답-0', en: 'correct' },
+          { kr: '오답1', en: '' },
+          { kr: '오답2', en: '' },
+          { kr: '오답3', en: '' },
+        ],
+        answerIndex: 0,
+        explain: 'mock explanation 1',
+      },
+      {
+        prompt: 'mock paired listening question 2',
+        choices: [
+          { kr: '정답-1', en: 'correct' },
+          { kr: '오답1', en: '' },
+          { kr: '오답2', en: '' },
+          { kr: '오답3', en: '' },
+        ],
+        answerIndex: 0,
+        explain: 'mock explanation 2',
+      },
+    ],
   };
 }
 
@@ -1018,5 +1084,449 @@ describe('F-220 slice 3 — listening count/emit/ingest', () => {
     const second = await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);
     expect(second.written).toBe(0);
     expect(second.skippedAlreadyCached).toBe(1);
+  });
+});
+describe('F-220 P1 — pairedReadingQuestionCountFor / stimulusGroupIdFromHash / rowPromptHash (pure helpers)', () => {
+  it('pairedReadingQuestionCountFor alternates 2, 3, 2, 3, … deterministically', () => {
+    expect(pairedReadingQuestionCountFor(1)).toBe(2);
+    expect(pairedReadingQuestionCountFor(2)).toBe(3);
+    expect(pairedReadingQuestionCountFor(3)).toBe(2);
+    expect(pairedReadingQuestionCountFor(4)).toBe(3);
+  });
+
+  it('stimulusGroupIdFromHash is a deterministic 32-char prefix of the group hash', () => {
+    const hash = 'a'.repeat(64);
+    expect(stimulusGroupIdFromHash(hash)).toBe('a'.repeat(32));
+    expect(stimulusGroupIdFromHash(hash)).toHaveLength(32);
+    // Deterministic: same input -> same output.
+    expect(stimulusGroupIdFromHash(hash)).toBe(stimulusGroupIdFromHash(hash));
+  });
+
+  it('rowPromptHash is a deterministic 64-hex-char SHA-256, distinct per ordinal', () => {
+    const groupHash = 'b'.repeat(64);
+    const h1 = rowPromptHash(groupHash, 1);
+    const h2 = rowPromptHash(groupHash, 2);
+    expect(h1).toMatch(/^[0-9a-f]{64}$/);
+    expect(h2).toMatch(/^[0-9a-f]{64}$/);
+    expect(h1).not.toBe(h2); // per-row uniqueness — the whole point
+    // Deterministic: same (groupHash, ordinal) -> same hash (idempotent retry).
+    expect(rowPromptHash(groupHash, 1)).toBe(h1);
+  });
+});
+
+describe('F-220 P1 — paired-reading count/emit/ingest (grouped rows, shared passage)', () => {
+  it('SECTIONS includes paired-reading and --section=paired-reading is valid', () => {
+    expect(SECTIONS).toContain('paired-reading');
+    const opts = parseCliArgs(['--section=paired-reading']);
+    expect(opts.sections).toEqual(['paired-reading']);
+  });
+
+  it('runCount treats paired-reading as repetition-unbounded (perCell groups, not questions)', async () => {
+    const summary = await runCount(
+      pg.pool,
+      makeOpts({ sections: ['paired-reading'], levels: ['L2'], perCell: 5 }),
+      silent,
+    );
+    expect(summary.cells).toHaveLength(1);
+    expect(summary.cells[0]!.achievable).toBe(5);
+    expect(await generatedItemCount()).toBe(0);
+  });
+
+  it('runEmitBatch emits ONE work-order item PER GROUP, schema=DiagnosticPairedReadingItemResult, questionCount 2..3, independently-reproducible hashes; zero DB writes', async () => {
+    const outFile = await makeTmpFile('paired-reading-batch.json');
+    const summary = await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['paired-reading'], levels: ['L3'], perCell: 4, outFile }),
+      silent,
+    );
+    expect(summary.emitted).toBe(4);
+
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    expect(file.items).toHaveLength(4); // 4 GROUPS, not 4 questions
+    expect(file.meta.pairedReadingModel).toBeTruthy();
+
+    const cfg = loadConfig();
+    const seenCounts = new Set<number>();
+    for (const item of file.items) {
+      expect(item.section).toBe('paired-reading');
+      expect(item.level).toBe('L3');
+      expect(item.schema).toBe('DiagnosticPairedReadingItemResult');
+      expect(item.questionCount).toBeGreaterThanOrEqual(2);
+      expect(item.questionCount).toBeLessThanOrEqual(3);
+      seenCounts.add(item.questionCount!);
+      expect(READING_TOPICS).toContain(item.seedKorean);
+      expect(item.promptHash).toMatch(/^[0-9a-f]{64}$/);
+      const rebuilt = buildPairedReadingWorkOrderRequest(
+        'L3',
+        { seedRef: item.seedRef, seedKorean: item.seedKorean },
+        item.questionCount!,
+        file.meta.pairedReadingModel,
+        cfg,
+      );
+      expect(rebuilt).not.toBeNull();
+      expect(rebuilt!.promptHash).toBe(item.promptHash);
+    }
+    // The alternating 2/3 count (pairedReadingQuestionCountFor) means a
+    // 4-item batch sees BOTH sizes — proving the mix, not just one constant.
+    expect(seenCounts.has(2)).toBe(true);
+    expect(seenCounts.has(3)).toBe(true);
+    expect(new Set(file.items.map((i) => i.promptHash)).size).toBe(4); // group hashes distinct
+
+    expect(await generatedItemCount()).toBe(0);
+  });
+
+  it('runIngest writes N grouped rows per group: SAME passage + stimulus_group_id, distinct stimulus_group_ordinal (1..N), distinct per-row prompt_hash', async () => {
+    const outFile = await makeTmpFile('paired-reading-emit.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['paired-reading'], levels: ['L4'], perCell: 2, outFile }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const filled = file.items.map((item) => ({
+      ...item,
+      response: goodPairedReadingResponse(item.questionCount as 2 | 3),
+    })) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('paired-reading-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+    const summary = await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);
+    // written counts ROWS (questions), not work-order items (groups).
+    const totalQuestions = file.items.reduce((sum, i) => sum + (i.questionCount ?? 0), 0);
+    expect(summary.written).toBe(totalQuestions);
+    expect(summary.skippedInvalid).toBe(0);
+    expect(summary.skippedHashDrift).toBe(0);
+
+    const rows = await pg.pool.query<{
+      id: string;
+      status: string;
+      section: string;
+      level: string;
+      kind: string;
+      stem: string;
+      passage: string | null;
+      choices: Array<{ kr: string; en: string }>;
+      answer_index: number;
+      stimulus_group_id: string | null;
+      stimulus_group_ordinal: number | null;
+      prompt_hash: string;
+    }>(
+      `SELECT id, status, section, level, kind, stem, passage, choices, answer_index,
+              stimulus_group_id, stimulus_group_ordinal, prompt_hash
+         FROM generated_items ORDER BY stimulus_group_id, stimulus_group_ordinal`,
+    );
+    expect(rows.rows).toHaveLength(totalQuestions);
+
+    // Group by stimulus_group_id and verify each group's invariants.
+    const byGroup = new Map<string, typeof rows.rows>();
+    for (const row of rows.rows) {
+      expect(row.stimulus_group_id).not.toBeNull();
+      const list = byGroup.get(row.stimulus_group_id!) ?? [];
+      list.push(row);
+      byGroup.set(row.stimulus_group_id!, list);
+    }
+    expect(byGroup.size).toBe(file.items.length); // one group per work-order item
+
+    for (const [, groupRows] of byGroup) {
+      const passages = new Set(groupRows.map((r) => r.passage));
+      expect(passages.size).toBe(1); // SAME passage denormalized onto every row
+      const ordinals = groupRows.map((r) => r.stimulus_group_ordinal).sort((a, b) => a! - b!);
+      expect(ordinals).toEqual(Array.from({ length: groupRows.length }, (_, i) => i + 1)); // 1..N
+      const hashes = new Set(groupRows.map((r) => r.prompt_hash));
+      expect(hashes.size).toBe(groupRows.length); // per-ROW-unique prompt_hash
+      for (const row of groupRows) {
+        expect(row.status).toBe('draft');
+        expect(row.section).toBe('reading');
+        expect(row.level).toBe('L4');
+        expect(row.kind).toBe('paired-passage-mc');
+        expect(row.passage).not.toBeNull();
+      }
+    }
+  });
+
+  it('is idempotent: re-ingesting the same filled paired-reading file writes 0 new rows (per-row ON CONFLICT)', async () => {
+    const outFile = await makeTmpFile('paired-reading-idem.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['paired-reading'], levels: ['L3'], perCell: 1, outFile }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const filled = file.items.map((item) => ({
+      ...item,
+      response: goodPairedReadingResponse(item.questionCount as 2 | 3),
+    })) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('paired-reading-idem-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+    const first = await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);
+    expect(first.written).toBeGreaterThan(0);
+    const second = await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);
+    expect(second.written).toBe(0);
+    expect(second.skippedAlreadyCached).toBe(first.written);
+  });
+
+  it('rejects a malformed paired-reading response (only 1 question, below the 2-question minimum) without writing', async () => {
+    const outFile = await makeTmpFile('paired-reading-bad.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['paired-reading'], levels: ['L3'], perCell: 1, outFile }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const badResponse = { ...goodPairedReadingResponse(2), questions: [goodPairedReadingResponse(2).questions[0]!] };
+    const filled = file.items.map((item) => ({ ...item, response: badResponse })) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('paired-reading-bad-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+    await expect(runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent)).rejects.toThrow(
+      ItemBankInputError,
+    );
+    expect(await generatedItemCount()).toBe(0);
+  });
+
+  it('a work-order item missing questionCount is skipped as seed-invalid (and the run refuses to look green, mirroring an unfilled file)', async () => {
+    const outFile = await makeTmpFile('paired-reading-missing-qc.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['paired-reading'], levels: ['L3'], perCell: 1, outFile }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const filled = file.items.map((item) => {
+      const { questionCount: _questionCount, ...rest } = item;
+      return { ...rest, response: goodPairedReadingResponse(2) };
+    }) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('paired-reading-missing-qc-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+    // Every item in this (single-item) file skips as seed-invalid -> 0
+    // written, 0 already-cached -> the same "never look green" guard that
+    // fires for an unfilled work-order (generate-item-bank.ts's own doc).
+    await expect(runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent)).rejects.toThrow(
+      ItemBankInputError,
+    );
+    expect(await generatedItemCount()).toBe(0);
+  });
+
+  it('a work-order item missing questionCount is skipped as seed-invalid WITHOUT masking a sibling group that DID land', async () => {
+    const outFile = await makeTmpFile('paired-reading-missing-qc-mixed.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['paired-reading'], levels: ['L3'], perCell: 2, outFile }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    expect(file.items.length).toBeGreaterThanOrEqual(2);
+    const filled = file.items.map((item, i) => {
+      if (i === 0) {
+        // Strip questionCount from only the FIRST item — its sibling stays
+        // well-formed, so the run should still land the sibling's rows.
+        const { questionCount: _questionCount, ...rest } = item;
+        return { ...rest, response: goodPairedReadingResponse(2) };
+      }
+      return { ...item, response: goodPairedReadingResponse(item.questionCount as 2 | 3) };
+    }) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('paired-reading-missing-qc-mixed-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+    const summary = await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);
+    expect(summary.skippedSeedInvalid).toBeGreaterThan(0);
+    expect(summary.written).toBeGreaterThan(0);
+    expect(await generatedItemCount()).toBeGreaterThan(0);
+  });
+});
+
+describe('F-220 P1 — paired-listening count/emit/ingest (grouped rows, shared turns, NO passage, NO audio yet)', () => {
+  it('SECTIONS includes paired-listening and --section=paired-listening is valid', () => {
+    expect(SECTIONS).toContain('paired-listening');
+    const opts = parseCliArgs(['--section=paired-listening']);
+    expect(opts.sections).toEqual(['paired-listening']);
+  });
+
+  it('runEmitBatch emits ONE work-order item PER GROUP, schema=DiagnosticPairedListeningItemResult, questionCount always 2', async () => {
+    const outFile = await makeTmpFile('paired-listening-batch.json');
+    const summary = await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['paired-listening'], levels: ['L3'], perCell: 3, outFile }),
+      silent,
+    );
+    expect(summary.emitted).toBe(3);
+
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    expect(file.items).toHaveLength(3);
+    expect(file.meta.pairedListeningModel).toBeTruthy();
+
+    const cfg = loadConfig();
+    for (const item of file.items) {
+      expect(item.section).toBe('paired-listening');
+      expect(item.questionCount).toBe(2);
+      expect(item.schema).toBe('DiagnosticPairedListeningItemResult');
+      const rebuilt = buildPairedListeningWorkOrderRequest(
+        'L3',
+        { seedRef: item.seedRef, seedKorean: item.seedKorean },
+        2,
+        file.meta.pairedListeningModel,
+        cfg,
+      );
+      expect(rebuilt).not.toBeNull();
+      expect(rebuilt!.promptHash).toBe(item.promptHash);
+    }
+    expect(new Set(file.items.map((i) => i.promptHash)).size).toBe(3);
+    expect(await generatedItemCount()).toBe(0);
+  });
+
+  it('runIngest writes 2 grouped rows per group: SAME turns + stimulus_group_id, kind=paired-audio-mc, passage=NULL, audio_source_id=NULL, distinct per-row prompt_hash', async () => {
+    const outFile = await makeTmpFile('paired-listening-emit.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['paired-listening'], levels: ['L3'], perCell: 2, outFile }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const filled = file.items.map((item) => ({
+      ...item,
+      response: goodPairedListeningResponse(),
+    })) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('paired-listening-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+    const summary = await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);
+    expect(summary.written).toBe(4); // 2 groups x 2 questions
+    expect(summary.skippedInvalid).toBe(0);
+    expect(summary.skippedHashDrift).toBe(0);
+
+    const rows = await pg.pool.query<{
+      status: string;
+      section: string;
+      kind: string;
+      passage: string | null;
+      turns: Array<{ speaker: string; gender: string; text: string }> | null;
+      audio_source_id: string | null;
+      stimulus_group_id: string | null;
+      stimulus_group_ordinal: number | null;
+      prompt_hash: string;
+    }>(
+      `SELECT status, section, kind, passage, turns, audio_source_id,
+              stimulus_group_id, stimulus_group_ordinal, prompt_hash
+         FROM generated_items ORDER BY stimulus_group_id, stimulus_group_ordinal`,
+    );
+    expect(rows.rows).toHaveLength(4);
+
+    const byGroup = new Map<string, typeof rows.rows>();
+    for (const row of rows.rows) {
+      expect(row.stimulus_group_id).not.toBeNull();
+      const list = byGroup.get(row.stimulus_group_id!) ?? [];
+      list.push(row);
+      byGroup.set(row.stimulus_group_id!, list);
+    }
+    expect(byGroup.size).toBe(2);
+
+    for (const [, groupRows] of byGroup) {
+      expect(groupRows).toHaveLength(2);
+      const turnsSerialized = new Set(groupRows.map((r) => JSON.stringify(r.turns)));
+      expect(turnsSerialized.size).toBe(1); // SAME turns denormalized onto every row
+      const hashes = new Set(groupRows.map((r) => r.prompt_hash));
+      expect(hashes.size).toBe(2); // per-ROW-unique prompt_hash
+      for (const row of groupRows) {
+        expect(row.status).toBe('draft');
+        expect(row.section).toBe('listening');
+        expect(row.kind).toBe('paired-audio-mc');
+        expect(row.passage).toBeNull(); // NEVER a passage for a listening row
+        expect(row.audio_source_id).toBeNull(); // $0 script step — no audio yet
+        expect(row.turns).not.toBeNull();
+      }
+    }
+  });
+
+  it('is idempotent: re-ingesting the same filled paired-listening file writes 0 new rows', async () => {
+    const outFile = await makeTmpFile('paired-listening-idem.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['paired-listening'], levels: ['L3'], perCell: 1, outFile }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const filled = file.items.map((item) => ({
+      ...item,
+      response: goodPairedListeningResponse(),
+    })) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('paired-listening-idem-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+    const first = await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);
+    expect(first.written).toBe(2);
+    const second = await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);
+    expect(second.written).toBe(0);
+    expect(second.skippedAlreadyCached).toBe(2);
+  });
+
+  it('rejects a malformed paired-listening response (only 1 turn, below the 2-6 minimum) without writing', async () => {
+    const outFile = await makeTmpFile('paired-listening-bad.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({ mode: 'emit-batch', sections: ['paired-listening'], levels: ['L3'], perCell: 1, outFile }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const badResponse = { ...goodPairedListeningResponse(), turns: goodPairedListeningResponse().turns.slice(0, 1) };
+    const filled = file.items.map((item) => ({ ...item, response: badResponse })) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('paired-listening-bad-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+    await expect(runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent)).rejects.toThrow(
+      ItemBankInputError,
+    );
+    expect(await generatedItemCount()).toBe(0);
+  });
+
+  it('existing single-item vocab/reading/listening ingest stays byte-identical alongside a paired batch (regression)', async () => {
+    // A mixed work-order: one vocab item (slice 1), one reading item (slice
+    // 2), one listening item (slice 3), one paired-reading GROUP, one
+    // paired-listening GROUP — proves the pre-P1 sections are completely
+    // untouched by the new branches.
+    await seedVocabEntry(pg.pool, { korean: '학교', english: 'school', proficiency: 'basic' });
+
+    const outFile = await makeTmpFile('mixed-p1-batch.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({
+        mode: 'emit-batch',
+        sections: ['vocab', 'reading', 'listening', 'paired-reading', 'paired-listening'],
+        levels: ['L3'],
+        perCell: 1,
+        outFile,
+      }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const filled = file.items.map((item) => {
+      if (item.section === 'vocab') return { ...item, response: goodResponse('vocab') };
+      if (item.section === 'reading') return { ...item, response: goodReadingResponse() };
+      if (item.section === 'listening') return { ...item, response: goodListeningResponse() };
+      if (item.section === 'paired-reading') {
+        return { ...item, response: goodPairedReadingResponse(item.questionCount as 2 | 3) };
+      }
+      return { ...item, response: goodPairedListeningResponse() };
+    }) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('mixed-p1-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+    await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);
+
+    const rows = await pg.pool.query<{ section: string; kind: string; stimulus_group_id: string | null }>(
+      `SELECT section, kind, stimulus_group_id FROM generated_items ORDER BY id`,
+    );
+    const vocabRow = rows.rows.find((r) => r.kind === 'synonym')!;
+    const readingRow = rows.rows.find((r) => r.kind === 'passage-mc')!;
+    const listeningRow = rows.rows.find((r) => r.kind === 'audio-mc')!;
+    expect(vocabRow.stimulus_group_id).toBeNull();
+    expect(readingRow.stimulus_group_id).toBeNull();
+    expect(listeningRow.stimulus_group_id).toBeNull();
+    const pairedReadingRows = rows.rows.filter((r) => r.kind === 'paired-passage-mc');
+    const pairedListeningRows = rows.rows.filter((r) => r.kind === 'paired-audio-mc');
+    expect(pairedReadingRows.every((r) => r.stimulus_group_id !== null)).toBe(true);
+    expect(pairedListeningRows.every((r) => r.stimulus_group_id !== null)).toBe(true);
+    expect(pairedListeningRows).toHaveLength(2); // questionCount fixed at 2
   });
 });

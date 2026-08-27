@@ -204,6 +204,59 @@ export function makeStubProxy(overrides: Partial<ClaudeProxy> = {}): ClaudeProxy
       },
       metadata: { ...baseMeta, requestId: randomUUID() },
     }),
+    generateDiagnosticPairedReadingItem: async (input) => ({
+      // F-220 P1: deterministic valid paired-reading item — a short mock
+      // passage + `questionCount` independent 4-choice questions, each
+      // answerIndex 0. Lets CLI/generator tests exercise the full flow
+      // without touching Anthropic.
+      result: {
+        passage: `mock ${input.targetLevel} paired passage about ${input.topic}.`,
+        questions: Array.from({ length: input.questionCount }, (_, i) => ({
+          prompt: `mock paired reading question ${String(i + 1)} about ${input.topic}`,
+          choices: [
+            { kr: '정답', en: 'correct' },
+            { kr: '오답 1', en: 'wrong 1' },
+            { kr: '오답 2', en: 'wrong 2' },
+            { kr: '오답 3', en: 'wrong 3' },
+          ],
+          answerIndex: 0,
+          explain: `mock explanation ${String(i + 1)}: the first choice is correct.`,
+        })),
+      },
+      metadata: { ...baseMeta, requestId: randomUUID() },
+    }),
+    generateDiagnosticPairedListeningItem: async (input) => ({
+      // F-220 P1: deterministic valid paired-listening item — a short mock
+      // 2-turn dialogue + exactly 2 independent 4-choice questions, each
+      // answerIndex 0. Lets CLI/generator tests exercise the full flow
+      // without touching Anthropic or ElevenLabs.
+      result: {
+        turns: [
+          {
+            speaker: 'narrator',
+            gender: 'narrator' as const,
+            text: `mock ${input.targetLevel} paired dialogue about ${input.topic}.`,
+          },
+          {
+            speaker: '민수',
+            gender: 'male' as const,
+            text: `mock paired line about ${input.topic}.`,
+          },
+        ],
+        questions: Array.from({ length: input.questionCount }, (_, i) => ({
+          prompt: `mock paired listening question ${String(i + 1)} about ${input.topic}`,
+          choices: [
+            { kr: '정답', en: 'correct' },
+            { kr: '오답 1', en: 'wrong 1' },
+            { kr: '오답 2', en: 'wrong 2' },
+            { kr: '오답 3', en: 'wrong 3' },
+          ],
+          answerIndex: 0,
+          explain: `mock explanation ${String(i + 1)}: the first choice is correct.`,
+        })),
+      },
+      metadata: { ...baseMeta, requestId: randomUUID() },
+    }),
     ocrImage: async () => ({
       // Deterministic OCR result: a fixed caption + 3 content words (no boxes).
       // Lets the /images upload route test assert the persisted caption + words

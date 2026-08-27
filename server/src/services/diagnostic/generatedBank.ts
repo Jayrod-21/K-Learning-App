@@ -201,3 +201,192 @@ export async function pickGeneratedItem(
     sourceRef: `bank:${String(row.id)}`,
   };
 }
+
+// -----------------------------------------------------------------------------
+// F-220 P1 — pickGeneratedStimulusGroup (paired-stimulus draw)
+//
+// Draws ONE approved, COMPLETE stimulus group — several `generated_items`
+// rows sharing one `stimulus_group_id` (migration 105): 2-3 rows carrying
+// the SAME `passage` for a paired-reading group (kind='paired-passage-mc'),
+// or 2 rows carrying the SAME `audio_source_id` for a paired-listening group
+// (kind='paired-audio-mc'). Ships DARK in P1 — this function is fully built
+// and tested here but wired into NO route/surface yet; P3 (the generated
+// mock exam) is the intended caller.
+//
+// "COMPLETE" for a group means: every row in the group is `status =
+// 'approved'` (never a mix of approved/draft/retired rows — a group is an
+// atomic serving unit, not individually-approvable rows), AND, for
+// paired-listening, every row already has a non-null `audio_source_id` (the
+// synth CLI, scripts/synthesize-listening-audio.ts, stamps that column onto
+// EVERY row in a group together in one transaction — so within one group it
+// is always all-null or all-set, never partial; this HAVING clause is
+// defense-in-depth against a hypothetical future writer that broke that
+// invariant, mirroring pickGeneratedItem's own defense-in-depth kind checks).
+
+/** One question within a drawn stimulus group — the SAME per-question shape
+ *  `GeneratedBankItem` already uses for a standalone item's choices, just
+ *  without the top-level id/kind/level/passage/audio fields (those live once
+ *  on the group, not once per question). */
+export interface StimulusGroupQuestion {
+  readonly prompt: string;
+  readonly choices: readonly GeneratedBankChoice[];
+  readonly correctAnswer: ChoiceId;
+  readonly explain: string;
+}
+
+/** A drawn, complete stimulus group. `passage` is present ONLY for a
+ *  section='reading' draw; `audioUrl`/`audioStartMs`/`audioEndMs` are
+ *  present ONLY for a section='listening' draw — mirrors
+ *  `GeneratedBankItem`'s optional-field posture exactly. NO-LEAK: this shape
+ *  has NO field for the listening dialogue's transcript/turns — it is
+ *  structurally impossible for a caller to read the spoken text through this
+ *  return value; only `audioUrl` is ever exposed (see `pickGeneratedStimulusGroup`'s
+ *  doc and its dedicated no-leak test). */
+export interface StimulusGroupDraw {
+  readonly groupId: string;
+  readonly section: 'reading' | 'listening';
+  readonly level: DiagnosticTargetLevel;
+  readonly passage?: string;
+  readonly audioUrl?: string;
+  readonly audioStartMs?: number;
+  readonly audioEndMs?: number;
+  readonly questions: readonly StimulusGroupQuestion[];
+}
+
+interface StimulusGroupQuestionRow {
+  readonly stimulus_group_ordinal: number;
+  readonly stem: string;
+  readonly choices: ReadonlyArray<{ readonly kr: string; readonly en?: string }>;
+  readonly answer_index: number;
+  readonly explain: string | null;
+  readonly passage: string | null;
+  /** Only selected/populated for section='listening' (the LEFT JOIN into
+   *  audio_tracks) — mirrors `GeneratedItemRow.track_id`. NEVER selected:
+   *  `turns` (the dialogue transcript) — see the module/function doc. */
+  readonly track_id?: number | null;
+  readonly audio_start_ms?: number | null;
+  readonly audio_end_ms?: number | null;
+}
+
+function mapStimulusGroupQuestion(row: {
+  readonly stem: string;
+  readonly choices: ReadonlyArray<{ readonly kr: string; readonly en?: string }>;
+  readonly answer_index: number;
+  readonly explain: string | null;
+}): StimulusGroupQuestion {
+  const choices: GeneratedBankChoice[] = row.choices.map((c, i) => ({
+    id: CHOICE_IDS[i]!,
+    kr: c.kr,
+    en: c.en ?? '',
+  }));
+  // answer_index is CHECKed 0..3 and choices is CHECKed to length 4 at the
+  // schema layer (migration 101) — CHOICE_IDS[row.answer_index] is always
+  // defined for any row that passed those constraints.
+  const correctAnswer = CHOICE_IDS[row.answer_index]!;
+  return { prompt: row.stem, choices, correctAnswer, explain: row.explain ?? '' };
+}
+
+/**
+ * Draw ONE approved, complete stimulus group for `(section, level)`.
+ *
+ * Two-step query: (1) pick ONE eligible `stimulus_group_id` at random via a
+ * GROUP BY/HAVING over the candidate rows (mirrors `pickGeneratedItem`'s
+ * `ORDER BY random() LIMIT 1` posture, just applied to groups instead of
+ * rows); (2) fetch every row in that ONE group, ordered by
+ * `stimulus_group_ordinal`, and map each to a question. `ix_generated_items_stimulus_group`
+ * (migration 105) backs step 2's lookup; `ix_generated_items_draw`
+ * (section, level, status — migration 101) backs step 1's WHERE.
+ *
+ * NO-LEAK (listening): the SELECT list for a listening group's rows NEVER
+ * includes `turns` — the dialogue transcript column simply never appears in
+ * either query below, so there is no code path through which this function
+ * could return it even by accident. Only `audioUrl` (built from the joined
+ * `audio_tracks.id`, exactly like `pickGeneratedItem`) is ever exposed for a
+ * listening draw. See `server/tests/services/diagnostic/generatedBank.test.ts`'s
+ * dedicated no-leak assertion.
+ *
+ * `exec` is injectable (defaults to the shared pool's `query`) so tests can
+ * run against a per-test database without touching module-level pool state.
+ *
+ * Returns null when no approved-and-complete group matches the cell.
+ */
+export async function pickGeneratedStimulusGroup(
+  section: 'reading' | 'listening',
+  level: DiagnosticTargetLevel,
+  exec: Querier = query,
+): Promise<StimulusGroupDraw | null> {
+  const kindValue = section === 'reading' ? 'paired-passage-mc' : 'paired-audio-mc';
+  // Listening-only: every row in the candidate group must already have a
+  // synthesized audio_source_id — see the module doc's "COMPLETE" definition.
+  const audioReadyHaving =
+    section === 'listening'
+      ? 'AND COUNT(*) FILTER (WHERE gi.audio_source_id IS NULL) = 0'
+      : '';
+
+  const { rows: groupRows } = await exec<{ group_id: string }>(
+    `SELECT gi.stimulus_group_id AS group_id
+       FROM generated_items gi
+      WHERE gi.section = $1
+        AND gi.level = $2
+        AND gi.kind = $3
+        AND gi.stimulus_group_id IS NOT NULL
+      GROUP BY gi.stimulus_group_id
+     HAVING COUNT(*) >= 2
+        AND COUNT(*) FILTER (WHERE gi.status <> 'approved') = 0
+        ${audioReadyHaving}
+      ORDER BY random()
+      LIMIT 1`,
+    [section, level, kindValue],
+  );
+  const groupId = groupRows[0]?.group_id;
+  if (groupId === undefined) return null;
+
+  if (section === 'reading') {
+    const { rows } = await exec<StimulusGroupQuestionRow>(
+      `SELECT stimulus_group_ordinal, stem, choices, answer_index, explain, passage
+         FROM generated_items
+        WHERE stimulus_group_id = $1
+        ORDER BY stimulus_group_ordinal ASC`,
+      [groupId],
+    );
+    const first = rows[0];
+    if (first === undefined) return null;
+    const questions = rows.map((r) => mapStimulusGroupQuestion(r));
+    return {
+      groupId,
+      section: 'reading',
+      level,
+      ...(first.passage !== null ? { passage: first.passage } : {}),
+      questions,
+    };
+  }
+
+  // section === 'listening' — NEVER select `turns` here (see the doc above).
+  const { rows } = await exec<StimulusGroupQuestionRow>(
+    `SELECT gi.stimulus_group_ordinal, gi.stem, gi.choices, gi.answer_index, gi.explain,
+            gi.passage, at.id AS track_id, gi.audio_start_ms, gi.audio_end_ms
+       FROM generated_items gi
+       LEFT JOIN audio_tracks at ON at.source_id = gi.audio_source_id
+      WHERE gi.stimulus_group_id = $1
+      ORDER BY gi.stimulus_group_ordinal ASC`,
+    [groupId],
+  );
+  const first = rows[0];
+  if (first === undefined) return null;
+  const questions = rows.map((r) => mapStimulusGroupQuestion(r));
+  // The group-eligibility HAVING clause above guarantees every row's
+  // audio_source_id is non-null, and the synth CLI always creates the
+  // audio_tracks row in the SAME transaction that sets audio_source_id — so
+  // track_id/audio_start_ms/audio_end_ms are non-null here under that proof,
+  // not a runtime assumption (mirrors pickGeneratedItem's identical `!`
+  // usage for the same reason).
+  return {
+    groupId,
+    section: 'listening',
+    level,
+    audioUrl: `/audio/tracks/${String(first.track_id!)}/stream`,
+    audioStartMs: first.audio_start_ms!,
+    audioEndMs: first.audio_end_ms!,
+    questions,
+  };
+}

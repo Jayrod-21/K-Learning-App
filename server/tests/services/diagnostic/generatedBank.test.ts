@@ -10,7 +10,10 @@ import type { Pool } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { startPostgres, stopPostgres, type PgHandle } from '../../helpers/pg.js';
 import type { Querier } from '../../../src/db/pool.js';
-import { pickGeneratedItem } from '../../../src/services/diagnostic/generatedBank.js';
+import {
+  pickGeneratedItem,
+  pickGeneratedStimulusGroup,
+} from '../../../src/services/diagnostic/generatedBank.js';
 
 let pg: PgHandle;
 let exec: Querier;
@@ -60,6 +63,12 @@ async function insertItem(overrides: {
   audioSourceId?: number | null;
   audioStartMs?: number | null;
   audioEndMs?: number | null;
+  /** F-220 P1 — set to make this row part of a stimulus group. */
+  stimulusGroupId?: string | null;
+  stimulusGroupOrdinal?: number | null;
+  /** F-220 P1 — the shared dialogue script (paired-listening no-leak test
+   *  fixture); NEVER selected by pickGeneratedStimulusGroup. */
+  turns?: readonly { speaker: string; gender: string; text: string }[] | null;
 }): Promise<number> {
   const section = overrides.section ?? 'vocab';
   const kind =
@@ -81,9 +90,10 @@ async function insertItem(overrides: {
   const { rows } = await pg.pool.query<{ id: string }>(
     `INSERT INTO generated_items
        (section, level, kind, stem, passage, choices, answer_index, explain, source_ref,
-        status, created_by, model_id, prompt_hash, audio_source_id, audio_start_ms, audio_end_ms)
+        status, created_by, model_id, prompt_hash, audio_source_id, audio_start_ms, audio_end_ms,
+        stimulus_group_id, stimulus_group_ordinal, turns)
      VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, 'test-seed-ref',
-             $9, 'test-fixture', 'claude-sonnet-4-6', $10, $11, $12, $13)
+             $9, 'test-fixture', 'claude-sonnet-4-6', $10, $11, $12, $13, $14, $15, $16::jsonb)
      RETURNING id`,
     [
       section,
@@ -99,6 +109,9 @@ async function insertItem(overrides: {
       overrides.audioSourceId ?? null,
       overrides.audioStartMs ?? null,
       overrides.audioEndMs ?? null,
+      overrides.stimulusGroupId ?? null,
+      overrides.stimulusGroupOrdinal ?? null,
+      overrides.turns !== undefined ? JSON.stringify(overrides.turns) : null,
     ],
   );
   return Number(rows[0]!.id);
@@ -378,6 +391,250 @@ describe('pickGeneratedItem — listening (F-220 slice 3)', () => {
 
   it('returns null when the listening bank is empty for the cell (falls through to pickTopikRow)', async () => {
     const result = await pickGeneratedItem('listening', 'L1', exec);
+    expect(result).toBeNull();
+  });
+});
+
+describe('pickGeneratedStimulusGroup — paired-reading (F-220 P1)', () => {
+  it('draws a complete approved group: shared passage + ordered questions', async () => {
+    const gid = 'grp-reading-1';
+    const passage = '오늘은 날씨가 맑고 따뜻합니다. 사람들이 공원에서 산책을 합니다. 어떤 사람들은 자전거를 탑니다.';
+    await insertItem({
+      section: 'reading',
+      level: 'L3',
+      kind: 'paired-passage-mc',
+      stem: '이 글의 중심 내용은 무엇입니까?',
+      passage,
+      choices: [
+        { kr: '날씨', en: 'weather' },
+        { kr: '음식' },
+        { kr: '교통' },
+        { kr: '건강' },
+      ],
+      answerIndex: 0,
+      explain: 'main idea explain',
+      stimulusGroupId: gid,
+      stimulusGroupOrdinal: 1,
+    });
+    await insertItem({
+      section: 'reading',
+      level: 'L3',
+      kind: 'paired-passage-mc',
+      stem: '사람들이 공원에서 하지 않는 것은 무엇입니까?',
+      passage,
+      choices: [
+        { kr: '수영' },
+        { kr: '산책' },
+        { kr: '자전거 타기' },
+        { kr: '독서' },
+      ],
+      answerIndex: 0,
+      explain: 'detail explain',
+      stimulusGroupId: gid,
+      stimulusGroupOrdinal: 2,
+    });
+
+    const result = await pickGeneratedStimulusGroup('reading', 'L3', exec);
+    expect(result).not.toBeNull();
+    expect(result!.groupId).toBe(gid);
+    expect(result!.section).toBe('reading');
+    expect(result!.passage).toBe(passage);
+    expect(result!.audioUrl).toBeUndefined();
+    expect(result!.questions).toHaveLength(2);
+    expect(result!.questions[0]!.prompt).toBe('이 글의 중심 내용은 무엇입니까?');
+    expect(result!.questions[0]!.explain).toBe('main idea explain');
+    expect(result!.questions[1]!.prompt).toBe('사람들이 공원에서 하지 않는 것은 무엇입니까?');
+    expect(result!.questions[0]!.correctAnswer).toBe('a');
+  });
+
+  it('excludes a group where NOT every row is approved (mixed status)', async () => {
+    const gid = 'grp-reading-mixed';
+    await insertItem({
+      section: 'reading',
+      kind: 'paired-passage-mc',
+      status: 'approved',
+      stimulusGroupId: gid,
+      stimulusGroupOrdinal: 1,
+    });
+    await insertItem({
+      section: 'reading',
+      kind: 'paired-passage-mc',
+      status: 'draft',
+      stimulusGroupId: gid,
+      stimulusGroupOrdinal: 2,
+    });
+    const result = await pickGeneratedStimulusGroup('reading', 'L3', exec);
+    expect(result).toBeNull();
+  });
+
+  it('excludes a standalone (non-grouped) passage-mc row — only paired-passage-mc groups are drawn', async () => {
+    await insertItem({ section: 'reading', kind: 'passage-mc', status: 'approved' });
+    const result = await pickGeneratedStimulusGroup('reading', 'L3', exec);
+    expect(result).toBeNull();
+  });
+
+  it('draws only from the requested level, never a group at a different level', async () => {
+    const gid = 'grp-reading-l4';
+    await insertItem({
+      section: 'reading',
+      level: 'L4',
+      kind: 'paired-passage-mc',
+      stimulusGroupId: gid,
+      stimulusGroupOrdinal: 1,
+    });
+    await insertItem({
+      section: 'reading',
+      level: 'L4',
+      kind: 'paired-passage-mc',
+      stimulusGroupId: gid,
+      stimulusGroupOrdinal: 2,
+    });
+    const missL3 = await pickGeneratedStimulusGroup('reading', 'L3', exec);
+    expect(missL3).toBeNull();
+    const hitL4 = await pickGeneratedStimulusGroup('reading', 'L4', exec);
+    expect(hitL4).not.toBeNull();
+    expect(hitL4!.groupId).toBe(gid);
+  });
+
+  it('returns null when no paired-reading group exists for the cell', async () => {
+    const result = await pickGeneratedStimulusGroup('reading', 'L2', exec);
+    expect(result).toBeNull();
+  });
+});
+
+describe('pickGeneratedStimulusGroup — paired-listening (F-220 P1) + NO-LEAK proof', () => {
+  const SECRET_TRANSCRIPT_MARKER = '민수가 몰래 말하는 비밀 대사 절대 유출 금지';
+
+  it('draws a complete, audio-ready group: shared audioUrl/offsets + ordered questions, NEVER the transcript', async () => {
+    const { sourceId, trackId } = await seedAudioTrack(pg.pool, { durationMs: 6100 });
+    const gid = 'grp-listening-1';
+    const sharedTurns = [
+      { speaker: 'narrator', gender: 'narrator', text: SECRET_TRANSCRIPT_MARKER },
+      { speaker: '민수', gender: 'male', text: '오늘 날씨가 참 좋네요.' },
+    ];
+    await insertItem({
+      section: 'listening',
+      level: 'L3',
+      kind: 'paired-audio-mc',
+      stem: '두 사람은 무엇에 대해 이야기합니까?',
+      choices: [{ kr: '날씨' }, { kr: '음식' }, { kr: '교통' }, { kr: '건강' }],
+      answerIndex: 0,
+      explain: 'topic explain',
+      audioSourceId: sourceId,
+      audioStartMs: 0,
+      audioEndMs: 6100,
+      stimulusGroupId: gid,
+      stimulusGroupOrdinal: 1,
+      turns: sharedTurns,
+    });
+    await insertItem({
+      section: 'listening',
+      level: 'L3',
+      kind: 'paired-audio-mc',
+      stem: '민수는 오늘 날씨를 어떻게 생각합니까?',
+      choices: [{ kr: '좋다' }, { kr: '나쁘다' }, { kr: '모르겠다' }, { kr: '춥다' }],
+      answerIndex: 0,
+      explain: 'attitude explain',
+      audioSourceId: sourceId,
+      audioStartMs: 0,
+      audioEndMs: 6100,
+      stimulusGroupId: gid,
+      stimulusGroupOrdinal: 2,
+      turns: sharedTurns,
+    });
+
+    const result = await pickGeneratedStimulusGroup('listening', 'L3', exec);
+    expect(result).not.toBeNull();
+    expect(result!.groupId).toBe(gid);
+    expect(result!.section).toBe('listening');
+    expect(result!.audioUrl).toBe(`/audio/tracks/${String(trackId)}/stream`);
+    expect(result!.audioStartMs).toBe(0);
+    expect(result!.audioEndMs).toBe(6100);
+    expect(result!.passage).toBeUndefined();
+    expect(result!.questions).toHaveLength(2);
+    expect(result!.questions[0]!.prompt).toBe('두 사람은 무엇에 대해 이야기합니까?');
+    expect(result!.questions[1]!.prompt).toBe('민수는 오늘 날씨를 어떻게 생각합니까?');
+
+    // NO-LEAK: the transcript text must not appear ANYWHERE in the drawn
+    // result — not as a top-level field, not nested inside a question, not
+    // stringified. This is the load-bearing assertion for F-220 P1's
+    // "paired-audio must never expose the transcript as readable text"
+    // hard constraint.
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(SECRET_TRANSCRIPT_MARKER);
+    expect(serialized).not.toContain('narrator');
+    expect(Object.keys(result as object)).not.toContain('turns');
+  });
+
+  it('excludes a listening group where audio is NOT yet synthesized on every row (draft-or-silent)', async () => {
+    const { sourceId } = await seedAudioTrack(pg.pool);
+    const gid = 'grp-listening-partial-audio';
+    await insertItem({
+      section: 'listening',
+      kind: 'paired-audio-mc',
+      status: 'approved',
+      audioSourceId: sourceId,
+      audioStartMs: 0,
+      audioEndMs: 4000,
+      stimulusGroupId: gid,
+      stimulusGroupOrdinal: 1,
+    });
+    // Sibling row has NO audio yet — the group is not "complete".
+    await insertItem({
+      section: 'listening',
+      kind: 'paired-audio-mc',
+      status: 'approved',
+      audioSourceId: null,
+      stimulusGroupId: gid,
+      stimulusGroupOrdinal: 2,
+    });
+    const result = await pickGeneratedStimulusGroup('listening', 'L3', exec);
+    expect(result).toBeNull();
+  });
+
+  it('excludes a listening group where not every row is approved', async () => {
+    const { sourceId } = await seedAudioTrack(pg.pool);
+    const gid = 'grp-listening-mixed-status';
+    await insertItem({
+      section: 'listening',
+      kind: 'paired-audio-mc',
+      status: 'approved',
+      audioSourceId: sourceId,
+      audioStartMs: 0,
+      audioEndMs: 4000,
+      stimulusGroupId: gid,
+      stimulusGroupOrdinal: 1,
+    });
+    await insertItem({
+      section: 'listening',
+      kind: 'paired-audio-mc',
+      status: 'draft',
+      audioSourceId: sourceId,
+      audioStartMs: 0,
+      audioEndMs: 4000,
+      stimulusGroupId: gid,
+      stimulusGroupOrdinal: 2,
+    });
+    const result = await pickGeneratedStimulusGroup('listening', 'L3', exec);
+    expect(result).toBeNull();
+  });
+
+  it('excludes a standalone (non-grouped) audio-mc row — only paired-audio-mc groups are drawn', async () => {
+    const { sourceId } = await seedAudioTrack(pg.pool);
+    await insertItem({
+      section: 'listening',
+      kind: 'audio-mc',
+      status: 'approved',
+      audioSourceId: sourceId,
+      audioStartMs: 0,
+      audioEndMs: 4000,
+    });
+    const result = await pickGeneratedStimulusGroup('listening', 'L3', exec);
+    expect(result).toBeNull();
+  });
+
+  it('returns null when no paired-listening group exists for the cell', async () => {
+    const result = await pickGeneratedStimulusGroup('listening', 'L1', exec);
     expect(result).toBeNull();
   });
 });

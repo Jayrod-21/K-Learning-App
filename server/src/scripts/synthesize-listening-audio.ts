@@ -83,6 +83,19 @@
  * WHERE clause instead (there is no unique-constraint race to arbitrate: one
  * synth run per item, guarded by a status-checked UPDATE at persist time).
  *
+ * F-220 P1 — PAIRED-AUDIO groups (`generated_items.stimulus_group_id`,
+ * migration 105): several rows sharing one group id carry the SAME `turns`
+ * (one shared dialogue) and must get the SAME synthesized audio, billed
+ * ONCE — never once per row. `fetchBacklog` enumerates ONE representative
+ * row per group (the `stimulus_group_ordinal = 1` row); `runSynth` then
+ * UPDATEs `audio_source_id`/offsets/`audio_synthesized_at` onto EVERY row
+ * sharing that `stimulus_group_id` in the SAME transaction, but sets
+ * `audio_cost_estimate_usd` ONLY on the ordinal=1 row — so
+ * `services/spendCeiling.ts`'s `SUM(audio_cost_estimate_usd)` sees the
+ * group's spend exactly once, not multiplied by its question count. The
+ * pre-existing single-item path (`kind = 'audio-mc'`, no group) is
+ * completely unchanged.
+ *
  * Exit codes: 0 ok (including "0 items in backlog" — a clean no-op) · 1
  * failure (a bad flag, or every attempted item failed) · 2 bad input.
  *
@@ -209,6 +222,12 @@ export interface BacklogItem {
   readonly level: string;
   /** Raw JSONB — validated by `parseStoredTurns` before use. */
   readonly turns: unknown;
+  /** F-220 P1: non-null for a paired-audio GROUP's ordinal-1 (representative)
+   *  row — the id whose SIBLINGS (every row sharing this `stimulus_group_id`,
+   *  migration 105) must all be stamped with the SAME synthesized audio in
+   *  one pass. Null for a standalone single listening item (kind='audio-mc',
+   *  no group). See `runSynth`'s branch on this field. */
+  readonly stimulusGroupId: string | null;
 }
 
 /** Sum of every turn's Korean text length — the ElevenLabs billing unit
@@ -225,20 +244,62 @@ export function charCountOf(turns: readonly { readonly text: string }[]): number
 /** The exact backlog predicate the brief specifies: an authored listening
  *  item (turns present) with no audio yet. No status filter — a draft OR an
  *  already-approved-but-silent row both need audio; the draw path
- *  (`pickGeneratedItem`) separately requires `status = 'approved'` before
- *  ever serving it, regardless of audio readiness. */
+ *  (`pickGeneratedItem`/`pickGeneratedStimulusGroup`) separately requires
+ *  `status = 'approved'` before ever serving it, regardless of audio
+ *  readiness.
+ *
+ * F-220 P1 — PAIRED-AUDIO groups: a paired-listening group (migration 105)
+ * is several `generated_items` rows (kind='paired-audio-mc') sharing ONE
+ * `stimulus_group_id` and the SAME `turns` (denormalized onto every row at
+ * ingest — see generate-item-bank.ts). Synthesizing per-ROW here would (a)
+ * pay for and store the SAME dialogue audio 2-3x per group, and (b) give
+ * each question its own distinct clip instead of one shared recording — both
+ * wrong. So this backlog is a UNION of two disjoint queries:
+ *   (1) standalone items: kind='audio-mc', stimulus_group_id IS NULL — the
+ *       pre-P1 shape, completely unchanged, one row = one synth.
+ *   (2) paired GROUPS: kind='paired-audio-mc', stimulus_group_id IS NOT
+ *       NULL, stimulus_group_ordinal = 1 — exactly ONE representative row
+ *       per group (its `turns` is identical to every sibling row's, by
+ *       construction), carrying `stimulus_group_id` so `runSynth` can stamp
+ *       the resulting audio onto every row in the group afterward.
+ * `stimulus_group_id IS NULL` in query (1) is the critical exclusion: without
+ * it, every paired row would ALSO match the old single-item shape and get
+ * synthesized (and billed) individually, defeating the whole "one shared
+ * clip per group" point of P1.
+ */
 async function fetchBacklog(limit: number | undefined): Promise<BacklogItem[]> {
-  const { rows } = await query<{ id: string; level: string; turns: unknown }>(
-    `SELECT id, level, turns
-       FROM generated_items
-      WHERE section = 'listening'
-        AND audio_source_id IS NULL
-        AND turns IS NOT NULL
-      ORDER BY id
-      ${limit !== undefined ? 'LIMIT $1' : ''}`,
+  const { rows } = await query<{
+    id: string;
+    level: string;
+    turns: unknown;
+    stimulus_group_id: string | null;
+  }>(
+    `(SELECT id, level, turns, NULL::text AS stimulus_group_id
+        FROM generated_items
+       WHERE section = 'listening'
+         AND kind = 'audio-mc'
+         AND stimulus_group_id IS NULL
+         AND audio_source_id IS NULL
+         AND turns IS NOT NULL)
+     UNION ALL
+     (SELECT id, level, turns, stimulus_group_id
+        FROM generated_items
+       WHERE section = 'listening'
+         AND kind = 'paired-audio-mc'
+         AND stimulus_group_id IS NOT NULL
+         AND stimulus_group_ordinal = 1
+         AND audio_source_id IS NULL
+         AND turns IS NOT NULL)
+     ORDER BY id
+     ${limit !== undefined ? 'LIMIT $1' : ''}`,
     limit !== undefined ? [limit] : [],
   );
-  return rows.map((r) => ({ id: Number(r.id), level: r.level, turns: r.turns }));
+  return rows.map((r) => ({
+    id: Number(r.id),
+    level: r.level,
+    turns: r.turns,
+    stimulusGroupId: r.stimulus_group_id,
+  }));
 }
 
 // ---- count / dry-run (ZERO synth, ZERO spend) -------------------------------
@@ -419,21 +480,60 @@ export async function runSynth(
           ],
         );
 
-        // Status-guarded (audio_source_id IS NULL): if a concurrent run
-        // already synthesized this item since fetchBacklog snapshotted it,
-        // this UPDATE affects 0 rows — the caller below rolls back rather
-        // than leaving a second, orphaned audio_sources row referenced by
-        // nothing.
-        const upd = await client.query(
+        if (item.stimulusGroupId === null) {
+          // Standalone single item — the pre-P1 shape, unchanged.
+          // Status-guarded (audio_source_id IS NULL): if a concurrent run
+          // already synthesized this item since fetchBacklog snapshotted it,
+          // this UPDATE affects 0 rows — the caller below rolls back rather
+          // than leaving a second, orphaned audio_sources row referenced by
+          // nothing.
+          const upd = await client.query(
+            `UPDATE generated_items
+                SET audio_source_id = $2, audio_start_ms = 0, audio_end_ms = $3,
+                    audio_cost_estimate_usd = $4, audio_synthesized_at = now()
+              WHERE id = $1 AND audio_source_id IS NULL`,
+            [item.id, sourceId, durationMs, estimatedCost],
+          );
+          if (upd.rowCount === 0) {
+            throw new Error(
+              `item ${String(item.id)} was synthesized by a concurrent run — discarding this result`,
+            );
+          }
+          return true;
+        }
+
+        // F-220 P1 — paired-audio GROUP: stamp the SAME audio_source_id/
+        // offsets/timestamp onto EVERY row sharing this stimulus_group_id
+        // (status-guarded exactly like the single-item branch — a concurrent
+        // run that already synthesized the group makes this UPDATE affect 0
+        // rows and the whole transaction rolls back). The COST is charged
+        // ONCE: only the ordinal=1 row (this group's `item.id`, by
+        // `fetchBacklog`'s query) gets `audio_cost_estimate_usd` set — every
+        // other row in the group keeps it NULL — so
+        // `services/spendCeiling.ts`'s `SUM(audio_cost_estimate_usd)` never
+        // double- or triple-counts one group's single shared synthesis (see
+        // migration 105's up header + this file's module doc).
+        const updGroup = await client.query(
           `UPDATE generated_items
               SET audio_source_id = $2, audio_start_ms = 0, audio_end_ms = $3,
-                  audio_cost_estimate_usd = $4, audio_synthesized_at = now()
-            WHERE id = $1 AND audio_source_id IS NULL`,
-          [item.id, sourceId, durationMs, estimatedCost],
+                  audio_synthesized_at = now()
+            WHERE stimulus_group_id = $1 AND audio_source_id IS NULL`,
+          [item.stimulusGroupId, sourceId, durationMs],
         );
-        if (upd.rowCount === 0) {
+        if (updGroup.rowCount === 0) {
           throw new Error(
-            `item ${String(item.id)} was synthesized by a concurrent run — discarding this result`,
+            `group ${item.stimulusGroupId} was synthesized by a concurrent run — discarding this result`,
+          );
+        }
+        const updCost = await client.query(
+          `UPDATE generated_items
+              SET audio_cost_estimate_usd = $2
+            WHERE stimulus_group_id = $1 AND stimulus_group_ordinal = 1`,
+          [item.stimulusGroupId, estimatedCost],
+        );
+        if (updCost.rowCount === 0) {
+          throw new Error(
+            `group ${item.stimulusGroupId} has no ordinal=1 row to charge the shared synthesis cost to`,
           );
         }
         return true;
@@ -442,7 +542,8 @@ export async function runSynth(
         synthesized += 1;
         totalCostUsd += estimatedCost;
         print(
-          `synthesize-listening-audio [SYNTH]: item ${String(item.id)} done — ` +
+          `synthesize-listening-audio [SYNTH]: item ${String(item.id)}` +
+            `${item.stimulusGroupId !== null ? ` (group ${item.stimulusGroupId})` : ''} done — ` +
             `${String(charCount)} chars, ${String(durationMs)}ms, $${estimatedCost.toFixed(4)}`,
         );
       }

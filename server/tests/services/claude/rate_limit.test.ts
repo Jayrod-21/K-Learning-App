@@ -13,6 +13,8 @@ const limits = {
   diagnostic_item: 2,
   generate_reading_item: 2,
   generate_listening_item: 2,
+  generate_paired_reading_item: 2,
+  generate_paired_listening_item: 2,
   image_ocr: 2,
   generate_conversation: 2,
   generate_grammar_drill: 2,
