@@ -166,10 +166,10 @@ def test_101_up_applies_and_reapply_is_idempotent(
             assert cur.fetchone()[0] == 0
             # Scoped to the columns 101 ITSELF declares (a later migration in
             # the same chain — e.g. 103's turns/audio_cost_estimate_usd/
-            # audio_synthesized_at — is free to ADD columns without breaking
-            # this test; 101's own contract is what's pinned here, same
-            # "robust to later migrations" posture as the 099/100 down-chain
-            # test).
+            # audio_synthesized_at, or 105's stimulus_group_id/ordinal — is
+            # free to ADD columns without breaking this test; 101's own
+            # contract is what's pinned here, same "robust to later migrations"
+            # posture as the 099/100 down-chain test).
             cur.execute(
                 """
                 SELECT column_name, is_nullable
@@ -178,7 +178,15 @@ def test_101_up_applies_and_reapply_is_idempotent(
                    AND column_name != ALL(%s)
                  ORDER BY column_name
                 """,
-                (["turns", "audio_cost_estimate_usd", "audio_synthesized_at"],),
+                (
+                    [
+                        "turns",
+                        "audio_cost_estimate_usd",
+                        "audio_synthesized_at",
+                        "stimulus_group_id",
+                        "stimulus_group_ordinal",
+                    ],
+                ),
             )
             cols = {row[0]: row[1] for row in cur.fetchall()}
             assert cols == {
