@@ -210,3 +210,48 @@
     padding: 16px 18px;
   }
 }
+
+/* ── F-220 P3 — the generated-bank mock-exam flow (minimal, self-contained;
+   reuses .km-topik__choices/.km-mock__palette/.km-topik__footer/.km-mock__
+   exam-head/.km-mock__timer/.km-mock__audio for everything else) ──────── */
+.km-mock__generated-entry {
+  margin-top: 18px;
+  text-align: center;
+}
+.km-mock__generated-link {
+  background: none;
+  border: none;
+  padding: 4px;
+  color: var(--vermilion);
+  cursor: pointer;
+  font: inherit;
+}
+.km-mock__generated-link:hover {
+  text-decoration: underline;
+}
+.km-mock__generated-select {
+  padding: 20px;
+}
+.km-mock__generated-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.km-mock__generated-choice {
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+.km-mock__generated-choice--active {
+  border-color: var(--vermilion);
+  background: color-mix(in srgb, var(--vermilion) 12%, transparent);
+}
+.km-mock__item {
+  margin: 12px 0;
+  padding: 16px;
+}

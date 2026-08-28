@@ -413,6 +413,112 @@ export interface MockResult {
 }
 
 // ─────────────────────────────────────────────────────────────
+// F-220 P3 — the generated-bank MOCK-EXAM surface (default-off
+// TOPIK_MOCK_USE_GENERATED_BANK). Deliberately a SEPARATE, PARALLEL type
+// family from the real mock's above — not a widened union on `MockTest`/
+// `MockSubmitBody`/etc. — because the generated surface's item ids are
+// synthetic strings ("single:<id>" / "group:<groupId>:<ordinal>", never a
+// bare `topik_items` row id) and its choices carry no answer signal at all
+// (unlike `TopikMockChoice`, which at least shares a shape with the
+// inline-answer study choice minus `correct`). Keeping the two families
+// distinct means a regression can never accidentally wire a real-mock
+// answer path onto generated data or vice versa.
+// ─────────────────────────────────────────────────────────────
+
+/** TOPIK I vs TOPIK II composition tier for the GENERATED mock — mirrors the
+ *  server's `GeneratedMockTier`. Deliberately 'I'/'II', not `TopikLevel`'s
+ *  `'TOPIK I'|'TOPIK II'` string, so the two surfaces stay visually distinct
+ *  in code (see migration 107's header for the server-side rationale). */
+export type GeneratedMockTier = 'I' | 'II';
+
+/** One choice on a generated-mock item — carries no `correct` field at all
+ *  (unlike `TopikMockChoice`, whose shape at least MATCHES a `correct`-
+ *  bearing sibling elsewhere): this surface's item shape structurally has
+ *  nowhere to carry answer data, full stop. */
+export interface GeneratedMockChoice {
+  id: ChoiceId;
+  kr: string;
+  en: string;
+}
+
+/** One generated-mock item, answer-stripped, as the client receives it from
+ *  every generated-mock endpoint. `id` is a synthetic snapshot-scoped string
+ *  (never a bare numeric row id) — see the server's `SnapshotMockItem` doc. */
+export interface GeneratedMockItem {
+  id: string;
+  /** The `generated_items.kind` this question was drawn as (e.g.
+   *  'fill-blank', 'paired-passage-mc') — display/debugging metadata, not
+   *  used for grading (grading is entirely server-side). */
+  kind: string;
+  prompt: string;
+  /** The shared reading passage (own or a paired-stimulus group's), when any. */
+  passage?: string;
+  /** Streaming URL of this question's audio (own clip, or a paired-stimulus
+   *  group's shared clip) — NEVER a transcript; see the server's NO-LEAK docs. */
+  audioUrl?: string;
+  audioStartMs?: number;
+  audioEndMs?: number;
+  choices: GeneratedMockChoice[];
+}
+
+/** Envelope returned by `POST /topik/mock/generated` — both a FRESH assemble
+ *  and a RESUMED sitting share this exact shape (`resumed` distinguishes
+ *  them); `attemptId: null` + `items: []` means the bank was too thin to
+ *  assemble anything for this (tier, section) — a valid, non-error outcome. */
+export interface GeneratedMockAssembleResponse {
+  attemptId: string | null;
+  tier: GeneratedMockTier;
+  section: MockSection;
+  items: GeneratedMockItem[];
+  /** The blueprint's full target item count — may exceed `items.length`
+   *  when the bank is thin. Purely informational (e.g. "38 of a possible 50
+   *  questions available today"). */
+  requestedCount: number;
+  currentIndex: number;
+  /** { "<GeneratedMockItem.id>": choiceId } — the picks saved so far
+   *  (non-empty only on a RESUMED sitting). */
+  picks: Record<string, ChoiceId>;
+  remainingMs: number;
+  resumed: boolean;
+}
+
+/** Body for `PUT /topik/mock/generated/:id` — save progress. */
+export interface GeneratedMockProgressBody {
+  currentIndex: number;
+  picks: Record<string, ChoiceId>;
+  remainingMs: number;
+}
+
+/** Body for `POST /topik/mock/generated/:id/submit` — both fields optional:
+ *  omit `picks` entirely to grade from whatever progress was last PUT. */
+export interface GeneratedMockSubmitBody {
+  picks?: Record<string, ChoiceId>;
+  durationMs?: number;
+}
+
+/** One graded reveal in a generated-mock submit result. */
+export interface GeneratedMockReveal {
+  itemId: string;
+  picked: ChoiceId | null;
+  correctChoiceId: ChoiceId;
+  isCorrect: boolean;
+  explanation: string;
+}
+
+/** Result envelope from `POST /topik/mock/generated/:id/submit`. */
+export interface GeneratedMockSubmitResult {
+  attemptId: string;
+  tier: GeneratedMockTier;
+  section: MockSection;
+  totalItems: number;
+  answered: number;
+  correct: number;
+  percentage: number;
+  band: string;
+  items: GeneratedMockReveal[];
+}
+
+// ─────────────────────────────────────────────────────────────
 // Diagnostic
 // ─────────────────────────────────────────────────────────────
 

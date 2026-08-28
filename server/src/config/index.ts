@@ -467,6 +467,18 @@ const EnvSchema = z.object({
   DIAGNOSTIC_USE_GENERATED_BANK: envBool(false),
 
   // ---------------------------------------------------------------------------
+  // F-220 P3 — the generated-bank MOCK-EXAM surface (generated_mock_attempts,
+  // migration 107). Default FALSE so the REAL /topik/mock, /mock/submit, and
+  // every other existing topik.ts route stay BYTE-IDENTICAL until an operator
+  // has populated + reviewed a bank across the blueprint's kinds AND
+  // deliberately flips this on. When false, POST/PUT /topik/mock/generated*
+  // 404 (routes/topik.ts) — the generated-mock surface does not exist at all
+  // from the client's perspective. Strict envBool — same landmine as
+  // DIAGNOSTIC_USE_GENERATED_BANK/REGISTRATION_ENABLED above.
+  // ---------------------------------------------------------------------------
+  TOPIK_MOCK_USE_GENERATED_BANK: envBool(false),
+
+  // ---------------------------------------------------------------------------
   // Mail transport (F-006) — provider-agnostic SMTP, NEVER a hardcoded vendor.
   // Unset SMTP_HOST ⇒ the mock/log transport (dev + tests): the message is
   // logged (including the verification URL — the dev escape hatch) and nothing

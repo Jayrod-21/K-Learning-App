@@ -390,3 +390,207 @@ export async function pickGeneratedStimulusGroup(
     questions,
   };
 }
+
+// -----------------------------------------------------------------------------
+// F-220 P3 — kind-aware draws for the generated MOCK-EXAM surface
+// (server/src/services/topik/generatedMock.ts).
+//
+// `pickGeneratedItem` enforces its OWN fixed section<->kind contract (exactly
+// one kind per section — 'pattern' for grammar, 'passage-mc' for reading,
+// 'audio-mc' for listening); the P2 single-item-type generators wrote MANY
+// more kinds under 'reading'/'listening' (fill-blank, topic-id,
+// match-content, …/dialogue-complete, whats-next, …) that a caller needs to
+// draw BY NAME to follow a blueprint's type-block order — hence a separate,
+// explicitly kind-parameterized draw rather than widening pickGeneratedItem's
+// contract (which would let a diagnostic vocab/grammar draw start returning
+// an arbitrary reading/listening kind, unrelated to its section's fixed
+// shape). `excludeIds` lets the assembler draw the SAME kind repeatedly
+// within one exam (a blueprint kind-block is usually >1 item) without
+// re-serving the same row.
+// -----------------------------------------------------------------------------
+
+/**
+ * Draw one `status = 'approved'` item matching an EXACT `kind`, for
+ * `(section, level)`, excluding any id already drawn into the caller's
+ * in-progress assembly.
+ *
+ * Unlike `pickGeneratedItem`, this does NOT enforce a fixed section<->kind
+ * pairing — the caller (the mock blueprint) names the exact kind it wants for
+ * this slot, and the WHERE clause matches it verbatim. `section` is still
+ * REQUIRED and still gates the LISTENING audio-readiness clause (a listening
+ * row is only servable once `audio_source_id IS NOT NULL` — the same
+ * NO-LEAK-relevant guard `pickGeneratedItem` enforces): the mock surface only
+ * ever calls this with section='reading'|'listening' (never vocab/grammar —
+ * GeneratedMockSection, generatedMock.ts, is a narrower union).
+ *
+ * NO-LEAK: mirrors `pickGeneratedItem` exactly — the SELECT list never
+ * includes `turns` (the listening dialogue transcript column); only
+ * `audioUrl`/`audioStartMs`/`audioEndMs` are ever returned for a listening
+ * draw, so it is structurally impossible for a caller to read the spoken
+ * text through this function.
+ *
+ * `exec` is injectable (defaults to the shared pool's `query`) so tests can
+ * run against a per-test database without touching module-level pool state.
+ *
+ * Returns null when no eligible row matches (kind unfunded/exhausted at this
+ * cell, or every match already excluded) — the caller's cue to skip this
+ * slot (a thin bank yields a shorter exam, never a crash — see
+ * generatedMock.ts's assembler).
+ */
+export async function pickGeneratedItemOfKind(
+  section: GeneratedBankSection,
+  level: DiagnosticTargetLevel,
+  kind: string,
+  excludeIds: readonly number[] = [],
+  exec: Querier = query,
+): Promise<GeneratedBankItem | null> {
+  const audioReadyClause = section === 'listening' ? 'AND gi.audio_source_id IS NOT NULL' : '';
+  // A paired-stimulus row (stimulus_group_id NOT NULL) is a member of a
+  // GROUP, drawn only via pickGeneratedStimulusGroup/
+  // pickGeneratedStimulusGroupExcludingGroups — never individually — so it is
+  // excluded here even if its own `kind` (e.g. 'paired-passage-mc') were
+  // passed by mistake, keeping the two draw paths non-overlapping.
+  const { rows } = await exec<GeneratedItemRow>(
+    `SELECT gi.id, gi.kind, gi.level, gi.stem, gi.passage, gi.choices, gi.answer_index,
+            gi.explain, at.id AS track_id, gi.audio_start_ms, gi.audio_end_ms
+       FROM generated_items gi
+       LEFT JOIN audio_tracks at ON at.source_id = gi.audio_source_id
+      WHERE gi.section = $1
+        AND gi.level = $2
+        AND gi.status = 'approved'
+        AND gi.kind = $3
+        AND gi.stimulus_group_id IS NULL
+        AND NOT (gi.id = ANY($4::bigint[]))
+        ${audioReadyClause}
+      ORDER BY random()
+      LIMIT 1`,
+    [section, level, kind, [...excludeIds]],
+  );
+  const row = rows[0];
+  if (row === undefined) return null;
+
+  const choices: GeneratedBankChoice[] = row.choices.map((c, i) => ({
+    id: CHOICE_IDS[i]!,
+    kr: c.kr,
+    en: c.en ?? '',
+  }));
+  const correctAnswer = CHOICE_IDS[row.answer_index]!;
+
+  const audioFields =
+    section === 'listening'
+      ? {
+          audioUrl: `/audio/tracks/${String(row.track_id!)}/stream`,
+          audioStartMs: row.audio_start_ms!,
+          audioEndMs: row.audio_end_ms!,
+        }
+      : {};
+
+  return {
+    id: row.id,
+    kind: row.kind,
+    level: row.level as DiagnosticTargetLevel,
+    prompt: row.stem,
+    ...(row.passage !== null ? { passage: row.passage } : {}),
+    ...audioFields,
+    choices,
+    correctAnswer,
+    explain: row.explain ?? '',
+    sourceRef: `bank:${String(row.id)}`,
+  };
+}
+
+/**
+ * Draw ONE approved, complete stimulus group for `(section, level)`,
+ * excluding any group id already drawn into the caller's in-progress
+ * assembly — the group-level sibling of `pickGeneratedItemOfKind`'s
+ * `excludeIds`, so the mock assembler can draw MULTIPLE paired-stimulus
+ * blocks across an exam without ever re-serving the same passage/dialogue.
+ *
+ * Identical to `pickGeneratedStimulusGroup` in every other respect (same
+ * "complete group" definition, same NO-LEAK discipline — see that function's
+ * doc, which this one does not repeat) — kept as a SEPARATE function rather
+ * than adding an optional param to the existing one so
+ * `pickGeneratedStimulusGroup`'s signature/behavior for its one existing
+ * caller (diagnostic, if it ever wires this — today it wires nothing, P1
+ * ships dark) stays byte-identical.
+ *
+ * `exec` is injectable (defaults to the shared pool's `query`) so tests can
+ * run against a per-test database without touching module-level pool state.
+ *
+ * Returns null when no approved-and-complete, not-yet-excluded group matches.
+ */
+export async function pickGeneratedStimulusGroupExcludingGroups(
+  section: 'reading' | 'listening',
+  level: DiagnosticTargetLevel,
+  excludeGroupIds: readonly string[],
+  exec: Querier = query,
+): Promise<StimulusGroupDraw | null> {
+  const kindValue = section === 'reading' ? 'paired-passage-mc' : 'paired-audio-mc';
+  const audioReadyHaving =
+    section === 'listening'
+      ? 'AND COUNT(*) FILTER (WHERE gi.audio_source_id IS NULL) = 0'
+      : '';
+
+  const { rows: groupRows } = await exec<{ group_id: string }>(
+    `SELECT gi.stimulus_group_id AS group_id
+       FROM generated_items gi
+      WHERE gi.section = $1
+        AND gi.level = $2
+        AND gi.kind = $3
+        AND gi.stimulus_group_id IS NOT NULL
+        AND NOT (gi.stimulus_group_id = ANY($4::text[]))
+      GROUP BY gi.stimulus_group_id
+     HAVING COUNT(*) >= 2
+        AND COUNT(*) FILTER (WHERE gi.status <> 'approved') = 0
+        ${audioReadyHaving}
+      ORDER BY random()
+      LIMIT 1`,
+    [section, level, kindValue, [...excludeGroupIds]],
+  );
+  const groupId = groupRows[0]?.group_id;
+  if (groupId === undefined) return null;
+
+  if (section === 'reading') {
+    const { rows } = await exec<StimulusGroupQuestionRow>(
+      `SELECT stimulus_group_ordinal, stem, choices, answer_index, explain, passage
+         FROM generated_items
+        WHERE stimulus_group_id = $1
+        ORDER BY stimulus_group_ordinal ASC`,
+      [groupId],
+    );
+    const first = rows[0];
+    if (first === undefined) return null;
+    const questions = rows.map((r) => mapStimulusGroupQuestion(r));
+    return {
+      groupId,
+      section: 'reading',
+      level,
+      ...(first.passage !== null ? { passage: first.passage } : {}),
+      questions,
+    };
+  }
+
+  // section === 'listening' — NEVER select `turns` here (see
+  // pickGeneratedStimulusGroup's doc — identical NO-LEAK reasoning).
+  const { rows } = await exec<StimulusGroupQuestionRow>(
+    `SELECT gi.stimulus_group_ordinal, gi.stem, gi.choices, gi.answer_index, gi.explain,
+            gi.passage, at.id AS track_id, gi.audio_start_ms, gi.audio_end_ms
+       FROM generated_items gi
+       LEFT JOIN audio_tracks at ON at.source_id = gi.audio_source_id
+      WHERE gi.stimulus_group_id = $1
+      ORDER BY gi.stimulus_group_ordinal ASC`,
+    [groupId],
+  );
+  const first = rows[0];
+  if (first === undefined) return null;
+  const questions = rows.map((r) => mapStimulusGroupQuestion(r));
+  return {
+    groupId,
+    section: 'listening',
+    level,
+    audioUrl: `/audio/tracks/${String(first.track_id!)}/stream`,
+    audioStartMs: first.audio_start_ms!,
+    audioEndMs: first.audio_end_ms!,
+    questions,
+  };
+}

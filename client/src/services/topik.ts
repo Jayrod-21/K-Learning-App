@@ -43,6 +43,11 @@
 import { api } from './api';
 import type {
   ChoiceId,
+  GeneratedMockAssembleResponse,
+  GeneratedMockProgressBody,
+  GeneratedMockSubmitBody,
+  GeneratedMockSubmitResult,
+  GeneratedMockTier,
   MockResult,
   MockSection,
   MockSubmitBody,
@@ -368,6 +373,71 @@ export async function submitMockTest(
 ): Promise<MockResult> {
   return api.post<MockResult>(
     '/topik/mock/submit',
+    body,
+    signal !== undefined ? { signal } : undefined,
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// F-220 P3 — the generated-bank MOCK-EXAM surface (default-off
+// TOPIK_MOCK_USE_GENERATED_BANK server flag). When the flag is off, every
+// route below 404s — `fetchGeneratedMock` surfaces that as a normal
+// `ApiError` the caller can degrade on (e.g. hide the "generated mock"
+// entry point), exactly like any other disabled/absent surface. This is a
+// SEPARATE, PARALLEL flow from the real mock's above (`fetchMockTest`/
+// `submitMockTest`/`saveAttempt`) — see the `GeneratedMock*` types' doc in
+// types/domain.ts for why the two are kept structurally distinct rather than
+// widened unions on the real mock's shapes.
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * POST /topik/mock/generated — assemble a generated mock section, or RESUME
+ * the caller's already-in-progress one for the SAME `(tier, section)`
+ * (folds resume into the same call — there is no separate GET on this
+ * surface, unlike the real mock's F-007 `/topik/attempt`).
+ *
+ * `attemptId: null` + `items: []` is a valid response (a thin bank had
+ * nothing to assemble for this slot yet) — not thrown as an error.
+ */
+export async function fetchGeneratedMock(
+  tier: GeneratedMockTier,
+  section: MockSection,
+  signal?: AbortSignal,
+): Promise<GeneratedMockAssembleResponse> {
+  return api.post<GeneratedMockAssembleResponse>(
+    '/topik/mock/generated',
+    { tier, section },
+    signal !== undefined ? { signal } : undefined,
+  );
+}
+
+/** PUT /topik/mock/generated/:id — save progress on the caller's own attempt. */
+export async function saveGeneratedMockProgress(
+  attemptId: string,
+  body: GeneratedMockProgressBody,
+  signal?: AbortSignal,
+): Promise<void> {
+  await api.put<void>(
+    `/topik/mock/generated/${encodeURIComponent(attemptId)}`,
+    body,
+    signal !== undefined ? { signal } : undefined,
+  );
+}
+
+/**
+ * POST /topik/mock/generated/:id/submit — submit a generated mock for
+ * server-side grading. `picks` is OPTIONAL: omit it to grade from whatever
+ * progress was last saved via `saveGeneratedMockProgress`, or send the
+ * final picks map in one shot. The server never trusts a client-asserted
+ * correctness — grading reads the attempt's own stored answer key.
+ */
+export async function submitGeneratedMock(
+  attemptId: string,
+  body: GeneratedMockSubmitBody,
+  signal?: AbortSignal,
+): Promise<GeneratedMockSubmitResult> {
+  return api.post<GeneratedMockSubmitResult>(
+    `/topik/mock/generated/${encodeURIComponent(attemptId)}/submit`,
     body,
     signal !== undefined ? { signal } : undefined,
   );

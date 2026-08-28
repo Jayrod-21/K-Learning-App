@@ -30,6 +30,9 @@ const svc = vi.hoisted(() => ({
   clearAttempt: vi.fn(),
   fetchAvailableTests: vi.fn(),
   fetchAttemptHistory: vi.fn(),
+  fetchGeneratedMock: vi.fn(),
+  saveGeneratedMockProgress: vi.fn(),
+  submitGeneratedMock: vi.fn(),
 }));
 
 vi.mock('../../services/topik', () => ({
@@ -40,6 +43,9 @@ vi.mock('../../services/topik', () => ({
   clearAttempt: svc.clearAttempt,
   fetchAvailableTests: svc.fetchAvailableTests,
   fetchAttemptHistory: svc.fetchAttemptHistory,
+  fetchGeneratedMock: svc.fetchGeneratedMock,
+  saveGeneratedMockProgress: svc.saveGeneratedMockProgress,
+  submitGeneratedMock: svc.submitGeneratedMock,
 }));
 
 // Keep the offline fallbacks out of the way — they must never be reached when
@@ -2327,6 +2333,181 @@ describe('MockMode (Mock test)', () => {
       expect(document.querySelector('.km-mock__exam-head')).toBeInTheDocument();
       expect(document.querySelector('.km-mock__nav')).toBeInTheDocument();
     });
+  });
+});
+
+describe('F-220 P3 — generated mock (beta) flow', () => {
+  beforeEach(() => {
+    svc.fetchAttempt.mockResolvedValue(null);
+    svc.fetchAvailableTests.mockResolvedValue({ tests: [], total: 0 });
+    svc.fetchAttemptHistory.mockResolvedValue({ attempts: [], total: 0 });
+    svc.fetchGeneratedMock.mockReset();
+    svc.saveGeneratedMockProgress.mockReset();
+    svc.submitGeneratedMock.mockReset();
+    svc.saveGeneratedMockProgress.mockResolvedValue(undefined);
+  });
+
+  const ASSEMBLED = {
+    attemptId: 'gm-1',
+    tier: 'II' as const,
+    section: 'reading' as const,
+    items: [
+      {
+        id: 'single:501',
+        kind: 'fill-blank',
+        prompt: '생성형 문제 1번입니다.',
+        choices: [
+          { id: 'a' as const, kr: '가', en: 'A' },
+          { id: 'b' as const, kr: '나', en: 'B' },
+          { id: 'c' as const, kr: '다', en: 'C' },
+          { id: 'd' as const, kr: '라', en: 'D' },
+        ],
+      },
+      {
+        id: 'group:g1:1',
+        kind: 'paired-passage-mc',
+        prompt: '생성형 문제 2번입니다.',
+        passage: '공유 지문 텍스트입니다.',
+        choices: [
+          { id: 'a' as const, kr: '하나', en: 'One' },
+          { id: 'b' as const, kr: '둘', en: 'Two' },
+          { id: 'c' as const, kr: '셋', en: 'Three' },
+          { id: 'd' as const, kr: '넷', en: 'Four' },
+        ],
+      },
+    ],
+    requestedCount: 50,
+    currentIndex: 0,
+    picks: {},
+    remainingMs: 4_200_000,
+    resumed: false,
+  };
+
+  const GENERATED_RESULT = {
+    attemptId: 'gm-1',
+    tier: 'II' as const,
+    section: 'reading' as const,
+    totalItems: 2,
+    answered: 1,
+    correct: 1,
+    percentage: 50,
+    band: 'L3 range',
+    items: [
+      {
+        itemId: 'single:501',
+        picked: 'a' as const,
+        correctChoiceId: 'a' as const,
+        isCorrect: true,
+        explanation: '',
+      },
+      {
+        itemId: 'group:g1:1',
+        picked: null,
+        correctChoiceId: 'b' as const,
+        isCorrect: false,
+        explanation: '설명입니다.',
+      },
+    ],
+  };
+
+  it('the entry link is on the section-select screen', () => {
+    render(<MockMode />, { wrapper: MemoryRouter });
+    expect(
+      screen.getByRole('button', { name: /Try a generated mock/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('assembles a section, renders answer-stripped items, grades server-side, and shows results', async () => {
+    svc.fetchGeneratedMock.mockResolvedValue(ASSEMBLED);
+    svc.submitGeneratedMock.mockResolvedValue(GENERATED_RESULT);
+    const user = userEvent.setup();
+    render(<MockMode />, { wrapper: MemoryRouter });
+
+    await user.click(screen.getByRole('button', { name: /Try a generated mock/i }));
+    await user.click(screen.getByRole('button', { name: /Start/ }));
+
+    await waitFor(() => {
+      expect(screen.getByText('생성형 문제 1번입니다.')).toBeInTheDocument();
+    });
+    expect(svc.fetchGeneratedMock).toHaveBeenCalledWith(
+      'II',
+      'reading',
+      expect.any(AbortSignal),
+    );
+    // Answer-strip: the wire item carries no correctness/explanation field.
+    const served = (await svc.fetchGeneratedMock.mock.results[0]?.value) as typeof ASSEMBLED;
+    expect(served.items[0]).not.toHaveProperty('correctChoiceId');
+    expect(served.items[0]).not.toHaveProperty('explanation');
+    expect(screen.getAllByRole('radio')).toHaveLength(4);
+    expect(screen.getByText('1 / 2')).toBeInTheDocument();
+
+    // Pick the first item's answer, navigate to the paired-group question
+    // (proving the shared passage renders), then submit.
+    await user.click(screen.getAllByRole('radio')[0]!);
+    await user.click(screen.getByRole('button', { name: /Next/i }));
+    await waitFor(() => {
+      expect(screen.getByText('공유 지문 텍스트입니다.')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('button', { name: /Submit test/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/L3 range/)).toBeInTheDocument();
+    });
+    expect(svc.submitGeneratedMock).toHaveBeenCalledWith(
+      'gm-1',
+      { picks: { 'single:501': 'a' } },
+    );
+  });
+
+  it('a thin bank (items: []) shows an inline notice instead of entering the exam', async () => {
+    svc.fetchGeneratedMock.mockResolvedValue({
+      attemptId: null,
+      tier: 'II',
+      section: 'reading',
+      items: [],
+      requestedCount: 50,
+      currentIndex: 0,
+      picks: {},
+      remainingMs: 4_200_000,
+      resumed: false,
+    });
+    const user = userEvent.setup();
+    render(<MockMode />, { wrapper: MemoryRouter });
+
+    await user.click(screen.getByRole('button', { name: /Try a generated mock/i }));
+    await user.click(screen.getByRole('button', { name: /Start/ }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Not enough generated items/i)).toBeInTheDocument();
+    });
+    // Still on the select screen — no exam item rendered.
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+  });
+
+  it('the flag being off (404) degrades to an inline error with retry, never a crash', async () => {
+    svc.fetchGeneratedMock.mockRejectedValue(new Error('not found'));
+    const user = userEvent.setup();
+    render(<MockMode />, { wrapper: MemoryRouter });
+
+    await user.click(screen.getByRole('button', { name: /Try a generated mock/i }));
+    await user.click(screen.getByRole('button', { name: /Start/ }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Retry/i })).toBeInTheDocument();
+    });
+  });
+
+  it('"Back to mock" returns to the real mock section select', async () => {
+    const user = userEvent.setup();
+    render(<MockMode />, { wrapper: MemoryRouter });
+
+    await user.click(screen.getByRole('button', { name: /Try a generated mock/i }));
+    await user.click(screen.getByRole('button', { name: /Back to mock/i }));
+
+    expect(
+      screen.getByRole('button', { name: /Reading mock exams/i }),
+    ).toBeInTheDocument();
   });
 });
 
