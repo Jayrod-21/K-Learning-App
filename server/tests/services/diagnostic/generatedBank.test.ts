@@ -15,7 +15,9 @@ import {
   pickGeneratedItemOfKind,
   pickGeneratedStimulusGroup,
   pickGeneratedStimulusGroupExcludingGroups,
+  pickGeneratedWritingItem,
 } from '../../../src/services/diagnostic/generatedBank.js';
+import type { WritingItemKind, WritingItemRubric } from '../../../src/services/claude/models.js';
 
 let pg: PgHandle;
 let exec: Querier;
@@ -43,6 +45,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await pg.pool.query(`DELETE FROM generated_items`);
+  await pg.pool.query(`DELETE FROM generated_writing_items`);
 });
 
 let hashSeq = 0;
@@ -815,5 +818,167 @@ describe('pickGeneratedStimulusGroupExcludingGroups (F-220 P3 — repeated paire
     expect(viaExcluding).not.toBeNull();
     expect(viaExcluding!.groupId).toBe(viaExisting!.groupId);
     expect(viaExcluding!.questions).toHaveLength(viaExisting!.questions.length);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// F-220 P4 — pickGeneratedWritingItem (writing-item draw, ships DARK — no
+// route wires this yet, see the migration 108 / generatedBank.ts header).
+// -----------------------------------------------------------------------------
+
+const GOOD_ESSAY_RUBRIC: WritingItemRubric = {
+  kind: 'essay',
+  maxScore: 50,
+  criteria: [
+    { name: 'content', maxScore: 20, descriptor: 'addresses the prompt' },
+    { name: 'organization', maxScore: 20, descriptor: 'clear structure' },
+    { name: 'languageUse', maxScore: 10, descriptor: 'accurate grammar' },
+  ],
+};
+
+const GOOD_BLANKS_RUBRIC: WritingItemRubric = {
+  kind: 'short-answer-blanks',
+  maxScore: 10,
+  criteria: [
+    { name: 'blank1', maxScore: 5, descriptor: 'appropriate for ㉠' },
+    { name: 'blank2', maxScore: 5, descriptor: 'appropriate for ㉡' },
+  ],
+};
+
+async function insertWritingItem(overrides: {
+  level?: string;
+  kind?: WritingItemKind;
+  prompt?: string;
+  stimulus?: string | null;
+  rubric?: WritingItemRubric;
+  modelAnswer?: string | null;
+  minWords?: number | null;
+  maxWords?: number | null;
+  status?: 'draft' | 'approved' | 'rejected';
+}): Promise<number> {
+  const kind = overrides.kind ?? 'essay';
+  const rubric = overrides.rubric ?? (kind === 'short-answer-blanks' ? GOOD_BLANKS_RUBRIC : GOOD_ESSAY_RUBRIC);
+  const { rows } = await pg.pool.query<{ id: string }>(
+    `INSERT INTO generated_writing_items
+       (level, kind, prompt, stimulus, rubric, model_answer, min_words, max_words,
+        source_ref, status, created_by, model_id, prompt_hash)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8,
+             'test-seed-ref', $9, 'test-fixture', 'claude-sonnet-4-6', $10)
+     RETURNING id`,
+    [
+      overrides.level ?? 'L4',
+      kind,
+      overrides.prompt ?? 'mock writing prompt',
+      overrides.stimulus ?? null,
+      JSON.stringify(rubric),
+      overrides.modelAnswer ?? null,
+      overrides.minWords ?? null,
+      overrides.maxWords ?? null,
+      overrides.status ?? 'approved',
+      nextHash(),
+    ],
+  );
+  return Number(rows[0]!.id);
+}
+
+describe('pickGeneratedWritingItem', () => {
+  it('returns null when the bank is empty for the (level, kind) cell', async () => {
+    const result = await pickGeneratedWritingItem('L4', 'essay', [], exec);
+    expect(result).toBeNull();
+  });
+
+  it('returns null when only OTHER cells / OTHER kinds / OTHER statuses are populated', async () => {
+    await insertWritingItem({ level: 'L5+', kind: 'essay', status: 'approved' }); // wrong level
+    await insertWritingItem({ level: 'L4', kind: 'chart-description', status: 'approved' }); // wrong kind
+    await insertWritingItem({ level: 'L4', kind: 'essay', status: 'draft' }); // wrong status
+    await insertWritingItem({ level: 'L4', kind: 'essay', status: 'rejected' }); // wrong status
+
+    const result = await pickGeneratedWritingItem('L4', 'essay', [], exec);
+    expect(result).toBeNull();
+  });
+
+  it('approved-only: draft/rejected rows are never drawn even when they are the ONLY rows at the cell', async () => {
+    await insertWritingItem({ level: 'L4', kind: 'essay', status: 'draft' });
+    const miss1 = await pickGeneratedWritingItem('L4', 'essay', [], exec);
+    expect(miss1).toBeNull();
+
+    await insertWritingItem({ level: 'L4', kind: 'essay', status: 'rejected' });
+    const miss2 = await pickGeneratedWritingItem('L4', 'essay', [], exec);
+    expect(miss2).toBeNull();
+  });
+
+  it('draws an approved essay row — no stimulus/modelAnswer, minWords/maxWords present', async () => {
+    const id = await insertWritingItem({
+      level: 'L4',
+      kind: 'essay',
+      prompt: '다음 주제에 대해 600~700자로 자신의 의견을 쓰십시오.',
+      rubric: GOOD_ESSAY_RUBRIC,
+      minWords: 600,
+      maxWords: 700,
+    });
+
+    const result = await pickGeneratedWritingItem('L4', 'essay', [], exec);
+    expect(result).not.toBeNull();
+    expect(result!.id).toBe(id);
+    expect(result!.kind).toBe('essay');
+    expect(result!.level).toBe('L4');
+    expect(result!.prompt).toBe('다음 주제에 대해 600~700자로 자신의 의견을 쓰십시오.');
+    expect(result!.stimulus).toBeUndefined();
+    expect(result!.modelAnswer).toBeUndefined();
+    expect(result!.minWords).toBe(600);
+    expect(result!.maxWords).toBe(700);
+    expect(result!.rubric).toEqual(GOOD_ESSAY_RUBRIC);
+    expect(result!.sourceRef).toBe(`bank:${String(id)}`);
+  });
+
+  it('draws an approved short-answer-blanks row — stimulus + modelAnswer present, minWords/maxWords absent', async () => {
+    const id = await insertWritingItem({
+      level: 'L3',
+      kind: 'short-answer-blanks',
+      prompt: '다음을 읽고 ㉠과 ㉡에 들어갈 말을 각각 쓰십시오.',
+      stimulus: '안녕하세요. ( ㉠ ) 회의 시간이 변경되었습니다. ( ㉡ ).',
+      modelAnswer: '㉠: 알려 드립니다 / ㉡: 참고 부탁드립니다',
+      rubric: GOOD_BLANKS_RUBRIC,
+    });
+
+    const result = await pickGeneratedWritingItem('L3', 'short-answer-blanks', [], exec);
+    expect(result).not.toBeNull();
+    expect(result!.id).toBe(id);
+    expect(result!.stimulus).toBe('안녕하세요. ( ㉠ ) 회의 시간이 변경되었습니다. ( ㉡ ).');
+    expect(result!.modelAnswer).toBe('㉠: 알려 드립니다 / ㉡: 참고 부탁드립니다');
+    expect(result!.minWords).toBeUndefined();
+    expect(result!.maxWords).toBeUndefined();
+  });
+
+  it('excludeIds excludes an already-drawn id, falling through to the other approved row', async () => {
+    const id1 = await insertWritingItem({ level: 'L4', kind: 'essay' });
+    const id2 = await insertWritingItem({ level: 'L4', kind: 'essay' });
+
+    const first = await pickGeneratedWritingItem('L4', 'essay', [], exec);
+    expect(first).not.toBeNull();
+    expect([id1, id2]).toContain(first!.id);
+
+    const second = await pickGeneratedWritingItem('L4', 'essay', [first!.id], exec);
+    expect(second).not.toBeNull();
+    expect(second!.id).not.toBe(first!.id);
+    expect([id1, id2]).toContain(second!.id);
+
+    // Both drawn ids excluded -> nothing left.
+    const third = await pickGeneratedWritingItem('L4', 'essay', [id1, id2], exec);
+    expect(third).toBeNull();
+  });
+
+  it('generated_items (the MCQ bank) is never touched by this draw — cross-table isolation', async () => {
+    await insertItem({ section: 'reading', level: 'L4', kind: 'passage-mc', status: 'approved' });
+    await insertWritingItem({ level: 'L4', kind: 'essay', status: 'approved' });
+
+    const writingDraw = await pickGeneratedWritingItem('L4', 'essay', [], exec);
+    expect(writingDraw).not.toBeNull();
+
+    // pickGeneratedItem must not be able to see the writing row either
+    // (different table, different shape entirely).
+    const mcqDraw = await pickGeneratedItem('reading', 'L4', exec);
+    expect(mcqDraw).not.toBeNull();
+    expect(mcqDraw!.kind).toBe('passage-mc');
   });
 });

@@ -613,6 +613,159 @@ export const WritingPromptResultSchema = z.object({
 });
 export type WritingPromptResult = z.infer<typeof WritingPromptResultSchema>;
 
+// ---- 3e-2. generateWritingItem (F-220 P4 — writing-item BANK generator) ---
+// Distinct from generateWritingPrompt above: that route authors an EPHEMERAL,
+// live-request writing PROMPT only (promptKr/promptEn/lengthHint — no rubric,
+// no reference answer, no stimulus text) for the Writing page's "generate a
+// prompt" UI affordance. This one is the F-220 BATCH generator behind
+// `generated_writing_items` (migration 108) — it authors a FULL bank-ready
+// item: a task prompt + (per kind) a stimulus + a grading rubric + (per kind)
+// a reference model answer + (per kind) a target length band, from a bare
+// neutral TOPIC seed (server/src/scripts/readingTopics.ts — the SAME
+// copyright-clean topic list slices 2/3 already reuse; see
+// `services/claude/prompts/writing_item.ts`). Deliberately reuses the SAME
+// `RouteName` ('generate_writing_prompt') for model/inputCap/rateLimit
+// config rather than adding a new claude_route enum value per kind (per the
+// F-220 P4 build brief) — the 3 kinds below are prompt-shape variants of ONE
+// writing-authoring task, exactly like ReadingQuestionType/
+// ListeningQuestionType are prompt-shape variants that never got their own
+// route.
+
+/** The 3 TOPIK II writing task shapes this generator authors (per
+ *  TOPIK_STRUCTURE_ANALYSIS.md §1/§6):
+ *    short-answer-blanks ≈ #51/#52 (fill TWO blanks in a short functional text)
+ *    chart-description    ≈ #53     (describe a SYNTHETIC invented chart/statistic, 200-300자)
+ *    essay                ≈ #54     (argue a SYNTHETIC invented debate prompt, 600-700자)
+ *  All three are constructed-response (no MCQ choices) and TOPIK II ONLY —
+ *  matches `generated_writing_items.level`'s L3/L4/L5+ CHECK (migration
+ *  108); there is no TOPIK I writing section
+ *  (TOPIK_STRUCTURE_ANALYSIS.md §3). */
+export const WritingItemKindSchema = z.enum(['short-answer-blanks', 'chart-description', 'essay']);
+export type WritingItemKind = z.infer<typeof WritingItemKindSchema>;
+
+/** Writing bank items are TOPIK II only — narrower than
+ *  `DiagnosticTargetLevelSchema` (which also admits L1/L2 for other
+ *  sections that DO have a TOPIK I form). */
+export const WritingItemTargetLevelSchema = z.enum(['L3', 'L4', 'L5+']);
+export type WritingItemTargetLevel = z.infer<typeof WritingItemTargetLevelSchema>;
+
+export const WritingItemGenInputSchema = z.object({
+  /** Which of the 3 task shapes to author. */
+  kind: WritingItemKindSchema,
+  /** Target proficiency band — TOPIK II only (L3/L4/L5+). */
+  targetLevel: WritingItemTargetLevelSchema,
+  /** Bare neutral topic seed (readingTopics.ts) — NEVER real TOPIK/corpus
+   *  content; the model authors 100% fresh content from this bare word. */
+  topic: NonEmptyText.max(200),
+  /** Optional model override. */
+  model: z.enum(['haiku', 'sonnet', 'opus']).optional(),
+});
+export type WritingItemGenInput = z.infer<typeof WritingItemGenInputSchema>;
+
+const WritingRubricCriterionSchema = z.object({
+  /** Short criterion name, e.g. 'content', 'organization', 'blank1'. */
+  name: NonEmptyText.max(60),
+  maxScore: z.number().positive(),
+  /** Human-readable scoring guidance for this criterion. */
+  descriptor: NonEmptyText.max(500),
+});
+
+/** Per-`kind` criteria NAME/COUNT contract (WRITING_ITEM_TYPE_BLOCKS in
+ *  prompts/writing_item.ts mandates these exact names for the model to
+ *  fill): short-answer-blanks grades each blank separately; chart-
+ *  description/essay both use the same 3-dimension content/organization/
+ *  languageUse split (mirroring grade_writing.ts's existing TOPIK rubric
+ *  dimensions). Per-criterion POINT VALUES are deliberately NOT pinned here
+ *  (only the sum-equals-maxScore invariant below is) — that would hard-code
+ *  a point distribution into the schema for what is otherwise a Claude-
+ *  authored, per-row rubric, and would reject a legitimately-reweighted
+ *  criterion split that still sums correctly. */
+const WRITING_KIND_EXPECTED_CRITERIA: Record<WritingItemKind, readonly string[]> = {
+  'short-answer-blanks': ['blank1', 'blank2'],
+  'chart-description': ['content', 'organization', 'languageUse'],
+  essay: ['content', 'organization', 'languageUse'],
+};
+
+/** `generated_writing_items.rubric`'s JSONB shape — criteria + max points,
+ *  a lighter-weight relative of grade_writing.ts's fixed rubric TEXT blocks
+ *  (this one is authored PER-ROW at generation time, not a hand-written
+ *  constant), deliberately chosen to total the SAME points as the existing
+ *  topik_ii_53 (30) / topik_ii_54 (50) rubrics for forward-compat with
+ *  grade_writing.ts's existing point bands, should a later slice wire
+ *  grading to this bank (F-220 P4 ships this bank DARK — see the CLI/draw
+ *  fn docs).
+ *
+ *  The `superRefine` below enforces, AT PARSE TIME (so both the ingest CLI
+ *  and any future direct caller of this schema get the guarantee — not just
+ *  a downstream ingest-only helper), the two structural invariants the
+ *  system prompt asks the model for (writing_item.ts rule 7) but that
+ *  migration 108's DB CHECK deliberately leaves unenforced (see that
+ *  migration's rubric CHECK comment):
+ *    1. `criteria[].maxScore` sums to EXACTLY `rubric.maxScore` — a
+ *       malformed/miscounted rubric (e.g. the model dropped a criterion or
+ *       mis-totaled) is a generation defect, not servable content.
+ *    2. `rubric.kind`'s criteria carry EXACTLY that kind's expected
+ *       criterion NAMES (WRITING_KIND_EXPECTED_CRITERIA above) — a
+ *       cross-kind mix-up (e.g. an essay rubric with "blank1") is rejected
+ *       rather than silently landing in the bank. */
+export const WritingItemRubricSchema = z
+  .object({
+    kind: WritingItemKindSchema,
+    maxScore: z.number().positive(),
+    criteria: z.array(WritingRubricCriterionSchema).min(1).max(6),
+  })
+  .superRefine((rubric, ctx) => {
+    const sum = rubric.criteria.reduce((total, c) => total + c.maxScore, 0);
+    if (Math.abs(sum - rubric.maxScore) > 1e-6) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['criteria'],
+        message: `criteria maxScores sum to ${sum}, but rubric.maxScore is ${rubric.maxScore} — they must match exactly.`,
+      });
+    }
+
+    const expectedNames = WRITING_KIND_EXPECTED_CRITERIA[rubric.kind];
+    const actualNames = rubric.criteria.map((c) => c.name);
+    const expectedSet = new Set(expectedNames);
+    const actualSet = new Set(actualNames);
+    const namesMatch =
+      actualNames.length === expectedNames.length &&
+      actualSet.size === expectedSet.size &&
+      expectedNames.every((name) => actualSet.has(name));
+    if (!namesMatch) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['criteria'],
+        message: `rubric.kind '${rubric.kind}' requires criteria named exactly [${expectedNames.join(', ')}], got [${actualNames.join(', ')}].`,
+      });
+    }
+  });
+export type WritingItemRubric = z.infer<typeof WritingItemRubricSchema>;
+
+export const WritingItemGenResultSchema = z.object({
+  /** The task directive the learner reads. */
+  prompt: NonEmptyText.max(1000),
+  /** short-answer-blanks: the short functional text with two labeled
+   *  blanks. chart-description: the synthetic invented chart/statistic
+   *  description. essay: absent — the essay prompt itself carries the full
+   *  task, no separate stimulus text. */
+  stimulus: NonEmptyText.max(4000).optional(),
+  rubric: WritingItemRubricSchema,
+  /** short-answer-blanks: a reference filled answer for both blanks.
+   *  chart-description/essay: absent — an open-ended descriptive/
+   *  argumentative task has no single reference answer. */
+  modelAnswer: NonEmptyText.max(4000).optional(),
+  /** chart-description ≈ 200-300, essay ≈ 600-700 — Korean CHARACTER counts
+   *  (자), the same unit `generation.ts`'s `lengthHint` uses (e.g.
+   *  "200-300자"), NOT English words, despite the field name mirroring the
+   *  `generated_writing_items.min_words`/`max_words` column names (migration
+   *  108). Absent for short-answer-blanks (no length target, just two
+   *  blanks). */
+  minWords: z.number().int().positive().optional(),
+  maxWords: z.number().int().positive().optional(),
+});
+export type WritingItemGenResult = z.infer<typeof WritingItemGenResultSchema>;
+
 /** Story target bands: the generatable proficiency levels. 'basic' is a legacy
  *  corpus CONTENT tag, never a generation target (same stance as
  *  DiagnosticTargetLevelSchema) — though the DB column (proficiency_level)
