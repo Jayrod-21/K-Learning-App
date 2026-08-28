@@ -142,6 +142,9 @@ import {
   DiagnosticPairedListeningItemResultSchema,
   ReadingQuestionTypeSchema,
   ListeningQuestionTypeSchema,
+  WritingItemGenInputSchema,
+  WritingItemGenResultSchema,
+  WritingItemKindSchema,
   type DiagnosticItemResult,
   type DiagnosticReadingItemResult,
   type DiagnosticListeningItemResult,
@@ -150,6 +153,8 @@ import {
   type DiagnosticTargetLevel,
   type ReadingQuestionType,
   type ListeningQuestionType,
+  type WritingItemGenResult,
+  type WritingItemKind,
 } from '../services/claude/models.js';
 import {
   hashCacheKey,
@@ -162,6 +167,7 @@ import { buildDiagnosticReadingItemRequest } from '../services/claude/prompts/di
 import { buildDiagnosticListeningItemRequest } from '../services/claude/prompts/diagnostic_listening_item.js';
 import { buildDiagnosticPairedReadingItemRequest } from '../services/claude/prompts/diagnostic_paired_reading_item.js';
 import { buildDiagnosticPairedListeningItemRequest } from '../services/claude/prompts/diagnostic_paired_listening_item.js';
+import { buildWritingItemRequest } from '../services/claude/prompts/writing_item.js';
 import { sanitizeUserInput } from '../services/claude/prompts/sanitize.js';
 import type { MessageRequest } from '../services/claude/client.js';
 import { shuffleGeneratedChoices } from '../routes/diagnostic.js';
@@ -188,7 +194,19 @@ const READING_TOPIC_COUNT = READING_TOPICS.length;
 // `GeneratedBankSection` (the DRAW-path type) is deliberately left
 // unchanged: `pickGeneratedItem` never serves a paired row, only
 // `pickGeneratedStimulusGroup` does.
-export type ItemBankSection = GeneratedBankSection | 'paired-reading' | 'paired-listening';
+// F-220 P4 adds 'writing': the SAME topic seeding again, but authoring a
+// constructed-response BANK item (no MCQ choices) into the SEPARATE
+// `generated_writing_items` table (migration 108), never `generated_items` —
+// see writing_item.ts's header. Deliberately EXCLUDED from `SECTIONS` (the
+// default full-sweep list) below: unlike reading/listening, writing has NO
+// single default `kind` (short-answer-blanks/chart-description/essay are
+// three genuinely different task shapes, not "one shape plus variants"), so
+// `--kind` is REQUIRED whenever `--section=writing` is given (see
+// `parseCliArgs`) — an unscoped full-sweep run would have no kind to resolve
+// for it. An operator generates the writing bank in 3 explicit passes
+// (`--section=writing --kind=<kind>` each), exactly the operational pattern
+// P1's paired sections already established (always explicitly invoked).
+export type ItemBankSection = GeneratedBankSection | 'paired-reading' | 'paired-listening' | 'writing';
 
 export const SECTIONS: readonly ItemBankSection[] = [
   'vocab',
@@ -198,7 +216,15 @@ export const SECTIONS: readonly ItemBankSection[] = [
   'paired-reading',
   'paired-listening',
 ];
+/** Every accepted `--section=` value, INCLUDING 'writing' — used only to
+ *  validate the CLI flag. `SECTIONS` above (the default full-sweep list when
+ *  no `--section` is given) deliberately stays byte-identical/unchanged —
+ *  see `ItemBankSection`'s doc for why 'writing' must always be explicit. */
+export const ALL_SECTIONS: readonly ItemBankSection[] = [...SECTIONS, 'writing'];
 export const LEVELS: readonly DiagnosticTargetLevel[] = ['L1', 'L2', 'L3', 'L4', 'L5+'];
+/** Writing bank items are TOPIK II only (migration 108's level CHECK) — no
+ *  TOPIK I writing section exists (TOPIK_STRUCTURE_ANALYSIS.md §3). */
+export const WRITING_LEVELS: readonly DiagnosticTargetLevel[] = ['L3', 'L4', 'L5+'];
 export const DEFAULT_PER_CELL = 25;
 
 /** F-220 P2: the single-item question TYPES `--kind=<type>` accepts for
@@ -209,16 +235,21 @@ export const DEFAULT_PER_CELL = 25;
 export const READING_QUESTION_TYPES: readonly ReadingQuestionType[] = ReadingQuestionTypeSchema.options;
 export const LISTENING_QUESTION_TYPES: readonly ListeningQuestionType[] =
   ListeningQuestionTypeSchema.options;
+/** F-220 P4: the writing TASK SHAPES `--kind=<kind>` accepts for
+ *  `--section=writing` — mirrors `WritingItemKindSchema` (models.ts) exactly,
+ *  same rationale as `READING_QUESTION_TYPES`/`LISTENING_QUESTION_TYPES`. */
+export const WRITING_ITEM_KINDS: readonly WritingItemKind[] = WritingItemKindSchema.options;
 
 /** Sections whose stimulus is a bare topic word from the static
  *  `readingTopics.ts` list (never a scarce DB pool) — reading/listening's
- *  singular items AND both paired sections. */
+ *  singular items, both paired sections, and writing (F-220 P4). */
 function isTopicSeededSection(section: ItemBankSection): boolean {
   return (
     section === 'reading' ||
     section === 'listening' ||
     section === 'paired-reading' ||
-    section === 'paired-listening'
+    section === 'paired-listening' ||
+    section === 'writing'
   );
 }
 
@@ -240,7 +271,11 @@ export interface ItemBankOptions {
    *  `LISTENING_QUESTION_TYPES` in `parseCliArgs`). `undefined` preserves the
    *  ORIGINAL slice-2/3 behavior byte-identically — every reading/listening
    *  item emitted without `--kind` is still `questionType`-defaulted to
-   *  `'passage-mc'`/`'audio-mc'` by the input schema, exactly as before P2. */
+   *  `'passage-mc'`/`'audio-mc'` by the input schema, exactly as before P2.
+   *  F-220 P4: ALSO the writing task shape for `--section=writing` (validated
+   *  against `WRITING_ITEM_KINDS`) — but REQUIRED there, never `undefined`
+   *  (`parseCliArgs` rejects `--section=writing` with no `--kind` — writing
+   *  has no default shape to fall back to). */
   readonly questionType: string | undefined;
 }
 
@@ -320,9 +355,11 @@ export function parseCliArgs(argv: readonly string[]): ItemBankOptions {
     } else if (arg.startsWith('--section=')) {
       assignOnce(section !== undefined, '--section');
       const raw = arg.slice('--section='.length);
-      if (!(SECTIONS as readonly string[]).includes(raw)) {
+      // F-220 P4: validated against ALL_SECTIONS (includes 'writing'), NOT
+      // the default-sweep `SECTIONS` list — see ItemBankSection's doc.
+      if (!(ALL_SECTIONS as readonly string[]).includes(raw)) {
         throw new ItemBankInputError(
-          `unknown --section "${raw}" (valid: ${SECTIONS.join(', ')})`,
+          `unknown --section "${raw}" (valid: ${ALL_SECTIONS.join(', ')})`,
         );
       }
       section = raw as ItemBankSection;
@@ -364,24 +401,46 @@ export function parseCliArgs(argv: readonly string[]): ItemBankOptions {
       '--section/--level/--per-cell do not apply to --ingest (the work-order file is replayed verbatim)',
     );
   }
+  // F-220 P4: writing is TOPIK II only (migration 108's level CHECK) — an
+  // explicit L1/L2 request against --section=writing can never emit a single
+  // writable row, so reject it loudly rather than silently emitting 0 items
+  // (mirrors this file's "must fail loudly, never be silently ignored" rule).
+  if (section === 'writing' && level !== undefined && !(WRITING_LEVELS as readonly string[]).includes(level)) {
+    throw new ItemBankInputError(
+      `--section=writing requires --level=L3, L4, or L5+ (writing is TOPIK II only, got "${level}")`,
+    );
+  }
   if (kind !== undefined) {
     if (resolvedMode === 'ingest') {
       throw new ItemBankInputError(
         '--kind does not apply to --ingest (the work-order file is replayed verbatim — each item already carries its own questionType)',
       );
     }
-    if (section !== 'reading' && section !== 'listening') {
+    if (section !== 'reading' && section !== 'listening' && section !== 'writing') {
       throw new ItemBankInputError(
-        '--kind requires --section=reading or --section=listening (a single-item question type only applies to those two sections)',
+        '--kind requires --section=reading, --section=listening, or --section=writing (a single-item type/task-shape only applies to those sections)',
       );
     }
     const validKinds: readonly string[] =
-      section === 'reading' ? READING_QUESTION_TYPES : LISTENING_QUESTION_TYPES;
+      section === 'reading'
+        ? READING_QUESTION_TYPES
+        : section === 'listening'
+          ? LISTENING_QUESTION_TYPES
+          : WRITING_ITEM_KINDS;
     if (!validKinds.includes(kind)) {
       throw new ItemBankInputError(
         `unknown --kind "${kind}" for --section=${section} (valid: ${validKinds.join(', ')})`,
       );
     }
+  }
+  // F-220 P4: unlike reading/listening (which default an omitted --kind to
+  // 'passage-mc'/'audio-mc'), writing has NO single default task shape — the
+  // 3 kinds are genuinely different tasks, not variants of one. An operator
+  // must always name which one to author.
+  if (section === 'writing' && kind === undefined && resolvedMode !== 'ingest') {
+    throw new ItemBankInputError(
+      `--section=writing requires --kind=<${WRITING_ITEM_KINDS.join('|')}> (writing has no default kind)`,
+    );
   }
 
   return {
@@ -711,18 +770,30 @@ const READING_ITEM_ROUTE = 'generate_reading_item' as const;
  *  exactly, for the F-220 slice 3 listening branch. */
 const LISTENING_ITEM_ROUTE = 'generate_listening_item' as const;
 
+/** F-220 P4: the writing-item bank generator DELIBERATELY REUSES
+ *  `generate_writing_prompt` rather than getting its own route name — see
+ *  writing_item.ts's header and models.ts's `WritingItemGenInputSchema` doc.
+ *  `kind` (short-answer-blanks/chart-description/essay) rides the prompt
+ *  payload, exactly like `ReadingQuestionType`/`ListeningQuestionType` ride
+ *  `READING_ITEM_ROUTE`/`LISTENING_ITEM_ROUTE`'s payload without their own
+ *  route each. */
+const WRITING_ITEM_ROUTE = 'generate_writing_prompt' as const;
+
 /** Which model config a section's generation route uses — vocab/grammar ride
  *  `diagnostic_item`; reading rides `generate_reading_item`; listening rides
  *  `generate_listening_item`; the two paired sections ride their OWN routes
  *  (`generate_paired_reading_item`/`generate_paired_listening_item` — F-220
- *  P1). All routes are read from the CURRENT config at both emit AND ingest
- *  time, exactly like `DIAGNOSTIC_ITEM_ROUTE`'s single-model precedent — no
- *  per-item model is stored in the work-order file itself. */
+ *  P1); writing rides `generate_writing_prompt` (F-220 P4, reused — see
+ *  `WRITING_ITEM_ROUTE`). All routes are read from the CURRENT config at
+ *  both emit AND ingest time, exactly like `DIAGNOSTIC_ITEM_ROUTE`'s
+ *  single-model precedent — no per-item model is stored in the work-order
+ *  file itself. */
 function modelForSection(section: ItemBankSection, cfg: PublicClaudeConfig): ClaudeModelId {
   if (section === 'reading') return cfg.modelDefaults.generate_reading_item;
   if (section === 'listening') return cfg.modelDefaults.generate_listening_item;
   if (section === 'paired-reading') return cfg.modelDefaults.generate_paired_reading_item;
   if (section === 'paired-listening') return cfg.modelDefaults.generate_paired_listening_item;
+  if (section === 'writing') return cfg.modelDefaults.generate_writing_prompt;
   return cfg.modelDefaults.diagnostic_item;
 }
 
@@ -948,6 +1019,63 @@ export function buildPairedListeningWorkOrderRequest(
   };
 }
 
+/**
+ * Build the EXACT `buildWritingItemRequest` request for a topic seed + task
+ * kind, and its prompt_hash (F-220 P4). Mirrors `buildReadingWorkOrderRequest`
+ * exactly, but `kind` is a REQUIRED 3rd param (never optional/defaulted —
+ * writing has no single default shape, see `ItemBankSection`'s doc) and the
+ * request is hashed under `WRITING_ITEM_ROUTE` (the REUSED
+ * 'generate_writing_prompt' route — see that const's doc). `seed.seedKorean`
+ * holds the bare TOPIC string (the SAME `readingTopics.ts` list reading/
+ * listening already reuse), never corpus text. Returns the SAME
+ * `BuiltRequest` shape as every other builder (`questionType` carries the
+ * writing `kind` string, exactly like it carries `ReadingQuestionType`/
+ * `ListeningQuestionType` for those sections) so the CLI's per-item plumbing
+ * stays uniform across every generated section.
+ */
+export function buildWritingItemWorkOrderRequest(
+  level: DiagnosticTargetLevel,
+  kind: WritingItemKind,
+  seed: SeedCandidate,
+  model: ClaudeModelId,
+  cfg: PublicClaudeConfig,
+): BuiltRequest | null {
+  const parsed = WritingItemGenInputSchema.safeParse({
+    kind,
+    targetLevel: level,
+    topic: seed.seedKorean,
+  });
+  if (!parsed.success) return null;
+
+  let topic: string;
+  try {
+    topic = sanitizeUserInput(parsed.data.topic, {
+      maxLength: cfg.inputCaps.generate_writing_prompt,
+    });
+  } catch {
+    return null;
+  }
+
+  const cleaned = { ...parsed.data, topic };
+  const req = buildWritingItemRequest(cleaned, model);
+
+  const key: CacheKey = {
+    route: WRITING_ITEM_ROUTE,
+    model,
+    systemText: stringifySystem(req.system),
+    userText: serializeMessages(req.messages),
+  };
+
+  return {
+    seedRef: seed.seedRef,
+    seedKorean: topic,
+    seedEnglish: undefined,
+    promptHash: hashCacheKey(key),
+    request: req,
+    questionType: cleaned.kind,
+  };
+}
+
 /** How many questions to request for a paired-reading GROUP at a given
  *  1-based position within its (section, level) cell — alternates 2, 3, 2,
  *  3, … so a batch emits a genuine MIX of both real group sizes
@@ -1006,14 +1134,24 @@ export async function runCount(
   const cells: CellCount[] = [];
   for (const section of opts.sections) {
     for (const level of opts.levels) {
+      // F-220 P4: writing is TOPIK II only — an unscoped `--section=writing`
+      // run (no explicit --level, so opts.levels is the full 5-level LEVELS
+      // list) silently skips L1/L2 rather than reporting a permanently-0
+      // cell for a level combination the DB CHECK would reject outright.
+      // parseCliArgs already rejects an EXPLICIT --level=L1/L2 with
+      // --section=writing loudly, so this `continue` only ever fires for the
+      // implicit, unfiltered sweep.
+      if (section === 'writing' && !(WRITING_LEVELS as readonly string[]).includes(level)) continue;
       const availability = await countSeeds(pool, section, level);
       const achievable = achievableForCell(section, opts.perCell, availability);
       cells.push({ section, level, availability, achievable });
-      // F-220 P2: when --kind scopes this run (only valid for
-      // section='reading'/'listening' — parseCliArgs enforces that), name
-      // the kind in the report so a kind-scoped --count is self-describing.
+      // F-220 P2/P4: when --kind scopes this run (only valid for
+      // section='reading'/'listening'/'writing' — parseCliArgs enforces
+      // that), name the kind in the report so a kind-scoped --count is
+      // self-describing.
       const kindSuffix =
-        opts.questionType !== undefined && (section === 'reading' || section === 'listening')
+        opts.questionType !== undefined &&
+        (section === 'reading' || section === 'listening' || section === 'writing')
           ? ` (kind=${opts.questionType})`
           : '';
       print(
@@ -1069,8 +1207,12 @@ export interface WorkOrderItem {
    *  absent for these two sections, so ingest can rebuild the EXACT
    *  emit-time request (the type rides the prompt payload — see
    *  `buildReadingWorkOrderRequest`/`buildListeningWorkOrderRequest`) and
-   *  write the matching `generated_items.kind`. Absent/ignored for every
-   *  other section. */
+   *  write the matching `generated_items.kind`. writing ONLY (F-220 P4): the
+   *  writing task KIND (short-answer-blanks/chart-description/essay) — ALSO
+   *  never absent (writing has no default kind — `--kind` is REQUIRED at
+   *  emit time), rides `buildWritingItemWorkOrderRequest`'s payload the same
+   *  way, and becomes the matching `generated_writing_items.kind`.
+   *  Absent/ignored for every other section. */
   readonly questionType?: string;
   readonly promptHash: string;
   /** The exact request a subscription Claude session should send. */
@@ -1080,7 +1222,8 @@ export interface WorkOrderItem {
     | 'DiagnosticReadingItemResult'
     | 'DiagnosticListeningItemResult'
     | 'DiagnosticPairedReadingItemResult'
-    | 'DiagnosticPairedListeningItemResult';
+    | 'DiagnosticPairedListeningItemResult'
+    | 'WritingItemGenResult';
 }
 
 export interface WorkOrderFile {
@@ -1102,6 +1245,10 @@ export interface WorkOrderFile {
      *  GROUPS (F-220 P1). Always recorded (mirrors `readingModel`'s
      *  rationale). */
     readonly pairedListeningModel: ClaudeModelId;
+    /** `generate_writing_prompt`'s model — governs writing items (F-220 P4,
+     *  the REUSED route — see `WRITING_ITEM_ROUTE`). Always recorded
+     *  (mirrors `readingModel`'s rationale). */
+    readonly writingModel: ClaudeModelId;
     readonly perCell: number;
     readonly sections: readonly ItemBankSection[];
     readonly levels: readonly DiagnosticTargetLevel[];
@@ -1143,12 +1290,15 @@ export async function runEmitBatch(
   const listeningModel = cfg.modelDefaults.generate_listening_item;
   const pairedReadingModel = cfg.modelDefaults.generate_paired_reading_item;
   const pairedListeningModel = cfg.modelDefaults.generate_paired_listening_item;
+  const writingModel = cfg.modelDefaults.generate_writing_prompt;
 
   const items: WorkOrderItem[] = [];
   let skippedSeedInvalid = 0;
   for (const section of opts.sections) {
     const sectionModel = modelForSection(section, cfg);
     for (const level of opts.levels) {
+      // F-220 P4: mirrors runCount's identical skip — see that comment.
+      if (section === 'writing' && !(WRITING_LEVELS as readonly string[]).includes(level)) continue;
       const seeds = await pickSeeds(pool, section, level, opts.perCell);
       let cellIndex = 0;
       let seedPosition = 0;
@@ -1160,10 +1310,11 @@ export async function runEmitBatch(
             : section === 'paired-listening'
               ? 2
               : undefined;
-        // F-220 P2: opts.questionType is only ever set (parseCliArgs
-        // enforces this) when section is EXACTLY 'reading' or 'listening' —
-        // safe to thread into both builders unconditionally; the other
-        // branches ignore it entirely (their builders don't take it).
+        // F-220 P2/P4: opts.questionType is only ever set (parseCliArgs
+        // enforces this) when section is EXACTLY 'reading', 'listening', or
+        // 'writing' (and REQUIRED, never undefined, for 'writing') — safe to
+        // thread into every builder that accepts it unconditionally; the
+        // other branches ignore it entirely (their builders don't take it).
         const built =
           section === 'reading'
             ? buildReadingWorkOrderRequest(
@@ -1181,11 +1332,19 @@ export async function runEmitBatch(
                   cfg,
                   opts.questionType as ListeningQuestionType | undefined,
                 )
-              : section === 'paired-reading'
-                ? buildPairedReadingWorkOrderRequest(level, seed, questionCount!, sectionModel, cfg)
-                : section === 'paired-listening'
-                  ? buildPairedListeningWorkOrderRequest(level, seed, questionCount!, sectionModel, cfg)
-                  : buildWorkOrderRequest(section, level, seed, sectionModel, cfg);
+              : section === 'writing'
+                ? buildWritingItemWorkOrderRequest(
+                    level,
+                    opts.questionType as WritingItemKind,
+                    seed,
+                    sectionModel,
+                    cfg,
+                  )
+                : section === 'paired-reading'
+                  ? buildPairedReadingWorkOrderRequest(level, seed, questionCount!, sectionModel, cfg)
+                  : section === 'paired-listening'
+                    ? buildPairedListeningWorkOrderRequest(level, seed, questionCount!, sectionModel, cfg)
+                    : buildWorkOrderRequest(section, level, seed, sectionModel, cfg);
         if (built === null) {
           skippedSeedInvalid += 1;
           continue;
@@ -1207,11 +1366,13 @@ export async function runEmitBatch(
               ? 'DiagnosticReadingItemResult'
               : section === 'listening'
                 ? 'DiagnosticListeningItemResult'
-                : section === 'paired-reading'
-                  ? 'DiagnosticPairedReadingItemResult'
-                  : section === 'paired-listening'
-                    ? 'DiagnosticPairedListeningItemResult'
-                    : 'DiagnosticItemResult',
+                : section === 'writing'
+                  ? 'WritingItemGenResult'
+                  : section === 'paired-reading'
+                    ? 'DiagnosticPairedReadingItemResult'
+                    : section === 'paired-listening'
+                      ? 'DiagnosticPairedListeningItemResult'
+                      : 'DiagnosticItemResult',
         });
       }
       print(
@@ -1228,6 +1389,7 @@ export async function runEmitBatch(
       listeningModel,
       pairedReadingModel,
       pairedListeningModel,
+      writingModel,
       perCell: opts.perCell,
       sections: opts.sections,
       levels: opts.levels,
@@ -1262,8 +1424,16 @@ export async function runEmitBatch(
 const WorkOrderItemSchema = z.object({
   id: z.string().min(1),
   // F-220 slice 2 added 'reading'; slice 3 adds 'listening'; P1 adds
-  // 'paired-reading'/'paired-listening'.
-  section: z.enum(['vocab', 'grammar', 'reading', 'listening', 'paired-reading', 'paired-listening']),
+  // 'paired-reading'/'paired-listening'; P4 adds 'writing'.
+  section: z.enum([
+    'vocab',
+    'grammar',
+    'reading',
+    'listening',
+    'paired-reading',
+    'paired-listening',
+    'writing',
+  ]),
   level: z.enum(['L1', 'L2', 'L3', 'L4', 'L5+']),
   seedRef: z.string().min(1),
   seedKorean: z.string().min(1),
@@ -1273,15 +1443,17 @@ const WorkOrderItemSchema = z.object({
   // — the question count this group's ONE call was asked to author, needed
   // to rebuild the exact emit-time request. Ignored for every other section.
   questionCount: z.number().int().min(2).max(3).optional(),
-  // F-220 P2: the resolved single-item question TYPE (reading/listening
-  // only) — see WorkOrderItem's own doc. Loosely typed (`z.string()`, not
-  // the models.ts enum) at this outer-file layer deliberately: the REAL
-  // validation happens when `buildReadingWorkOrderRequest`/
-  // `buildListeningWorkOrderRequest` re-parses it through
-  // `DiagnosticReadingItemInputSchema`/`DiagnosticListeningItemInputSchema`
-  // below (an unknown/stale kind value fails THAT parse -> `built === null`
-  // -> the SAME "seed no longer sanitizable" skip every other bad-seed case
-  // already takes, not a separate error path to maintain here).
+  // F-220 P2/P4: the resolved single-item question TYPE (reading/listening)
+  // or writing task KIND (writing) — see WorkOrderItem's own doc. Loosely
+  // typed (`z.string()`, not the models.ts enum) at this outer-file layer
+  // deliberately: the REAL validation happens when
+  // `buildReadingWorkOrderRequest`/`buildListeningWorkOrderRequest`/
+  // `buildWritingItemWorkOrderRequest` re-parse it through
+  // `DiagnosticReadingItemInputSchema`/`DiagnosticListeningItemInputSchema`/
+  // `WritingItemGenInputSchema` below (an unknown/stale kind value fails
+  // THAT parse -> `built === null` -> the SAME "seed no longer sanitizable"
+  // skip every other bad-seed case already takes, not a separate error path
+  // to maintain here).
   questionType: z.string().min(1).optional(),
   promptHash: z.string().min(1),
   // `z.unknown()` alone makes the key OPTIONAL in zod 3 — an UNFILLED
@@ -1302,6 +1474,7 @@ const WorkOrderFileSchema = z.object({
       listeningModel: z.string().min(1).optional(),
       pairedReadingModel: z.string().min(1).optional(),
       pairedListeningModel: z.string().min(1).optional(),
+      writingModel: z.string().min(1).optional(),
     })
     .passthrough()
     .optional(),
@@ -1320,6 +1493,59 @@ export interface IngestSummary {
 const MAX_INVALID_LOGS = 5;
 
 const CHOICE_IDS = ['a', 'b', 'c', 'd'] as const;
+
+/**
+ * F-220 P4 — the per-`kind` field-presence contract for a writing item
+ * response, re-checked at ingest (mirrors the vocab/grammar section<->kind
+ * contract check below, and 101's "kind<->section" reasoning generally):
+ * `kind` is deliberately OPEN TEXT at the DB layer (migration 108's header),
+ * so this invariant is an APPLICATION guard, not a schema CHECK — see that
+ * migration's "WHY min_words/max_words" note. A mismatch means the model
+ * ignored a rule 5 instruction in writing_item.ts (e.g. included
+ * `modelAnswer` for an essay, or omitted `stimulus` for a chart-description)
+ * — reject rather than write a malformed item.
+ *   - short-answer-blanks: stimulus + modelAnswer REQUIRED; minWords/
+ *     maxWords must be ABSENT.
+ *   - chart-description: stimulus + minWords + maxWords REQUIRED;
+ *     modelAnswer must be ABSENT.
+ *   - essay: minWords + maxWords REQUIRED; stimulus + modelAnswer must be
+ *     ABSENT.
+ * Also re-checks `result.rubric.kind === kind` — the ONE cross-object
+ * invariant `WritingItemRubricSchema`'s own `.superRefine` (models.ts)
+ * cannot enforce by itself, since it only ever sees the rubric in
+ * isolation, never the outer request's `kind` this ingest call was made
+ * for. Everything else about rubric internal consistency (criteria-sum,
+ * per-kind criteria name/count) is already Zod-enforced at parse time —
+ * see `WritingItemRubricSchema`.
+ */
+function writingKindContractOk(kind: WritingItemKind, result: WritingItemGenResult): boolean {
+  if (result.rubric.kind !== kind) {
+    return false;
+  }
+  if (kind === 'short-answer-blanks') {
+    return (
+      result.stimulus !== undefined &&
+      result.modelAnswer !== undefined &&
+      result.minWords === undefined &&
+      result.maxWords === undefined
+    );
+  }
+  if (kind === 'chart-description') {
+    return (
+      result.stimulus !== undefined &&
+      result.modelAnswer === undefined &&
+      result.minWords !== undefined &&
+      result.maxWords !== undefined
+    );
+  }
+  // kind === 'essay'
+  return (
+    result.stimulus === undefined &&
+    result.modelAnswer === undefined &&
+    result.minWords !== undefined &&
+    result.maxWords !== undefined
+  );
+}
 
 /**
  * Ingest a filled work-order into `generated_items`. Per item: rebuild the
@@ -1384,6 +1610,8 @@ export async function runIngest(
   const emitListeningModel = parsedFile.data.meta?.listeningModel;
   const emitPairedReadingModel = parsedFile.data.meta?.pairedReadingModel;
   const emitPairedListeningModel = parsedFile.data.meta?.pairedListeningModel;
+  const writingModel = cfg.modelDefaults.generate_writing_prompt;
+  const emitWritingModel = parsedFile.data.meta?.writingModel;
   if (emitModel !== undefined && emitModel !== model) {
     print(
       `item-bank [INGEST]: WARN — work-order meta.model "${sanitizeForLog(emitModel)}" != ` +
@@ -1419,6 +1647,13 @@ export async function runIngest(
         `paired-listening group will hash-drift unless the model config matches the emit-time one`,
     );
   }
+  if (emitWritingModel !== undefined && emitWritingModel !== writingModel) {
+    print(
+      `item-bank [INGEST]: WARN — work-order meta.writingModel "${sanitizeForLog(emitWritingModel)}" ` +
+        `!= configured generate_writing_prompt model "${writingModel}"; every writing item will ` +
+        `hash-drift unless the model config matches the emit-time one`,
+    );
+  }
 
   print(`item-bank [INGEST]: ${String(items.length)} items from ${inFile} (model ${model})`);
   if (items.length === 0) {
@@ -1450,7 +1685,9 @@ export async function runIngest(
             ? pairedReadingModel
             : item.section === 'paired-listening'
               ? pairedListeningModel
-              : model;
+              : item.section === 'writing'
+                ? writingModel
+                : model;
     // Both paired sections REQUIRE questionCount to rebuild the exact
     // emit-time request (it rides the prompt payload — see
     // buildPairedReadingWorkOrderRequest/buildPairedListeningWorkOrderRequest).
@@ -1492,7 +1729,15 @@ export async function runIngest(
             ? buildPairedReadingWorkOrderRequest(item.level, seed, item.questionCount!, itemModel, cfg)
             : item.section === 'paired-listening'
               ? buildPairedListeningWorkOrderRequest(item.level, seed, item.questionCount!, itemModel, cfg)
-              : buildWorkOrderRequest(item.section, item.level, seed, itemModel, cfg);
+              : item.section === 'writing'
+                ? buildWritingItemWorkOrderRequest(
+                    item.level,
+                    item.questionType as WritingItemKind,
+                    seed,
+                    itemModel,
+                    cfg,
+                  )
+                : buildWorkOrderRequest(item.section, item.level, seed, itemModel, cfg);
     if (built === null) {
       skippedSeedInvalid += 1;
       if (seedInvalidLogs < MAX_INVALID_LOGS) {
@@ -1826,6 +2071,81 @@ export async function runIngest(
           JSON.stringify(result.turns),
           item.seedRef,
           emitListeningModel ?? listeningModel,
+          built.promptHash,
+        ],
+      );
+      if (rows.length > 0) {
+        written += 1;
+      } else {
+        skippedAlreadyCached += 1;
+      }
+      continue;
+    }
+
+    // F-220 P4 — writing items validate against a DISTINCT result schema
+    // (WritingItemGenResultSchema: prompt + rubric, no choices/answer_index
+    // — constructed-response, not MCQ) and write into the SEPARATE
+    // `generated_writing_items` table (migration 108), never
+    // `generated_items` — see that migration's header for why. `kind` is
+    // `built.questionType` (the REQUIRED writing task shape — see
+    // `buildWritingItemWorkOrderRequest`), never model-chosen, mirroring the
+    // reading/listening branches' identical `built.questionType` rationale.
+    // No `shuffleGeneratedChoices` call (no choices to shuffle) and no
+    // `answer_index` range check (nothing to range-check) — this branch is
+    // structurally simpler than every MCQ branch above for exactly that
+    // reason.
+    if (item.section === 'writing') {
+      const parsedWriting = WritingItemGenResultSchema.safeParse(item.response);
+      if (!parsedWriting.success) {
+        skippedInvalid += 1;
+        if (invalidLogs < MAX_INVALID_LOGS) {
+          invalidLogs += 1;
+          print(
+            `item-bank [INGEST]: item ${itemNo} (id="${sanitizeForLog(item.id)}") response invalid — ` +
+              parsedWriting.error.issues
+                .slice(0, 3)
+                .map((iss) => `${iss.path.join('.')}: ${iss.message}`)
+                .join('; '),
+          );
+        }
+        continue;
+      }
+      const result: WritingItemGenResult = parsedWriting.data;
+      // built.questionType is ALWAYS defined for a successful writing build
+      // (buildWritingItemWorkOrderRequest requires `kind`, never optional —
+      // see BuiltRequest's doc); the `!` mirrors every other branch's
+      // identical schema-guaranteed-defined reasoning.
+      const kind = built.questionType! as WritingItemKind;
+      if (!writingKindContractOk(kind, result)) {
+        skippedInvalid += 1;
+        if (invalidLogs < MAX_INVALID_LOGS) {
+          invalidLogs += 1;
+          print(
+            `item-bank [INGEST]: item ${itemNo} (id="${sanitizeForLog(item.id)}") response fields don't ` +
+              `match kind '${kind}''s contract — skipped`,
+          );
+        }
+        continue;
+      }
+
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO generated_writing_items
+           (level, kind, prompt, stimulus, rubric, model_answer, min_words, max_words,
+            source_ref, status, created_by, model_id, prompt_hash)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, 'draft', 'claude-batch', $10, $11)
+         ON CONFLICT (prompt_hash) DO NOTHING
+         RETURNING id`,
+        [
+          item.level,
+          kind,
+          result.prompt,
+          result.stimulus ?? null,
+          JSON.stringify(result.rubric),
+          result.modelAnswer ?? null,
+          result.minWords ?? null,
+          result.maxWords ?? null,
+          item.seedRef,
+          emitWritingModel ?? writingModel,
           built.promptHash,
         ],
       );

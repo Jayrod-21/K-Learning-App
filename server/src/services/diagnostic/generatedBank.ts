@@ -23,6 +23,7 @@
  */
 import { query, type Querier } from '../../db/pool.js';
 import type { DiagnosticTargetLevel } from '../claude/index.js';
+import type { WritingItemKind, WritingItemRubric, WritingItemTargetLevel } from '../claude/models.js';
 
 /** F-220 slice 1 wrote vocab/grammar rows; slice 2 added 'reading' — a
  *  generated, copyright-clean passage + comprehension MC item
@@ -592,5 +593,112 @@ export async function pickGeneratedStimulusGroupExcludingGroups(
     audioStartMs: first.audio_start_ms!,
     audioEndMs: first.audio_end_ms!,
     questions,
+  };
+}
+
+// -----------------------------------------------------------------------------
+// F-220 P4 — pickGeneratedWritingItem (writing-item draw)
+//
+// Draws ONE approved, constructed-response WRITING item from the SEPARATE
+// `generated_writing_items` table (migration 108) — never `generated_items`,
+// whose 4-choice-MCQ `choices`/`answer_index` invariant a writing row has no
+// analog for (see the migration's header). Ships DARK per the F-220 P4 build
+// brief: this function is fully built and tested here but wired into NO
+// route/surface yet — serving a writing item in the P3 generated mock or the
+// diagnostic would need a METERED `grade_writing` call at submit time, which
+// breaks the guarantee that taking/submitting those surfaces spends nothing
+// (generated_mock_attempts, migration 107's header) — that wiring decision is
+// deliberately deferred to a later slice.
+// -----------------------------------------------------------------------------
+
+/** A drawn writing-bank item — the constructed-response sibling of
+ *  `GeneratedBankItem`: no choices/correctAnswer (nothing to pick from), a
+ *  `rubric` object instead (the grading criteria a future `grade_writing`-
+ *  style caller would score against). */
+export interface GeneratedWritingBankItem {
+  readonly id: number;
+  readonly kind: WritingItemKind;
+  readonly level: WritingItemTargetLevel;
+  /** The task directive the learner reads. */
+  readonly prompt: string;
+  /** short-answer-blanks/chart-description only — the short functional text
+   *  (with two labeled blanks) or the synthetic invented chart/statistic
+   *  description. `undefined` for essay (the prompt carries the full task). */
+  readonly stimulus?: string;
+  readonly rubric: WritingItemRubric;
+  /** short-answer-blanks only — a reference filled answer for both blanks.
+   *  `undefined` for chart-description/essay (no single reference answer). */
+  readonly modelAnswer?: string;
+  /** chart-description/essay only — the target length band in Korean
+   *  characters (자). `undefined` for short-answer-blanks. */
+  readonly minWords?: number;
+  readonly maxWords?: number;
+  /** `bank:<id>` — mirrors `GeneratedBankItem.sourceRef`'s construction, so a
+   *  future caller's provenance/observability posture stays uniform across
+   *  every generated-bank draw path. */
+  readonly sourceRef: string;
+}
+
+interface GeneratedWritingItemRow {
+  readonly id: number;
+  readonly kind: string;
+  readonly level: string;
+  readonly prompt: string;
+  readonly stimulus: string | null;
+  readonly rubric: WritingItemRubric;
+  readonly model_answer: string | null;
+  readonly min_words: number | null;
+  readonly max_words: number | null;
+}
+
+/**
+ * Draw one `status = 'approved'` writing item matching an EXACT `kind`, for
+ * `level`, excluding any id already drawn into the caller's in-progress
+ * assembly. Mirrors `pickGeneratedItemOfKind`'s shape/`excludeIds` posture
+ * exactly, but against `generated_writing_items` and its constructed-
+ * response row shape — no `section` parameter (this table only ever holds
+ * `section='writing'`, pinned by migration 108's CHECK) and no audio-
+ * readiness clause (writing items are pure text, never audio-gated).
+ *
+ * `ix_generated_writing_items_draw (level, kind, status)` backs the WHERE.
+ *
+ * `exec` is injectable (defaults to the shared pool's `query`) so tests can
+ * run against a per-test database without touching module-level pool state.
+ *
+ * Returns null when no eligible row matches (kind unfunded/exhausted at this
+ * level, or every match already excluded) — the caller's cue to skip this
+ * slot, mirroring every other draw function in this module.
+ */
+export async function pickGeneratedWritingItem(
+  level: WritingItemTargetLevel,
+  kind: WritingItemKind,
+  excludeIds: readonly number[] = [],
+  exec: Querier = query,
+): Promise<GeneratedWritingBankItem | null> {
+  const { rows } = await exec<GeneratedWritingItemRow>(
+    `SELECT id, kind, level, prompt, stimulus, rubric, model_answer, min_words, max_words
+       FROM generated_writing_items
+      WHERE level = $1
+        AND kind = $2
+        AND status = 'approved'
+        AND NOT (id = ANY($3::bigint[]))
+      ORDER BY random()
+      LIMIT 1`,
+    [level, kind, [...excludeIds]],
+  );
+  const row = rows[0];
+  if (row === undefined) return null;
+
+  return {
+    id: row.id,
+    kind: row.kind as WritingItemKind,
+    level: row.level as WritingItemTargetLevel,
+    prompt: row.prompt,
+    ...(row.stimulus !== null ? { stimulus: row.stimulus } : {}),
+    rubric: row.rubric,
+    ...(row.model_answer !== null ? { modelAnswer: row.model_answer } : {}),
+    ...(row.min_words !== null ? { minWords: row.min_words } : {}),
+    ...(row.max_words !== null ? { maxWords: row.max_words } : {}),
+    sourceRef: `bank:${String(row.id)}`,
   };
 }

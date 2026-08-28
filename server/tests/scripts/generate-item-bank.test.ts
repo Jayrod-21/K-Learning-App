@@ -42,19 +42,24 @@ import type {
   DiagnosticListeningItemResult,
   DiagnosticPairedReadingItemResult,
   DiagnosticPairedListeningItemResult,
+  WritingItemGenResult,
 } from '../../src/services/claude/models.js';
 import {
+  ALL_SECTIONS,
   DEFAULT_PER_CELL,
   ItemBankInputError,
   LEVELS,
   LISTENING_QUESTION_TYPES,
   READING_QUESTION_TYPES,
   SECTIONS,
+  WRITING_ITEM_KINDS,
+  WRITING_LEVELS,
   buildListeningWorkOrderRequest,
   buildPairedListeningWorkOrderRequest,
   buildPairedReadingWorkOrderRequest,
   buildReadingWorkOrderRequest,
   buildWorkOrderRequest,
+  buildWritingItemWorkOrderRequest,
   countGrammarPatternSeeds,
   countVocabSeeds,
   exitCodeFor,
@@ -86,6 +91,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await pg.pool.query(`DELETE FROM generated_items`);
+  await pg.pool.query(`DELETE FROM generated_writing_items`);
   await pg.pool.query(`DELETE FROM vocab_entries`);
   await pg.pool.query(`DELETE FROM kgiu_entries`);
   await pg.pool.query(`DELETE FROM canonical_grammar`);
@@ -260,6 +266,67 @@ function goodPairedListeningResponse(): DiagnosticPairedListeningItemResult {
   };
 }
 
+/** F-220 P4: schema-valid WritingItemGenResult per kind, matching each
+ *  kind's field-presence contract (writingKindContractOk in the CLI). */
+function goodWritingResponse(
+  kind: (typeof WRITING_ITEM_KINDS)[number],
+): WritingItemGenResult {
+  if (kind === 'short-answer-blanks') {
+    return {
+      prompt: '다음을 읽고 ㉠과 ㉡에 들어갈 말을 각각 쓰십시오.',
+      stimulus: '안녕하세요. ( ㉠ ) 회의 시간이 변경되었습니다. ( ㉡ ).',
+      rubric: {
+        kind,
+        maxScore: 10,
+        criteria: [
+          { name: 'blank1', maxScore: 5, descriptor: 'mock descriptor' },
+          { name: 'blank2', maxScore: 5, descriptor: 'mock descriptor' },
+        ],
+      },
+      modelAnswer: '㉠: 알려 드립니다 / ㉡: 참고 부탁드립니다',
+    };
+  }
+  if (kind === 'chart-description') {
+    return {
+      prompt: '위 자료를 참고하여 200~300자로 쓰십시오.',
+      stimulus: '설문조사 결과: 2020년 40%, 2021년 55%, 2022년 68% (가상 통계)',
+      rubric: {
+        kind,
+        maxScore: 30,
+        criteria: [
+          { name: 'content', maxScore: 12, descriptor: 'mock descriptor' },
+          { name: 'organization', maxScore: 12, descriptor: 'mock descriptor' },
+          { name: 'languageUse', maxScore: 6, descriptor: 'mock descriptor' },
+        ],
+      },
+      minWords: 200,
+      maxWords: 300,
+    };
+  }
+  // essay
+  return {
+    prompt: '다음 주제에 대해 600~700자로 자신의 의견을 쓰십시오.',
+    rubric: {
+      kind,
+      maxScore: 50,
+      criteria: [
+        { name: 'content', maxScore: 20, descriptor: 'mock descriptor' },
+        { name: 'organization', maxScore: 20, descriptor: 'mock descriptor' },
+        { name: 'languageUse', maxScore: 10, descriptor: 'mock descriptor' },
+      ],
+    },
+    minWords: 600,
+    maxWords: 700,
+  };
+}
+
+async function generatedWritingItemCount(): Promise<number> {
+  const res = await pg.pool.query<{ n: string }>(
+    'SELECT COUNT(*)::text AS n FROM generated_writing_items',
+  );
+  return Number(res.rows[0]!.n);
+}
+
 // ---------------------------------------------------------------------------
 // 1. THE $0 GUARANTEE
 // ---------------------------------------------------------------------------
@@ -345,15 +412,41 @@ describe('parseCliArgs', () => {
 
   it('unknown flags / unknown section / unknown level throw', () => {
     expect(() => parseCliArgs(['--bogus'])).toThrow(ItemBankInputError);
-    // 'listening' is now valid (F-220 slice 3) — a genuinely bogus section
-    // value proves the guard still works.
-    expect(() => parseCliArgs(['--section=writing'])).toThrow(ItemBankInputError);
+    // 'listening'/'writing' are now valid (F-220 slice 3 / P4) — a genuinely
+    // bogus section value proves the guard still works.
+    expect(() => parseCliArgs(['--section=bogus-section'])).toThrow(ItemBankInputError);
     expect(() => parseCliArgs(['--level=L9'])).toThrow(ItemBankInputError);
   });
 
   it('--section=reading is now valid (F-220 slice 2)', () => {
     const opts = parseCliArgs(['--section=reading']);
     expect(opts.sections).toEqual(['reading']);
+  });
+
+  it('F-220 P4: --section=writing is a valid --section value, but requires --kind', () => {
+    // Valid section, but writing has no default kind — must throw asking for one.
+    expect(() => parseCliArgs(['--section=writing'])).toThrow(ItemBankInputError);
+    expect(() => parseCliArgs(['--section=writing'])).toThrow(/requires --kind/);
+    // With --kind, it resolves cleanly and is NOT part of the default full
+    // sweep (SECTIONS stays byte-identical — writing must always be explicit).
+    const opts = parseCliArgs(['--section=writing', '--kind=essay']);
+    expect(opts.sections).toEqual(['writing']);
+    expect(opts.questionType).toBe('essay');
+    expect(SECTIONS).not.toContain('writing');
+  });
+
+  it('F-220 P4: --section=writing --level=L1/L2 is rejected (TOPIK II only)', () => {
+    expect(() => parseCliArgs(['--section=writing', '--kind=essay', '--level=L1'])).toThrow(
+      ItemBankInputError,
+    );
+    expect(() => parseCliArgs(['--section=writing', '--kind=essay', '--level=L2'])).toThrow(
+      ItemBankInputError,
+    );
+    // L3/L4/L5+ are all fine.
+    for (const level of ['L3', 'L4', 'L5+']) {
+      const opts = parseCliArgs(['--section=writing', '--kind=essay', `--level=${level}`]);
+      expect(opts.levels).toEqual([level]);
+    }
   });
 
   it('exitCodeFor maps ItemBankInputError to 2, anything else to 1', () => {
@@ -1595,6 +1688,32 @@ describe('F-220 P2 — parseCliArgs --kind validation', () => {
       ItemBankInputError,
     );
   });
+
+  // F-220 P4: writing's --kind rules (WRITING_ITEM_KINDS, and REQUIRED not
+  // optional — see the dedicated "F-220 P4: --section=writing" tests above).
+  it('--kind=short-answer-blanks/chart-description/essay --section=writing all parse cleanly', () => {
+    for (const kind of ['short-answer-blanks', 'chart-description', 'essay']) {
+      const opts = parseCliArgs(['--section=writing', `--kind=${kind}`]);
+      expect(opts.questionType).toBe(kind);
+      expect(opts.sections).toEqual(['writing']);
+    }
+  });
+
+  it('a reading/listening kind under --section=writing is rejected (wrong section for that kind)', () => {
+    expect(() => parseCliArgs(['--section=writing', '--kind=fill-blank'])).toThrow(
+      ItemBankInputError,
+    );
+    expect(() => parseCliArgs(['--section=writing', '--kind=infer-topic'])).toThrow(
+      ItemBankInputError,
+    );
+  });
+
+  it('a writing kind under --section=reading/listening is rejected (wrong section for that kind)', () => {
+    expect(() => parseCliArgs(['--section=reading', '--kind=essay'])).toThrow(ItemBankInputError);
+    expect(() => parseCliArgs(['--section=listening', '--kind=essay'])).toThrow(
+      ItemBankInputError,
+    );
+  });
 });
 
 describe('F-220 P2 — reading --kind emit/ingest', () => {
@@ -1826,5 +1945,393 @@ describe('F-220 P2 — listening --kind emit/ingest', () => {
     );
     expect(rows.rows).toHaveLength(1);
     expect(rows.rows[0]!.kind).toBe('audio-mc');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F-220 P4 — writing count/emit/ingest
+// ---------------------------------------------------------------------------
+
+describe('F-220 P4 — writing constants + section wiring', () => {
+  it('WRITING_ITEM_KINDS has exactly the 3 task shapes', () => {
+    expect(new Set(WRITING_ITEM_KINDS)).toEqual(
+      new Set(['short-answer-blanks', 'chart-description', 'essay']),
+    );
+  });
+
+  it('WRITING_LEVELS is TOPIK II only (no L1/L2)', () => {
+    expect(WRITING_LEVELS).toEqual(['L3', 'L4', 'L5+']);
+  });
+
+  it('SECTIONS (the default full-sweep list) stays byte-identical — writing is NOT in it', () => {
+    expect(SECTIONS).toEqual(['vocab', 'grammar', 'reading', 'listening', 'paired-reading', 'paired-listening']);
+  });
+
+  it('ALL_SECTIONS is SECTIONS plus writing', () => {
+    expect(ALL_SECTIONS).toEqual([...SECTIONS, 'writing']);
+  });
+});
+
+describe('F-220 P4 — writing count', () => {
+  it('runCount with --section=writing --kind=essay reports only the 3 TOPIK II levels, zero writes', async () => {
+    const summary = await runCount(
+      pg.pool,
+      makeOpts({ mode: 'count', sections: ['writing'], levels: LEVELS, perCell: 5, questionType: 'essay' }),
+      silent,
+    );
+    // 5 levels requested, but only L3/L4/L5+ are achievable for writing.
+    const writingCells = summary.cells.filter((c) => c.section === 'writing');
+    expect(writingCells).toHaveLength(3);
+    expect(new Set(writingCells.map((c) => c.level))).toEqual(new Set(WRITING_LEVELS));
+    expect(writingCells.every((c) => c.achievable === 5)).toBe(true);
+    expect(await generatedWritingItemCount()).toBe(0);
+  });
+});
+
+describe('F-220 P4 — writing emit-batch', () => {
+  it('runEmitBatch --section=writing --kind=short-answer-blanks emits work-order items carrying questionType=short-answer-blanks, schema=WritingItemGenResult, zero DB writes', async () => {
+    const outFile = await makeTmpFile('writing-batch.json');
+    const summary = await runEmitBatch(
+      pg.pool,
+      makeOpts({
+        mode: 'emit-batch',
+        sections: ['writing'],
+        levels: ['L4'],
+        perCell: 2,
+        outFile,
+        questionType: 'short-answer-blanks',
+      }),
+      silent,
+    );
+    expect(summary.emitted).toBe(2);
+
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    expect(file.meta.writingModel).toBeTruthy();
+    expect(file.items).toHaveLength(2);
+    for (const item of file.items) {
+      expect(item.section).toBe('writing');
+      expect(item.level).toBe('L4');
+      expect(item.questionType).toBe('short-answer-blanks');
+      expect(item.schema).toBe('WritingItemGenResult');
+    }
+    expect(await generatedWritingItemCount()).toBe(0);
+  });
+
+  it('prompt_hash is kind-sensitive: the SAME topic/level at a DIFFERENT kind hashes differently', async () => {
+    const outFile = await makeTmpFile('writing-batch-kind-hash.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({
+        mode: 'emit-batch',
+        sections: ['writing'],
+        levels: ['L4'],
+        perCell: 1,
+        outFile,
+        questionType: 'essay',
+      }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const item = file.items[0]!;
+    const cfg = loadConfig();
+    const rebuiltSameKind = buildWritingItemWorkOrderRequest(
+      'L4',
+      'essay',
+      { seedRef: item.seedRef, seedKorean: item.seedKorean },
+      file.meta.writingModel,
+      cfg,
+    );
+    expect(rebuiltSameKind).not.toBeNull();
+    expect(rebuiltSameKind!.promptHash).toBe(item.promptHash);
+
+    const rebuiltDifferentKind = buildWritingItemWorkOrderRequest(
+      'L4',
+      'chart-description',
+      { seedRef: item.seedRef, seedKorean: item.seedKorean },
+      file.meta.writingModel,
+      cfg,
+    );
+    expect(rebuiltDifferentKind).not.toBeNull();
+    expect(rebuiltDifferentKind!.promptHash).not.toBe(item.promptHash);
+  });
+
+  it('buildWritingItemWorkOrderRequest returns null for an out-of-band L1/L2 level (defense-in-depth, mirrors emit-time --level rejection)', () => {
+    const cfg = loadConfig();
+    for (const level of ['L1', 'L2'] as const) {
+      const built = buildWritingItemWorkOrderRequest(
+        level,
+        'essay',
+        { seedRef: 'topic-x-0001', seedKorean: '환경' },
+        cfg.modelDefaults.generate_writing_prompt,
+        cfg,
+      );
+      expect(built).toBeNull();
+    }
+  });
+});
+
+describe('F-220 P4 — writing ingest', () => {
+  it('runIngest writes generated_writing_items rows with the right kind + writing-shaped columns, for every kind', async () => {
+    for (const kind of WRITING_ITEM_KINDS) {
+      const outFile = await makeTmpFile(`writing-${kind}-batch.json`);
+      await runEmitBatch(
+        pg.pool,
+        makeOpts({
+          mode: 'emit-batch',
+          sections: ['writing'],
+          levels: ['L4'],
+          perCell: 1,
+          outFile,
+          questionType: kind,
+        }),
+        silent,
+      );
+      const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+      const filled = file.items.map((item) => ({
+        ...item,
+        response: goodWritingResponse(kind),
+      })) as unknown as WorkOrderItem[];
+      const inFile = await makeTmpFile(`writing-${kind}-filled.json`);
+      await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+      const summary = await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);
+      expect(summary.written).toBe(1);
+    }
+
+    expect(await generatedWritingItemCount()).toBe(3);
+    // generated_items (the MCQ bank) must stay completely untouched.
+    expect(await generatedItemCount()).toBe(0);
+
+    const rows = await pg.pool.query<{
+      kind: string;
+      section: string;
+      level: string;
+      status: string;
+      stimulus: string | null;
+      model_answer: string | null;
+      min_words: number | null;
+      max_words: number | null;
+      rubric: { kind: string; maxScore: number; criteria: unknown[] };
+    }>(
+      `SELECT kind, section, level, status, stimulus, model_answer, min_words, max_words, rubric
+         FROM generated_writing_items ORDER BY kind`,
+    );
+    expect(rows.rows).toHaveLength(3);
+    expect(new Set(rows.rows.map((r) => r.kind))).toEqual(new Set(WRITING_ITEM_KINDS));
+    for (const row of rows.rows) {
+      expect(row.section).toBe('writing');
+      expect(row.level).toBe('L4');
+      expect(row.status).toBe('draft'); // review-gate default — mirrors generated_items
+      expect(row.rubric.kind).toBe(row.kind);
+
+      if (row.kind === 'short-answer-blanks') {
+        expect(row.stimulus).not.toBeNull();
+        expect(row.model_answer).not.toBeNull();
+        expect(row.min_words).toBeNull();
+        expect(row.max_words).toBeNull();
+      } else if (row.kind === 'chart-description') {
+        expect(row.stimulus).not.toBeNull();
+        expect(row.model_answer).toBeNull();
+        expect(row.min_words).toBe(200);
+        expect(row.max_words).toBe(300);
+      } else {
+        // essay
+        expect(row.stimulus).toBeNull();
+        expect(row.model_answer).toBeNull();
+        expect(row.min_words).toBe(600);
+        expect(row.max_words).toBe(700);
+      }
+    }
+  });
+
+  it('is idempotent: re-ingesting the same filled work-order writes 0 new rows', async () => {
+    const outFile = await makeTmpFile('writing-idempotent-batch.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({
+        mode: 'emit-batch',
+        sections: ['writing'],
+        levels: ['L5+'],
+        perCell: 1,
+        outFile,
+        questionType: 'essay',
+      }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const filled = file.items.map((item) => ({
+      ...item,
+      response: goodWritingResponse('essay'),
+    })) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('writing-idempotent-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+    const first = await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);
+    expect(first.written).toBe(1);
+    const second = await runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent);
+    expect(second.written).toBe(0);
+    expect(second.skippedAlreadyCached).toBe(1);
+    expect(await generatedWritingItemCount()).toBe(1);
+  });
+
+  it('a response violating its kind\'s field-presence contract is rejected, never written (e.g. an essay response that also includes a stimulus)', async () => {
+    const outFile = await makeTmpFile('writing-badcontract-batch.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({
+        mode: 'emit-batch',
+        sections: ['writing'],
+        levels: ['L4'],
+        perCell: 1,
+        outFile,
+        questionType: 'essay',
+      }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const badResponse = { ...goodWritingResponse('essay'), stimulus: 'should not be here for essay' };
+    const filled = file.items.map((item) => ({
+      ...item,
+      response: badResponse,
+    })) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('writing-badcontract-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+    // A SINGLE-item file that writes nothing is treated as wholly
+    // unfilled/invalid (mirrors every other section's identical guard —
+    // see the other "0 written -> throws" precedents above) — the
+    // rejection itself IS the proof the malformed contract never landed.
+    await expect(runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent)).rejects.toThrow(
+      ItemBankInputError,
+    );
+    expect(await generatedWritingItemCount()).toBe(0);
+  });
+
+  it("a chart-description response missing minWords/maxWords violates its kind's field-presence contract and is rejected", async () => {
+    const outFile = await makeTmpFile('writing-badcontract-chart-batch.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({
+        mode: 'emit-batch',
+        sections: ['writing'],
+        levels: ['L4'],
+        perCell: 1,
+        outFile,
+        questionType: 'chart-description',
+      }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const goodResponse = goodWritingResponse('chart-description');
+    const badResponse = { ...goodResponse } as Record<string, unknown>;
+    delete badResponse.minWords;
+    delete badResponse.maxWords;
+    const filled = file.items.map((item) => ({
+      ...item,
+      response: badResponse,
+    })) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('writing-badcontract-chart-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+    await expect(runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent)).rejects.toThrow(
+      ItemBankInputError,
+    );
+    expect(await generatedWritingItemCount()).toBe(0);
+  });
+
+  it("a short-answer-blanks response missing modelAnswer violates its kind's field-presence contract and is rejected", async () => {
+    const outFile = await makeTmpFile('writing-badcontract-blanks-batch.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({
+        mode: 'emit-batch',
+        sections: ['writing'],
+        levels: ['L4'],
+        perCell: 1,
+        outFile,
+        questionType: 'short-answer-blanks',
+      }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const goodResponse = goodWritingResponse('short-answer-blanks');
+    const badResponse = { ...goodResponse } as Record<string, unknown>;
+    delete badResponse.modelAnswer;
+    const filled = file.items.map((item) => ({
+      ...item,
+      response: badResponse,
+    })) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('writing-badcontract-blanks-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+    await expect(runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent)).rejects.toThrow(
+      ItemBankInputError,
+    );
+    expect(await generatedWritingItemCount()).toBe(0);
+  });
+
+  it('a response whose rubric.kind mismatches the requested kind is rejected (cross-kind mix-up)', async () => {
+    const outFile = await makeTmpFile('writing-badcontract-rubrickind-batch.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({
+        mode: 'emit-batch',
+        sections: ['writing'],
+        levels: ['L4'],
+        perCell: 1,
+        outFile,
+        questionType: 'essay',
+      }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const goodResponse = goodWritingResponse('essay');
+    // rubric.kind says 'chart-description' even though this is an
+    // essay-kind ingest — writingKindContractOk must reject this even
+    // though every individual field-presence check on the OUTER response
+    // still matches essay's shape.
+    const badResponse = {
+      ...goodResponse,
+      rubric: { ...goodResponse.rubric, kind: 'chart-description' as const },
+    };
+    const filled = file.items.map((item) => ({
+      ...item,
+      response: badResponse,
+    })) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('writing-badcontract-rubrickind-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+    await expect(runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent)).rejects.toThrow(
+      ItemBankInputError,
+    );
+    expect(await generatedWritingItemCount()).toBe(0);
+  });
+
+  it('a response missing required fields (no rubric) fails Zod validation, never written', async () => {
+    const outFile = await makeTmpFile('writing-malformed-batch.json');
+    await runEmitBatch(
+      pg.pool,
+      makeOpts({
+        mode: 'emit-batch',
+        sections: ['writing'],
+        levels: ['L4'],
+        perCell: 1,
+        outFile,
+        questionType: 'chart-description',
+      }),
+      silent,
+    );
+    const file = JSON.parse(await readFile(outFile, 'utf8')) as WorkOrderFile;
+    const filled = file.items.map((item) => ({
+      ...item,
+      response: { prompt: 'only a prompt, no rubric' },
+    })) as unknown as WorkOrderItem[];
+    const inFile = await makeTmpFile('writing-malformed-filled.json');
+    await writeFile(inFile, JSON.stringify({ meta: file.meta, items: filled }, null, 2));
+
+    await expect(runIngest(pg.pool, makeOpts({ mode: 'ingest', inFile }), silent)).rejects.toThrow(
+      ItemBankInputError,
+    );
+    expect(await generatedWritingItemCount()).toBe(0);
   });
 });
