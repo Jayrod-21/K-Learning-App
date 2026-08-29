@@ -188,6 +188,7 @@ import { displayableStoryImages } from '../lib/storyImages';
 import { computePanelSlots } from '../lib/storyPanels';
 import { ApiError } from '../services/api';
 import {
+  cloneStory,
   generateChapterQuestions,
   getChapter,
   getChapterQuestions,
@@ -195,15 +196,19 @@ import {
   getReadingPosition,
   listChapters,
   listGeneratedStories,
+  listLibrary,
   logReadingAttempt,
+  publishStory,
   requestStoryExperience,
   saveReadingPosition,
   translatePassage,
+  unpublishStory,
 } from '../services/reading';
 import type {
   AssetStatus,
   GeneratedStory,
   GeneratedStorySummary,
+  LibraryStorySummary,
   ReadingPosition,
   ReadingQuestion,
 } from '../services/reading';
@@ -249,7 +254,9 @@ export default function Reading(): JSX.Element {
   const bookId = rawBook !== null && /^\d{1,19}$/.test(rawBook) ? rawBook : null;
   const chapterId = parsePositiveInt(params.get('chapter'));
   const storyId = parsePositiveInt(params.get('story'));
-  const tab = params.get('tab') === 'stories' ? 'stories' : 'books';
+  const rawTab = params.get('tab');
+  const tab =
+    rawTab === 'stories' ? 'stories' : rawTab === 'library' ? 'library' : 'books';
 
   const openBook = useCallback(
     (id: string): void => {
@@ -266,7 +273,7 @@ export default function Reading(): JSX.Element {
   const onTabChange = useCallback(
     (id: string): void => {
       // `books` is the default — keep the canonical URL bare for it.
-      setParams(id === 'stories' ? { tab: 'stories' } : {});
+      setParams(id === 'books' ? {} : { tab: id });
     },
     [setParams],
   );
@@ -300,8 +307,14 @@ export default function Reading(): JSX.Element {
       />
     );
   } else if (storyId !== null) {
+    // Back always returns to the Stories tab — even when the story was
+    // opened from the Library tab (a published story a non-owner is
+    // viewing is not "theirs," but there is no separate reader route to
+    // distinguish the origin tab, and Stories is the more common return
+    // path). The reader itself tells the caller which surface they're on
+    // (`GeneratedStory.isOwn` — Publish/Unpublish vs. Save-to-my-library).
     back = { to: `${READING_PATH}?tab=stories`, label: 'Stories' };
-    view = <StoryReader key={storyId} storyId={storyId} />;
+    view = <StoryReader key={storyId} storyId={storyId} onCloned={openStory} />;
   } else {
     view = (
       <Tabs
@@ -311,6 +324,10 @@ export default function Reading(): JSX.Element {
             id: 'stories',
             label: <Bilingual en="AI stories" kr="AI 이야기" compact />,
           },
+          {
+            id: 'library',
+            label: <Bilingual en="Library" kr="공개 서재" compact />,
+          },
         ]}
         ariaLabel="Reading sections"
         active={tab}
@@ -319,6 +336,8 @@ export default function Reading(): JSX.Element {
         {(active) =>
           active === 'stories' ? (
             <StoriesSection onOpenStory={openStory} />
+          ) : active === 'library' ? (
+            <LibrarySection onOpenStory={openStory} />
           ) : (
             <BookShelf onOpenBook={openBook} />
           )
@@ -1984,6 +2003,21 @@ function StoriesSection({
                       }}
                     >
                       <Pill tone="gold">{story.level}</Pill>
+                      {/* #45 fix-pass (client review SF-3): the owner's own
+                          list otherwise had no way to tell a published story
+                          apart from a private one short of opening it and
+                          checking the Publish/Unpublish control.
+                          `story.isShared` was already on the wire
+                          (`GeneratedStorySummary.isShared`,
+                          services/reading.ts:357) but unused here. Re-fetched
+                          on every mount (the effect above), so publishing/
+                          unpublishing from the reader and navigating back
+                          shows the current server state, not a stale one. */}
+                      {story.isShared === true ? (
+                        <Pill tone="green">
+                          <Bilingual en="Published" kr="공개됨" compact />
+                        </Pill>
+                      ) : null}
                       {showAudioPips ? (
                         <AssetStatusPip
                           kind="audio"
@@ -2005,6 +2039,202 @@ function StoriesSection({
               ))}
             </ul>
           </Card>
+          <ShowMore
+            canShowMore={pag.canShowMore}
+            onShowMore={pag.showMore}
+            remaining={pag.remaining}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Public reuse library (#45 — generated_stories.is_shared, migration 109)
+// ─────────────────────────────────────────────────────────────
+
+/** Fixed fallback copy for a failed clone POST (errorCopy contract). */
+const CLONE_FAILED_COPY = 'Could not save this story. Try again.';
+
+/**
+ * The public library browse tab: every account's PUBLISHED stories, newest
+ * first (`listLibrary`), each row a "Save to my library" clone action away
+ * from the caller's own private copy. Mirrors `StoriesSection`'s
+ * fetch/loading/error/empty/paginate shape exactly — the two surfaces are
+ * siblings, not variants of one component, because their DTOs and actions
+ * genuinely differ (no owner-PII list vs. the caller's own; open-only vs.
+ * open-or-clone).
+ */
+function LibrarySection({
+  onOpenStory,
+}: {
+  onOpenStory: (id: number) => void;
+}): JSX.Element {
+  const [stories, setStories] = useState<LibraryStorySummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
+  const ctrlRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    ctrlRef.current?.abort();
+    ctrlRef.current = ctrl;
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setLoading(true);
+    setError(null);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    listLibrary(ctrl.signal)
+      .then((rows) => {
+        if (ctrl.signal.aborted) return;
+        setStories(rows);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setError(errorMessageFor(err, 'Could not load the public library.'));
+        setLoading(false);
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [reloadTick]);
+
+  const refetch = useCallback(() => {
+    setReloadTick((t) => t + 1);
+  }, []);
+
+  // "Save to my library" — clone-by-reference. `cloningId` gates ONE
+  // in-flight clone at a time (the row's own button goes busy; the others
+  // stay clickable, since cloning story A cannot race cloning story B).
+  const [cloningId, setCloningId] = useState<number | null>(null);
+  const [cloneError, setCloneError] = useState<string | null>(null);
+  const cloneCtrlRef = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      cloneCtrlRef.current?.abort();
+    },
+    [],
+  );
+  const saveToLibrary = useCallback(
+    (id: number): void => {
+      cloneCtrlRef.current?.abort();
+      const ctrl = new AbortController();
+      cloneCtrlRef.current = ctrl;
+      setCloningId(id);
+      setCloneError(null);
+      cloneStory(id, ctrl.signal).then(
+        (clone) => {
+          if (ctrl.signal.aborted) return;
+          setCloningId(null);
+          // Land directly on the caller's own new copy — the whole point
+          // of cloning is to get a personal, listenable-once-voiced copy.
+          onOpenStory(clone.id);
+        },
+        (err: unknown) => {
+          if (ctrl.signal.aborted) return;
+          if (err instanceof ApiError && err.code === 'canceled') return;
+          setCloningId(null);
+          setCloneError(errorMessageFor(err, CLONE_FAILED_COPY));
+        },
+      );
+    },
+    [onOpenStory],
+  );
+
+  // Window the library the same way StoriesSection windows the user's own
+  // (server caps GET /generated/shared at 200; match that ceiling).
+  const pag = usePagination(stories, { initial: 10, step: 10, max: 200 });
+
+  return (
+    <div>
+      <p className="km-reading__story-topic" style={{ margin: '0 0 14px' }}>
+        <Bilingual
+          en="Stories other learners have published. Save a copy to your own library — its audio and illustrations come with it, instantly."
+          kr="다른 학습자가 공개한 이야기입니다. 내 서재에 저장하면 오디오와 삽화도 즉시 함께 저장됩니다."
+        />
+      </p>
+      {loading ? (
+        <div className="km-grammar__state" role="status">
+          <Bilingual en="Loading the library…" kr="서재를 불러오는 중…" />
+        </div>
+      ) : error !== null ? (
+        <ErrorCard message={error} onRetry={refetch} />
+      ) : stories.length === 0 ? (
+        <p
+          className="km-reference__empty km-giwa km-hangul-watermark"
+          data-glyph="서재"
+        >
+          <Bilingual
+            en="No stories have been published yet."
+            kr="아직 공개된 이야기가 없습니다."
+          />
+        </p>
+      ) : (
+        <>
+          <Card className="km-reference__list" variant="flat">
+            <ul>
+              {pag.visible.map((story) => (
+                <li key={story.id} className="km-reference__row">
+                  <button
+                    type="button"
+                    className="km-resources__list-open focusring"
+                    onClick={() => {
+                      onOpenStory(story.id);
+                    }}
+                    aria-label={`Open ${story.title}`}
+                  >
+                    <span className="kr km-reference__row-kr">
+                      {story.title}
+                    </span>
+                    <span
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 8,
+                      }}
+                    >
+                      <Pill tone="gold">{story.level}</Pill>
+                      <AssetStatusPip kind="audio" status={story.audioStatus} />
+                      <AssetStatusPip kind="image" status={story.imageStatus} />
+                    </span>
+                    <span className="km-resources__pager-count">
+                      {formatStoryDate(story.createdAt)}
+                    </span>
+                  </button>
+                  <div style={{ padding: '0 18px 12px' }}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      leadingIcon={<Icon name="plus" size={14} />}
+                      aria-disabled={cloningId === story.id || undefined}
+                      onClick={() => {
+                        if (cloningId === story.id) return; // aria-disabled doesn't block clicks
+                        saveToLibrary(story.id);
+                      }}
+                    >
+                      {cloningId === story.id ? (
+                        <Bilingual en="Saving…" kr="저장 중…" compact />
+                      ) : (
+                        <Bilingual
+                          en="Save to my library"
+                          kr="내 서재에 저장"
+                          compact
+                        />
+                      )}
+                    </Button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </Card>
+          {cloneError !== null ? (
+            <div role="alert" className="km-reading__audio-error">
+              {cloneError}
+            </div>
+          ) : null}
           <ShowMore
             canShowMore={pag.canShowMore}
             onShowMore={pag.showMore}
@@ -2045,10 +2275,150 @@ const EXPERIENCE_IMAGES_CAPPED_COPY =
   'Illustrations: daily limit reached — try tomorrow.';
 
 // ─────────────────────────────────────────────────────────────
+// Publish / Unpublish / Save-to-my-library (#45)
+// ─────────────────────────────────────────────────────────────
+
+/** Fixed fallback copy for a failed publish/unpublish/clone POST (errorCopy
+ *  contract). */
+const LIBRARY_ACTION_FAILED_COPY = "Couldn't save — try again.";
+
+/**
+ * The story reader's #45 control: an OWNER sees a Publish/Unpublish toggle
+ * on their own story; a NON-OWNER viewing a story they reached because it
+ * is PUBLISHED (`story.isShared`) sees "Save to my library" instead — never
+ * both, and a non-owner is never offered a mutation the server would 404
+ * anyway. `story.isOwn` defaults to `true` when absent (see
+ * `GeneratedStory.isOwn`'s doc comment — every pre-#45 fetch was implicitly
+ * the caller's own), so an older server response degrades to "show the
+ * owner controls," matching its actual historical guarantee.
+ */
+function StoryLibraryControls({
+  story,
+  onStoryUpdated,
+  onCloned,
+}: {
+  story: GeneratedStory;
+  onStoryUpdated: (story: GeneratedStory) => void;
+  onCloned: (id: number) => void;
+}): JSX.Element {
+  const [busy, setBusy] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const ctrlRef = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      ctrlRef.current?.abort();
+    },
+    [],
+  );
+
+  const isOwn = story.isOwn !== false;
+  const isShared = story.isShared === true;
+
+  const togglePublish = useCallback((): void => {
+    ctrlRef.current?.abort();
+    const ctrl = new AbortController();
+    ctrlRef.current = ctrl;
+    setBusy(true);
+    setErrorMessage(null);
+    const action = isShared ? unpublishStory : publishStory;
+    action(story.id, ctrl.signal).then(
+      (updated) => {
+        if (ctrl.signal.aborted) return;
+        setBusy(false);
+        onStoryUpdated(updated);
+      },
+      (err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setBusy(false);
+        setErrorMessage(errorMessageFor(err, LIBRARY_ACTION_FAILED_COPY));
+      },
+    );
+  }, [story.id, isShared, onStoryUpdated]);
+
+  const saveToLibrary = useCallback((): void => {
+    ctrlRef.current?.abort();
+    const ctrl = new AbortController();
+    ctrlRef.current = ctrl;
+    setBusy(true);
+    setErrorMessage(null);
+    cloneStory(story.id, ctrl.signal).then(
+      (clone) => {
+        if (ctrl.signal.aborted) return;
+        setBusy(false);
+        onCloned(clone.id);
+      },
+      (err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setBusy(false);
+        setErrorMessage(errorMessageFor(err, LIBRARY_ACTION_FAILED_COPY));
+      },
+    );
+  }, [story.id, onCloned]);
+
+  return (
+    <div className="km-reading__library-controls" style={{ margin: '10px 0' }}>
+      {isOwn ? (
+        <Button
+          variant={isShared ? 'ghost' : 'gold'}
+          size="sm"
+          leadingIcon={<Icon name={isShared ? 'folder' : 'upload'} size={14} />}
+          aria-disabled={busy || undefined}
+          onClick={() => {
+            if (busy) return; // aria-disabled doesn't block clicks — we do.
+            togglePublish();
+          }}
+        >
+          {busy ? (
+            <Bilingual en="Saving…" kr="저장 중…" compact />
+          ) : isShared ? (
+            <Bilingual en="Unpublish" kr="공개 해제" compact />
+          ) : (
+            <Bilingual en="Publish to library" kr="서재에 공개" compact />
+          )}
+        </Button>
+      ) : (
+        <Button
+          variant="gold"
+          size="sm"
+          leadingIcon={<Icon name="plus" size={14} />}
+          aria-disabled={busy || undefined}
+          onClick={() => {
+            if (busy) return; // aria-disabled doesn't block clicks — we do.
+            saveToLibrary();
+          }}
+        >
+          {busy ? (
+            <Bilingual en="Saving…" kr="저장 중…" compact />
+          ) : (
+            <Bilingual en="Save to my library" kr="내 서재에 저장" compact />
+          )}
+        </Button>
+      )}
+      {errorMessage !== null ? (
+        <div role="alert" className="km-reading__audio-error" style={{ marginTop: 6 }}>
+          {errorMessage}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
 // Story reader (?story=N)
 // ─────────────────────────────────────────────────────────────
 
-function StoryReader({ storyId }: { storyId: number }): JSX.Element {
+function StoryReader({
+  storyId,
+  onCloned,
+}: {
+  storyId: number;
+  /** #45 — invoked with the NEW story's id once "Save to my library"
+   *  succeeds (a non-owner cloning a published story); the caller
+   *  navigates straight into the fresh, owned copy. */
+  onCloned: (id: number) => void;
+}): JSX.Element {
   const [story, setStory] = useState<GeneratedStory | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -2171,8 +2541,20 @@ function StoryReader({ storyId }: { storyId: number }): JSX.Element {
     images !== null &&
     images.imageGenConfigured !== false &&
     images.status !== 'done';
+  // #45 fix-pass (client review SF-1): every affordance below that POSTs to
+  // an owner-gated route (`/audio`, `/experience`, `/attempts`) must be
+  // hidden for a non-owner viewing a published-but-not-cloned story — those
+  // routes stay strictly owner-only (the listen-via-clone boundary), so an
+  // unguarded render is a guaranteed 404 with no explanation. `isOwn` mirrors
+  // `StoryLibraryControls`'s own default-to-true reasoning (`GeneratedStory
+  // .isOwn`'s doc comment): absent on an older payload → treated as the
+  // caller's own story, exactly as every pre-#45 fetch behaved. Optional
+  // chaining: `story` is still possibly null here (this runs before the
+  // loading/error early-returns below, same hook-ordering constraint as
+  // `audioHalfWanted`/`imagesHalfWanted` above).
+  const isOwn = story?.isOwn !== false;
   const showExperienceButton =
-    audio !== null && images !== null && (audioHalfWanted || imagesHalfWanted);
+    isOwn && audio !== null && images !== null && (audioHalfWanted || imagesHalfWanted);
 
   // Defensive ordinal sort (MyAudioDetail's stance — the server already
   // orders by segment_number).
@@ -2355,6 +2737,16 @@ function StoryReader({ storyId }: { storyId: number }): JSX.Element {
         </p>
       ) : null}
 
+      {/* #45 — Publish/Unpublish (owner) or Save-to-my-library (non-owner
+          viewing a published story). `setStory` refreshes local state from
+          the mutation's own response so the toggle/clone reflects the
+          server's authoritative new state without a second fetch. */}
+      <StoryLibraryControls
+        story={story}
+        onStoryUpdated={setStory}
+        onCloned={onCloned}
+      />
+
       {/* F-216 — one-tap combined generation, ABOVE both asset cards: one
           POST enqueues whatever is still missing (audio and/or
           illustrations) and seeds both state machines from its response.
@@ -2412,7 +2804,15 @@ function StoryReader({ storyId }: { storyId: number }): JSX.Element {
           Only an explicit `false` hides — a missing flag (older server)
           keeps the feature visible, forward-compat. Same blue-signboard
           player card as the Listen surfaces (MyAudioDetail). */}
-      {audio !== null && audio.ttsConfigured !== false ? (
+      {/* #45 fix-pass (client review SF-1): gated on `isOwn` too — a
+          non-owner's `GET /generated/:id/audio` is deliberately NOT widened
+          (the listen-via-clone boundary), so the hook always masks to
+          `status: 'none'` for them, which would otherwise render the
+          "Generate audio" CTA on every published story a non-owner
+          previews. Hiding the whole card (not just the CTA) matches
+          `StoryLibraryControls`'s posture: a non-owner sees read + clone
+          only, never an owner-only affordance that's guaranteed to 404. */}
+      {isOwn && audio !== null && audio.ttsConfigured !== false ? (
         <CityCard tone="blue" className="km-reading__audio">
           {audio.status === 'done' && audio.track !== null ? (
             (() => {
@@ -2631,14 +3031,19 @@ function StoryReader({ storyId }: { storyId: number }): JSX.Element {
             ))}
       </CityCard>
 
-      <MarkCompleteButton
-        state={markState}
-        onMark={markStoryFinished}
-        labelEn="Mark story as finished"
-        labelKr="이야기 완료로 표시"
-        doneLabelEn="Story finished"
-        doneLabelKr="완료"
-      />
+      {/* #45 fix-pass (client review SF-1): `POST /reading/attempts` looks
+          the story up owner-scoped — a non-owner's click 404s. Hidden, not
+          disabled, matching the audio/experience gating above. */}
+      {isOwn ? (
+        <MarkCompleteButton
+          state={markState}
+          onMark={markStoryFinished}
+          labelEn="Mark story as finished"
+          labelKr="이야기 완료로 표시"
+          doneLabelEn="Story finished"
+          doneLabelKr="완료"
+        />
+      ) : null}
 
       {popover}
       {translateText !== null ? (

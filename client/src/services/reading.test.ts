@@ -16,6 +16,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  cloneStory,
   generateChapterQuestions,
   generateStory,
   getGeneratedStory,
@@ -24,13 +25,17 @@ import {
   getStoryImages,
   listGeneratedAudio,
   listGeneratedStories,
+  listLibrary,
+  publishStory,
   requestStoryAudio,
   requestStoryExperience,
   requestStoryImages,
   translatePassage,
+  unpublishStory,
 } from './reading';
 import type {
   GeneratedStoryLibrary,
+  LibraryStorySummary,
   StoryAudio,
   StoryExperienceResult,
   StoryImagesEnvelope,
@@ -666,5 +671,147 @@ describe('getGeneratedStory — F-210 turns groundwork', () => {
     const got = await getGeneratedStory(8);
 
     expect(got.turns).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Public reuse library (#45 — generated_stories.is_shared, migration 109)
+// ─────────────────────────────────────────────────────────────
+
+const PUBLISHED_STORY = {
+  id: 7,
+  title: '바닷가 마을',
+  level: 'L3',
+  prompt: null,
+  createdAt: '2026-08-01T00:00:00Z',
+  bodyKo: '소년은 바닷가를 걸었다.',
+  isShared: true,
+  isOwn: true,
+};
+
+describe('publishStory / unpublishStory', () => {
+  it('publishStory POSTs /reading/generated/:id/publish with an empty body and unwraps the envelope', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({ story: PUBLISHED_STORY });
+
+    const got = await publishStory(7);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    const [url, body] = spy.mock.calls[0];
+    expect(url).toBe('/reading/generated/7/publish');
+    expect(body).toEqual({});
+    expect(got).toEqual(PUBLISHED_STORY);
+  });
+
+  it('unpublishStory POSTs /reading/generated/:id/unpublish with an empty body', async () => {
+    const unpublished = { ...PUBLISHED_STORY, isShared: false };
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({ story: unpublished });
+
+    const got = await unpublishStory(7);
+
+    const [url, body] = spy.mock.calls[0];
+    expect(url).toBe('/reading/generated/7/unpublish');
+    expect(body).toEqual({});
+    expect(got.isShared).toBe(false);
+  });
+
+  it('threads an AbortSignal into both calls', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValue({ story: PUBLISHED_STORY });
+    const ctrl = new AbortController();
+
+    await publishStory(7, ctrl.signal);
+    await unpublishStory(7, ctrl.signal);
+
+    expect(spy.mock.calls[0][2]?.signal).toBe(ctrl.signal);
+    expect(spy.mock.calls[1][2]?.signal).toBe(ctrl.signal);
+  });
+
+  it('propagates a 404 ApiError untouched (owner-gated: another user\'s story)', async () => {
+    vi.spyOn(api, 'post').mockRejectedValueOnce(
+      new ApiError('not found', { status: 404, code: 'not_found' }),
+    );
+
+    await expect(publishStory(999)).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe('listLibrary', () => {
+  const ROW: LibraryStorySummary = {
+    id: 7,
+    title: '바닷가 마을',
+    level: 'L3',
+    prompt: null,
+    createdAt: '2026-08-01T00:00:00Z',
+    audioStatus: 'done',
+    imageStatus: 'done',
+  };
+
+  it('GETs /reading/generated/shared and unwraps the stories array', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({ stories: [ROW] });
+
+    const got = await listLibrary();
+
+    expect(spy.mock.calls[0][0]).toBe('/reading/generated/shared');
+    expect(got).toEqual([ROW]);
+  });
+
+  it('resolves an empty array when nothing is published (not an error)', async () => {
+    vi.spyOn(api, 'get').mockResolvedValueOnce({ stories: [] });
+
+    await expect(listLibrary()).resolves.toEqual([]);
+  });
+
+  it('threads an AbortSignal into the request config', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({ stories: [] });
+    const ctrl = new AbortController();
+
+    await listLibrary(ctrl.signal);
+
+    expect(spy.mock.calls[0][1]?.signal).toBe(ctrl.signal);
+  });
+});
+
+describe('cloneStory', () => {
+  it('POSTs /reading/generated/:id/clone with an empty body and unwraps the new story', async () => {
+    const clone = { ...PUBLISHED_STORY, id: 42, isShared: false, isOwn: true };
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({ story: clone });
+
+    const got = await cloneStory(7);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    const [url, body] = spy.mock.calls[0];
+    expect(url).toBe('/reading/generated/7/clone');
+    expect(body).toEqual({});
+    expect(got).toEqual(clone);
+    // A clone always starts private, regardless of the source's state.
+    expect(got.isShared).toBe(false);
+  });
+
+  it('threads an AbortSignal into the request config', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({ story: PUBLISHED_STORY });
+    const ctrl = new AbortController();
+
+    await cloneStory(7, ctrl.signal);
+
+    expect(spy.mock.calls[0][2]?.signal).toBe(ctrl.signal);
+  });
+
+  it('propagates a 404 ApiError untouched (a missing or foreign PRIVATE story)', async () => {
+    vi.spyOn(api, 'post').mockRejectedValueOnce(
+      new ApiError('not found', { status: 404, code: 'not_found' }),
+    );
+
+    await expect(cloneStory(999)).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe('getGeneratedStory — #45 isOwn/isShared pass through unmodified', () => {
+  it('carries isOwn: false + isShared: true for a published story viewed by a non-owner', async () => {
+    const shared = { ...PUBLISHED_STORY, isOwn: false };
+    vi.spyOn(api, 'get').mockResolvedValueOnce({ story: shared });
+
+    const got = await getGeneratedStory(7);
+
+    expect(got.isOwn).toBe(false);
+    expect(got.isShared).toBe(true);
   });
 });

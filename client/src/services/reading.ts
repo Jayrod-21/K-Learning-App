@@ -26,6 +26,15 @@
  *     envelope shape as F-210, with the byte-serve sibling
  *     `GET /reading/generated/:id/image/:n/blob` consumed via `<img>`
  *     through `buildStoryImageSrc` (services/ttmik.ts).
+ *   - Public reuse library (#45; `generated_stories.is_shared` +
+ *     `source_story_id`, migration 109): `listLibrary` (
+ *     `GET /reading/generated/shared` — every account's PUBLISHED stories,
+ *     no owner PII), `publishStory`/`unpublishStory` (owner-gated
+ *     `is_shared` toggle), `cloneStory` (`POST /reading/generated/:id/clone`
+ *     — copy a readable story into the caller's own library at $0
+ *     incremental generation cost, referencing rather than regenerating any
+ *     audio/images). `getGeneratedStory`/`GET /reading/generated/:id/images`
+ *     are now widened (owned OR published) — see `GeneratedStory.isOwn`.
  *
  * Threat model:
  *   - Auth + session: every route is `requireAuth` server-side; the session
@@ -339,6 +348,13 @@ export interface GeneratedStorySummary {
   /** F-216 — aggregate illustration state (same contract as
    *  `audioStatus`, over the image tables). */
   imageStatus: AssetStatus;
+  /** #45 (migration 109) — whether the OWNER has published this story to
+   *  the public reuse library. This list is always the caller's OWN
+   *  stories, so there is no accompanying `isOwn` here (it would be a
+   *  constant `true` on every row) — OPTIONAL for backward compatibility
+   *  with pre-#45 fixtures/servers; absent reads as "unknown," which the
+   *  Library badge treats the same as `false` (no badge). */
+  isShared?: boolean;
 }
 
 /**
@@ -361,11 +377,23 @@ export interface StoryTurn {
  *  The F-216 aggregate statuses are OMITTED here on purpose: only the
  *  library list computes them (the reader derives live state from the
  *  dedicated audio/images envelopes instead), so this type must not claim
- *  fields the single-story wire never carries. */
+ *  fields the single-story wire never carries.
+ *
+ *  #45 (migration 109): `isOwn` distinguishes the caller's OWN story from a
+ *  PUBLISHED story they are viewing but do not own (this route now widens
+ *  to `user_id = $me OR is_shared = true` server-side) — the reader uses it
+ *  to decide between the owner-only Publish/Unpublish control and the
+ *  non-owner "Save to my library" clone action. BOTH `isOwn` and `isShared`
+ *  are OPTIONAL and treated as `true`/`false` respectively when absent —
+ *  every fetch before #45 was implicitly the caller's own private story, so
+ *  an older server (or an existing test fixture) that omits them is read
+ *  exactly as that always-true history: `isOwn: true` by default, only an
+ *  explicit `false` means "this is a shared story you don't own." */
 export interface GeneratedStory
   extends Omit<GeneratedStorySummary, 'audioStatus' | 'imageStatus'> {
   bodyKo: string;
   turns?: StoryTurn[] | null;
+  isOwn?: boolean;
 }
 
 interface StoryEnvelope {
@@ -429,14 +457,108 @@ export async function listGeneratedStories(
   );
 }
 
-/** GET /reading/generated/:id — one generated story, full body. 404s (as
- *  `ApiError`) for a missing or foreign id. */
+/** GET /reading/generated/:id — one generated story, full body. Widened for
+ *  #45: readable when the caller owns it OR it has been published
+ *  (`isShared`) — see `GeneratedStory.isOwn`'s doc comment. 404s (as
+ *  `ApiError`) for a missing id or a foreign PRIVATE story. */
 export async function getGeneratedStory(
   id: number,
   signal?: AbortSignal,
 ): Promise<GeneratedStory> {
   const res = await api.get<StoryEnvelope>(
     `/reading/generated/${String(id)}`,
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.story;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Public reuse library (#45 — generated_stories.is_shared, migration 109)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * One row of the public library browse listing (`GET /reading/generated/
+ * shared`) — metadata only (no `bodyKo`, same split as
+ * `GeneratedStorySummary`), and DELIBERATELY carries NO owner-identifying
+ * field of any kind (not even a boolean) — the server's DTO is a bespoke
+ * projection built for exactly that reason.
+ */
+export interface LibraryStorySummary {
+  id: number;
+  title: string;
+  level: string;
+  prompt: string | null;
+  createdAt: string;
+  audioStatus: AssetStatus;
+  imageStatus: AssetStatus;
+}
+
+interface LibraryEnvelope {
+  stories: LibraryStorySummary[];
+}
+
+/**
+ * GET /reading/generated/shared — the public reuse library: every account's
+ * PUBLISHED stories, newest first. Empty array is the normal "nothing
+ * published yet" state, not an error.
+ */
+export async function listLibrary(signal?: AbortSignal): Promise<LibraryStorySummary[]> {
+  const res = await api.get<LibraryEnvelope>(
+    '/reading/generated/shared',
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.stories;
+}
+
+/**
+ * POST /reading/generated/:id/publish — the owner opts their OWN story into
+ * the public library (`is_shared: true`). Idempotent (publishing an
+ * already-published story just re-affirms the state, 200). Owner-gated
+ * server-side: 404s (as `ApiError`) for a missing id or a story the caller
+ * does not own — this client never offers the control to a non-owner (see
+ * `GeneratedStory.isOwn`), but the server enforces it regardless.
+ */
+export async function publishStory(id: number, signal?: AbortSignal): Promise<GeneratedStory> {
+  const res = await api.post<StoryEnvelope>(
+    `/reading/generated/${String(id)}/publish`,
+    {},
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.story;
+}
+
+/**
+ * POST /reading/generated/:id/unpublish — the owner withdraws their OWN
+ * story from the public library (`is_shared: false`). Does NOT retract any
+ * clone already made from it (a clone is a full independent copy from the
+ * moment it is created). Same owner-gate/idempotency posture as
+ * `publishStory`.
+ */
+export async function unpublishStory(id: number, signal?: AbortSignal): Promise<GeneratedStory> {
+  const res = await api.post<StoryEnvelope>(
+    `/reading/generated/${String(id)}/unpublish`,
+    {},
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.story;
+}
+
+/**
+ * POST /reading/generated/:id/clone — copy a READABLE story (owned by the
+ * caller, or published by another account) into the caller's OWN private
+ * library at ZERO incremental generation cost — the server references the
+ * source's already-synthesized audio/images rather than regenerating them.
+ * Returns the NEW story (201), always private (`isShared: false`) and
+ * always `isOwn: true` — this is how a non-owner gets a listenable copy of
+ * a published story (`GET /generated/:id/audio` stays owner-only; cloning
+ * first, then playing through the caller's own copy, is the MVP listen
+ * path for a shared story — see routes/reading.ts's clone route). 404s (as
+ * `ApiError`) for a missing id or a foreign PRIVATE story.
+ */
+export async function cloneStory(id: number, signal?: AbortSignal): Promise<GeneratedStory> {
+  const res = await api.post<StoryEnvelope>(
+    `/reading/generated/${String(id)}/clone`,
+    {},
     signal !== undefined ? { signal } : undefined,
   );
   return res.story;
