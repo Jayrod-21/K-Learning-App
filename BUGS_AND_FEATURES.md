@@ -332,6 +332,19 @@ Launch one focused session per group; cross-cutting items noted.
 | F-227 | Feature | 🔴 | P3 | ops / cost · going-public | Console cost controls + model refresh — split Workspaces + per-workspace API keys + Anthropic-enforced spend limits + the Usage/Cost Admin API to reconcile against the home-grown `spendCeiling` (retire the manually-maintained hardcoded rate card); + calibrated model refresh Sonnet 4.6 → Sonnet 5. Overlaps/extends F-224 on the model axis |
 | F-228 | Feature | 🔴 | P2 | comprehensive audit · LATER | Full app audit — public-launch threat model (auth/authz/input-validation/rate-limit/CORS/session/deps/logging/deploy hardening) + cost model + code-quality/dead-code (fluff) hunt + DB pass + test integrity + Claude-platform modernization (F-225/226/227). Ties to the post-launch roadmap fluff/dead-code hunt + DB pass |
 | F-229 | Feature | 🔴 | P3 | API (BACKEND, UI) · experiment | EXPERIMENT · In-app conversational TUTOR agent — a multi-turn, tool-using agent that reads the learner's OWN data (weak areas from the F-212 adaptive engine, their vocab/grammar SRS state, recent mistakes, progress) and adaptively tutors/quizzes/explains in conversation. Distinct from `generate_conversation` (roleplay). Evaluate Anthropic **Managed Agents** (hosted loop + sandbox) vs the Agent SDK vs a Tool-Runner loop over app-defined tools; scope tools read-only + per-user-scoped, reuse `spendCeiling`. Jared wants to experiment — exploratory, product-direction |
+| F-230 | Feature | 🔴 | P4 | tooling / DX | Makefile → Taskfile migration — replace the root `Makefile` with a Taskfile (`task`), a YAML task runner with cross-platform shells, per-task descriptions/`--list`, dependency and `sources`/`generates` up-to-date checks, and no tab-vs-space or implicit-rule footguns. Mechanical port of the existing targets; CI and `Deploy/` scripts must be updated in lockstep |
+| F-231 | Feature | 🔴 | P2 | docs · external-review | High-level application + architecture doc — a top-down diagram/write-up of what the system is and how the pieces fit (client SPA, API server, Postgres, `services/kiwi`, km-worker, the blue/green `km-lb` front door, the external Claude/OpenAI/ElevenLabs calls). Stated purpose: let a reviewer who has never seen the repo orient in minutes, and make waste visible. Pairs with F-228's dead-code hunt — you cannot spot waste without the map |
+| F-232 | Feature | 🔴 | P2 | docs · external-review | Backend↔frontend organization + service docs — document how the two halves are organized and how they interact: what lives in `server/src/routes/` vs `server/src/services/` vs `client/src/pages/`, the request path end-to-end, and a per-service description (what each service owns, what it depends on, what calls it) |
+| F-233 | Feature | 🔴 | P2 | docs (API) · external-review | API contract documentation — the endpoint surface with, per route, the request shape and the response shape. Today the contract is only discoverable by reading route handlers + Zod schemas. Consider generating it from the existing Zod schemas rather than hand-maintaining prose that will drift |
+| F-234 | Question | 🔴 | P2 | ARCHITECTURE · external-review · **open question** | **"Why does the API server need to know about the web client?"** — a design question raised in review, NOT yet investigated or answered. Task is to find where the API server has knowledge of / coupling to the web client, decide whether each instance is justified, and propose decoupling where it is not. Answer it before acting on it |
+| F-235 | Feature | 🔴 | P3 | DATABASE · external-review | Database column audit — walk every table column for: still-used vs orphaned, correct type/width, nullability, defaults, index coverage, and naming consistency. ⚠️ Multi-user pivot caveat: an empty table or an unused index is NOT automatically dead — check it against the multi-user roadmap before proposing a drop. Overlaps the post-launch DB pass and F-228 |
+| F-236 | Feature | 🔴 | P3 | code-quality · external-review | DRY pass — find and consolidate repeated chunks of code across server, client, and the ingest tooling. Overlaps F-228's fluff/dead-code hunt; run them together so the same files are only read once |
+| F-237 | Feature | 🔴 | P3 | process · external-review | Move the backlog from `BUGS_AND_FEATURES.md` to GitHub Issues — one issue per B-/F- item, labels for category/priority, status from issue state. ⚠️ Note the tension: until this ships, `BUGS_AND_FEATURES.md` remains the single source of truth, and a half-migration means two sources of truth. Migrate wholesale or not at all |
+| F-238 | Feature | 🔴 | P3 | process · external-review | GitHub Projects for project management — a board over the F-237 issues (backlog / in-progress / in-review / shipped) to replace the status-emoji column. Gated on F-237: a board over a Markdown table is not possible |
+| F-239 | Feature | ⚪ | P4 | infra / CI / hosting · external-review · **BLOCKED — external dependency** | Self-hosted **Forgejo instead of GitHub** — two scopes raised: (a) Forgejo Actions replacing GitHub Actions (needs a Forgejo instance **plus** a runner watching the repo for changes), and (b) Forgejo replacing GitHub **wholesale** as the code host. ⚠️ **PENDING, not open for decision: Jared's brother is self-hosting the Forgejo service and it is not ready yet. Until he hands it over, this project stays on GitHub.** So do NOT treat this as blocking F-237/F-238 — build those on GitHub now and port later if and when Forgejo lands. Largest blast radius in this batch when it does happen (moves where the code lives, where CI runs, and the deploy path); the porting cost of F-237/F-238 is the price of not stalling, and is accepted deliberately |
+| F-240 | Feature | 🔴 | P3 | DATABASE (docs) · external-review | Migration inventory — "what are all the database migration files?" Today there are **109 migrations** (218 `.up.sql`/`.down.sql` pairs in `db/migrations/`, all 109 tracked in `schema_migrations`) and no document that says what any of them did. Produce a readable ledger: number, what it changed, why, and whether it is still load-bearing. Pairs with F-235 (column audit) — the ledger is how you tell an intentionally-empty table from a genuinely dead one, and with F-231, which needs it to explain how the schema got here |
+| F-241 | Feature | 🔴 | P2 | ARCHITECTURE · epic | **Make the app modular** — restructure into feature modules with real seams (own routes/services/schema slice/tests) so one module can be worked, tested and reviewed in isolation. Stated motivation is throughput: **one task at a time per terminal**, several terminals in parallel, which only works if the modules do not collide in the same files. Merges with the pre-existing modular-architecture epic (plug/unplug feature modules) noted under F-214 — decide whether F-241 and the F-214 language-core refactor are ONE refactor or two before starting either. Depends on F-231/F-232: you cannot draw module boundaries you have not yet mapped |
+| F-242 | Feature | 🔴 | P2 | process / tooling · workflow | **Multi-terminal + multi-agent workflow design** — define how parallel work actually runs: how many terminals/agents at once, git worktree isolation per task, which model does which role (builder vs reviewer vs fix-pass), how independent reviewers stay independent, how API usage/spend is budgeted and observed across concurrent agents, and how the existing 4-phase /fixpass gate composes with parallelism. Output is a written workflow doc + the harness config to run it, not app code. Enabled by F-241 (modules give the parallel tasks non-colliding boundaries) |
 | B-040 | Bug | 🔴 | P2 | BACKEND (DATA) | Multi-passage reading precedence — reading items that legitimately need BOTH a shared passage AND their own insert-sentence stem currently show only the insert, not the shared passage. The 153/378 duplicate-stem case FIXED in #209; this residual needs a precedence redesign (or is retired wholesale by F-220 generation) |
 
 ---
@@ -2133,6 +2146,51 @@ app stays private — see F-215).
 - **Status:** ⚪ **deferred — LAST (decided 2026-07-29), same tier as F-214** · **Priority:** P4 · **Category:** product · decision (no code)
 - **Where / State:** Not an implementation item — filed because it **gates F-213 and F-214** and because it reverses a standing project assumption. The transcript's pricing argument: existing language apps each specialize in one aspect; this one covers all aspects *with AI personalization*, so it can charge a premium — the friend spent thousands and Jared hundreds on materials, so serious learners are a real market. Price point explicitly undecided. **The reversal:** the project's current stated scope is a private, effectively single-user app (dead signup is intentional; onboarding/public-hardening deliberately deprioritized) precisely *because* of the copyrighted content. A commercial product inverts every one of those calls — signup, billing, multi-tenancy, support, and above all a content position where nothing shipped is copyrighted (which is what makes F-210's generated audio load-bearing rather than a nice-to-have).
 - **Fix hint:** Resolve as an explicit decision before spending on F-213/F-214, and record it here either way. If commercial: the prerequisite list is copyright-clean content end-to-end (F-210 + the F-214 authoring recipe), then real signup/onboarding, billing, multi-tenant data isolation (much already holds — user-scoped rows and per-user provenance from F-199 — but it has never been reviewed as a *tenant boundary*), plus the standard new-app security bar (email verification is F-006 🟢, MFA and rate-limited/invite registration are the remaining deploy priorities). If it stays private: close F-213/F-214 as ⚪ won't-do and keep the roadmap on personal-utility features. Pricing research itself (what serious-learner tools charge, what the all-in-one bundle is worth) is a separate non-code task — don't let it block the copyright work, which is worth doing regardless.
+
+## External code review + parallel-work scope — 2026-08-29 (F-231 … F-242)
+
+Source: an initial read of the repo by Jared's older brother, a software engineer, with no prior
+context on the project, plus Jared's own additions to the same list. Twelve items, filed
+**verbatim as raised**. Explicitly capture-only: none has been investigated, answered or costed,
+and F-234 in particular is a question to research rather than a change to make. F-230 (Taskfile)
+is filed alongside them but is unrelated.
+
+**Theme — most of this is legibility, not product.** Nine of the twelve are documentation,
+process or tooling. The reviewer could not form a mental model of the system from the repo, so
+the top three asks (F-231 architecture doc, F-232 backend↔frontend/service docs, F-233 API
+contract) all amount to "make the system legible to someone who did not build it." Take that at
+face value — every existing doc here is written for someone who already has the context.
+F-240 (migration ledger) is the same complaint aimed at the schema: 109 migrations, no record of
+what any of them did.
+
+**Two items overlap work already filed.** F-235 (DB column audit) and F-236 (DRY pass) are
+subsets of F-228's full app audit and of the post-launch DB / fluff-and-dead-code passes. Run
+them as one sweep rather than three separate reads of the same files.
+
+**The platform question is settled for now — GitHub stays.** F-239 (self-hosted Forgejo) is
+**blocked on an external dependency**: Jared's brother is hosting the Forgejo service himself and
+it is not ready to hand over. Until it is, this project stays on GitHub. That un-blocks F-237
+(GitHub Issues instead of this file) and F-238 (GitHub Projects) — build them on GitHub now
+rather than stalling on a forge that does not exist yet, and accept the porting cost if Forgejo
+later lands. Note the standing tension inside F-237 itself: until it actually completes, this
+file remains the single source of truth for backlog status, and a partial migration would create
+two.
+
+**F-241 and F-242 are a throughput pair, and their order matters.** The goal is running several
+tasks at once, one per terminal. F-242 (the workflow: worktree isolation, agent roles, reviewer
+independence, API spend across concurrent agents) is the process half; F-241 (modularize the app
+into feature modules with real seams) is what makes it safe, because parallel tasks that land in
+the same files collide no matter how good the process is. F-241 depends in turn on F-231/F-232 —
+module boundaries cannot be drawn across a system nobody has mapped yet. F-241 also merges with
+the pre-existing modular-architecture epic noted under F-214; decide whether they are one
+refactor or two before starting either.
+
+**Sequencing suggestion (not yet decided by Jared).** F-231 → F-232 → F-233 are cheap, have no
+dependencies, and unblock nearly everything else here including F-228 and F-241; F-234 is a
+research task the architecture doc largely answers as a side effect; F-240 pairs with F-235, and
+both fold into the F-228 sweep along with F-236; F-242 can be drafted at any time but only pays
+off after F-241; F-237/F-238 are unblocked and can be done on GitHub whenever the
+bookkeeping pain justifies it, while F-239 simply waits on Jared's brother.
 
 ---
 
