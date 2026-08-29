@@ -341,7 +341,10 @@ Launch one focused session per group; cross-cutting items noted.
 | F-236 | Feature | 🔴 | P3 | code-quality · external-review | DRY pass — find and consolidate repeated chunks of code across server, client, and the ingest tooling. Overlaps F-228's fluff/dead-code hunt; run them together so the same files are only read once |
 | F-237 | Feature | 🔴 | P3 | process · external-review | Move the backlog from `BUGS_AND_FEATURES.md` to GitHub Issues — one issue per B-/F- item, labels for category/priority, status from issue state. ⚠️ Note the tension: until this ships, `BUGS_AND_FEATURES.md` remains the single source of truth, and a half-migration means two sources of truth. Migrate wholesale or not at all |
 | F-238 | Feature | 🔴 | P3 | process · external-review | GitHub Projects for project management — a board over the F-237 issues (backlog / in-progress / in-review / shipped) to replace the status-emoji column. Gated on F-237: a board over a Markdown table is not possible |
-| F-239 | Feature | 🔴 | P4 | infra / CI · external-review | Self-hosted Forgejo + Forgejo Actions runner to replace GitHub Actions — requires hosting a Forgejo instance and a runner that watches the repo for changes. ⚠️ Largest-blast-radius item in this batch: it touches where the code lives, where CI runs, and the deploy path, and it conflicts with F-237/F-238 (which assume GitHub). Decide the platform question — GitHub or Forgejo — before building either side |
+| F-239 | Feature | ⚪ | P4 | infra / CI / hosting · external-review · **BLOCKED — external dependency** | Self-hosted **Forgejo instead of GitHub** — two scopes raised: (a) Forgejo Actions replacing GitHub Actions (needs a Forgejo instance **plus** a runner watching the repo for changes), and (b) Forgejo replacing GitHub **wholesale** as the code host. ⚠️ **PENDING, not open for decision: Jared's brother is self-hosting the Forgejo service and it is not ready yet. Until he hands it over, this project stays on GitHub.** So do NOT treat this as blocking F-237/F-238 — build those on GitHub now and port later if and when Forgejo lands. Largest blast radius in this batch when it does happen (moves where the code lives, where CI runs, and the deploy path); the porting cost of F-237/F-238 is the price of not stalling, and is accepted deliberately |
+| F-240 | Feature | 🔴 | P3 | DATABASE (docs) · external-review | Migration inventory — "what are all the database migration files?" Today there are **109 migrations** (218 `.up.sql`/`.down.sql` pairs in `db/migrations/`, all 109 tracked in `schema_migrations`) and no document that says what any of them did. Produce a readable ledger: number, what it changed, why, and whether it is still load-bearing. Pairs with F-235 (column audit) — the ledger is how you tell an intentionally-empty table from a genuinely dead one, and with F-231, which needs it to explain how the schema got here |
+| F-241 | Feature | 🔴 | P2 | ARCHITECTURE · epic | **Make the app modular** — restructure into feature modules with real seams (own routes/services/schema slice/tests) so one module can be worked, tested and reviewed in isolation. Stated motivation is throughput: **one task at a time per terminal**, several terminals in parallel, which only works if the modules do not collide in the same files. Merges with the pre-existing modular-architecture epic (plug/unplug feature modules) noted under F-214 — decide whether F-241 and the F-214 language-core refactor are ONE refactor or two before starting either. Depends on F-231/F-232: you cannot draw module boundaries you have not yet mapped |
+| F-242 | Feature | 🔴 | P2 | process / tooling · workflow | **Multi-terminal + multi-agent workflow design** — define how parallel work actually runs: how many terminals/agents at once, git worktree isolation per task, which model does which role (builder vs reviewer vs fix-pass), how independent reviewers stay independent, how API usage/spend is budgeted and observed across concurrent agents, and how the existing 4-phase /fixpass gate composes with parallelism. Output is a written workflow doc + the harness config to run it, not app code. Enabled by F-241 (modules give the parallel tasks non-colliding boundaries) |
 | B-040 | Bug | 🔴 | P2 | BACKEND (DATA) | Multi-passage reading precedence — reading items that legitimately need BOTH a shared passage AND their own insert-sentence stem currently show only the insert, not the shared passage. The 153/378 duplicate-stem case FIXED in #209; this residual needs a precedence redesign (or is retired wholesale by F-220 generation) |
 
 ---
@@ -2144,34 +2147,50 @@ app stays private — see F-215).
 - **Where / State:** Not an implementation item — filed because it **gates F-213 and F-214** and because it reverses a standing project assumption. The transcript's pricing argument: existing language apps each specialize in one aspect; this one covers all aspects *with AI personalization*, so it can charge a premium — the friend spent thousands and Jared hundreds on materials, so serious learners are a real market. Price point explicitly undecided. **The reversal:** the project's current stated scope is a private, effectively single-user app (dead signup is intentional; onboarding/public-hardening deliberately deprioritized) precisely *because* of the copyrighted content. A commercial product inverts every one of those calls — signup, billing, multi-tenancy, support, and above all a content position where nothing shipped is copyrighted (which is what makes F-210's generated audio load-bearing rather than a nice-to-have).
 - **Fix hint:** Resolve as an explicit decision before spending on F-213/F-214, and record it here either way. If commercial: the prerequisite list is copyright-clean content end-to-end (F-210 + the F-214 authoring recipe), then real signup/onboarding, billing, multi-tenant data isolation (much already holds — user-scoped rows and per-user provenance from F-199 — but it has never been reviewed as a *tenant boundary*), plus the standard new-app security bar (email verification is F-006 🟢, MFA and rate-limited/invite registration are the remaining deploy priorities). If it stays private: close F-213/F-214 as ⚪ won't-do and keep the roadmap on personal-utility features. Pricing research itself (what serious-learner tools charge, what the all-in-one bundle is worth) is a separate non-code task — don't let it block the copyright work, which is worth doing regardless.
 
-## External code review — 2026-08-29 (F-231 … F-239)
+## External code review + parallel-work scope — 2026-08-29 (F-231 … F-242)
 
-Source: an initial read of the repo by Jared's older brother, a software engineer, with no
-prior context on the project. Nine items, filed **verbatim as raised**. Explicitly capture-only:
-none of these has been investigated, answered, or costed yet, and F-234 in particular is a
-question to research rather than a change to make. F-230 (Taskfile) is filed alongside them but
-is unrelated to the review.
+Source: an initial read of the repo by Jared's older brother, a software engineer, with no prior
+context on the project, plus Jared's own additions to the same list. Twelve items, filed
+**verbatim as raised**. Explicitly capture-only: none has been investigated, answered or costed,
+and F-234 in particular is a question to research rather than a change to make. F-230 (Taskfile)
+is filed alongside them but is unrelated.
 
-**Theme.** Eight of the nine are *documentation + process*, not product: the reviewer could not
-form a mental model of the system from the repo, so the top three asks (F-231 architecture doc,
-F-232 backend↔frontend/service docs, F-233 API contract) are all "make the system legible to
-someone who did not build it." That is worth taking at face value — every existing doc here is
-written for someone who already has the context.
+**Theme — most of this is legibility, not product.** Nine of the twelve are documentation,
+process or tooling. The reviewer could not form a mental model of the system from the repo, so
+the top three asks (F-231 architecture doc, F-232 backend↔frontend/service docs, F-233 API
+contract) all amount to "make the system legible to someone who did not build it." Take that at
+face value — every existing doc here is written for someone who already has the context.
+F-240 (migration ledger) is the same complaint aimed at the schema: 109 migrations, no record of
+what any of them did.
 
 **Two items overlap work already filed.** F-235 (DB column audit) and F-236 (DRY pass) are
-subsets of F-228's full app audit and of the post-launch DB / fluff-and-dead-code passes.
-Run them as part of that sweep rather than as three separate reads of the same files.
+subsets of F-228's full app audit and of the post-launch DB / fluff-and-dead-code passes. Run
+them as one sweep rather than three separate reads of the same files.
 
-**The process items are one decision, not three.** F-237 (GitHub Issues instead of this file),
-F-238 (GitHub Projects) and F-239 (self-hosted Forgejo instead of GitHub Actions) pull in
-opposite directions: F-237/F-238 invest in GitHub, F-239 leaves it. Settle the platform question
-first. Note also the standing tension — until F-237 actually completes, this file remains the
-single source of truth for backlog status, and a partial migration would create two.
+**The platform question is settled for now — GitHub stays.** F-239 (self-hosted Forgejo) is
+**blocked on an external dependency**: Jared's brother is hosting the Forgejo service himself and
+it is not ready to hand over. Until it is, this project stays on GitHub. That un-blocks F-237
+(GitHub Issues instead of this file) and F-238 (GitHub Projects) — build them on GitHub now
+rather than stalling on a forge that does not exist yet, and accept the porting cost if Forgejo
+later lands. Note the standing tension inside F-237 itself: until it actually completes, this
+file remains the single source of truth for backlog status, and a partial migration would create
+two.
 
-**Sequencing suggestion (not yet decided by Jared).** F-231 → F-232 → F-233 are cheap, unblock
-every future reviewer including F-228, and have no dependencies; F-234 is a research task that
-the architecture doc will largely answer as a side effect; F-235/F-236 fold into F-228; the
-platform decision (F-237/F-238/F-239) can wait and should not interrupt feature work.
+**F-241 and F-242 are a throughput pair, and their order matters.** The goal is running several
+tasks at once, one per terminal. F-242 (the workflow: worktree isolation, agent roles, reviewer
+independence, API spend across concurrent agents) is the process half; F-241 (modularize the app
+into feature modules with real seams) is what makes it safe, because parallel tasks that land in
+the same files collide no matter how good the process is. F-241 depends in turn on F-231/F-232 —
+module boundaries cannot be drawn across a system nobody has mapped yet. F-241 also merges with
+the pre-existing modular-architecture epic noted under F-214; decide whether they are one
+refactor or two before starting either.
+
+**Sequencing suggestion (not yet decided by Jared).** F-231 → F-232 → F-233 are cheap, have no
+dependencies, and unblock nearly everything else here including F-228 and F-241; F-234 is a
+research task the architecture doc largely answers as a side effect; F-240 pairs with F-235, and
+both fold into the F-228 sweep along with F-236; F-242 can be drafted at any time but only pays
+off after F-241; F-237/F-238 are unblocked and can be done on GitHub whenever the
+bookkeeping pain justifies it, while F-239 simply waits on Jared's brother.
 
 ---
 
