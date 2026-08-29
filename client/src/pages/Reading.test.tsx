@@ -3644,7 +3644,8 @@ describe('Reading — public library (F-45)', () => {
   });
 
   it('an OWNER with isOwn omitted (older-shaped fixture) still gets the Publish control (backward-compat default)', async () => {
-    const { isOwn: _drop, ...withoutIsOwn } = { ...STORY_FULL, isOwn: true };
+    const withoutIsOwn: Partial<GeneratedStory> = { ...STORY_FULL };
+    delete withoutIsOwn.isOwn;
     renderStoryDirect(withoutIsOwn as GeneratedStory);
 
     expect(
@@ -3685,11 +3686,11 @@ describe('Reading — public library (F-45)', () => {
     });
 
     it("the SAME story viewed by its OWNER (isOwn omitted → default true) DOES show all three affordances", async () => {
-      const { isOwn: _drop, ...ownedStory } = {
+      const ownedStory: Partial<GeneratedStory> = {
         ...STORY_FULL,
-        isOwn: true,
         isShared: true,
       };
+      delete ownedStory.isOwn;
       renderStoryDirect(ownedStory as GeneratedStory);
 
       expect(
