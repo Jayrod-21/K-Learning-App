@@ -49,7 +49,44 @@
  *                                              with a completed narration,
  *                                              newest first, each carrying its
  *                                              streamUrl + durationMs
- *   GET /reading/generated/:id               → one generated story (full body)
+ *   GET /reading/generated/:id               → one readable generated story
+ *                                              (full body) — owned OR
+ *                                              PUBLISHED (#45, migration 109:
+ *                                              `WHERE user_id = $me OR
+ *                                              is_shared = true`); the DTO
+ *                                              carries isOwn/isShared
+ *                                              booleans only, never the
+ *                                              owner's raw id
+ *   GET /reading/generated/shared            → the PUBLIC reuse library
+ *                                              (#45): every account's
+ *                                              PUBLISHED stories, newest
+ *                                              first, no owner-identifying
+ *                                              field at all (mirrors
+ *                                              GET /uploads/shared's F-217
+ *                                              discipline)
+ *   POST /reading/generated/:id/publish      → owner-gated: publish the
+ *                                              CALLER's OWN story to the
+ *                                              public library (#45,
+ *                                              `is_shared = true`) — the
+ *                                              first user-settable shared
+ *                                              flag in the app (unlike 079's
+ *                                              operator-only flags)
+ *   POST /reading/generated/:id/unpublish    → owner-gated: withdraw the
+ *                                              CALLER's OWN story from the
+ *                                              public library (#45,
+ *                                              `is_shared = false`)
+ *   POST /reading/generated/:id/clone        → copy a READABLE (owned or
+ *                                              published) story into the
+ *                                              caller's own private library
+ *                                              at $0 incremental spend (#45)
+ *                                              — new audio_sources/
+ *                                              audio_tracks/story_images
+ *                                              rows owned by the caller
+ *                                              REFERENCE the source's SAME
+ *                                              blob files (no byte copy, no
+ *                                              re-synthesis); never touches
+ *                                              story_audio_jobs/
+ *                                              story_image_jobs
  *   POST /reading/generated/:id/audio        → request TTS narration of an
  *                                              owned story (F-210): idempotent
  *                                              voice-once enqueue of a
@@ -80,10 +117,13 @@
  *   GET /reading/generated/:id/images        → the story's illustration
  *                                              status; when done, the ordered
  *                                              image list (blobUrl + prompt +
- *                                              dimensions) (F-211)
+ *                                              dimensions) (F-211). Widened
+ *                                              for #45 like GET /:id above —
+ *                                              owned OR published
  *   GET /reading/generated/:id/image/:n/blob → one illustration's bytes
  *                                              (IDOR-404, nosniff, cookie
- *                                              auth) (F-211)
+ *                                              auth) (F-211). Widened for
+ *                                              #45 like GET /:id above
  *   POST /reading/generated/:id/experience   → one-tap FULL experience
  *                                              (F-216): attempt the F-210
  *                                              narration enqueue AND the
@@ -1014,7 +1054,16 @@ const GenerateStoryBodySchema = z
 /** Wire shape of one generated story (BIGINT id coerced to a JSON number).
  *  `turns` (F-210 groundwork) is the optional multi-voice split — null for
  *  pre-081 stories and turn-less generations; bodyKo stays the reader's
- *  source of truth either way. */
+ *  source of truth either way.
+ *
+ *  `isShared`/`isOwn` (#45, migration 109) are BOOLEANS ONLY — never the raw
+ *  owner id — so a non-owner reading a published story via the widened
+ *  `GET /generated/:id` (below) learns "is this mine / is it published"
+ *  without ever learning WHOSE it is. `isOwn` is computed per-request from
+ *  the caller's session id vs. the row's true owner; `isShared` is the raw
+ *  `generated_stories.is_shared` flag. The client uses these to decide
+ *  whether to render the owner-only Publish/Unpublish control or the
+ *  non-owner "Save to my library" clone action. */
 interface GeneratedStoryDto {
   id: number;
   title: string;
@@ -1023,6 +1072,8 @@ interface GeneratedStoryDto {
   prompt: string | null;
   turns: StoryTurn[] | null;
   createdAt: Date;
+  isShared: boolean;
+  isOwn: boolean;
 }
 
 interface GeneratedStoryRow {
@@ -1036,9 +1087,20 @@ interface GeneratedStoryRow {
   // StoryTurn array by construction; 081's CHECK additionally pins array-ness.
   turns: StoryTurn[] | null;
   created_at: Date;
+  // #45 / migration 109. is_shared is the raw publish flag. user_id rides
+  // EVERY row fetched through STORY_COLUMNS so toStoryDto can derive isOwn —
+  // it is NEVER put on the wire itself (only the isOwn boolean is); the one
+  // route that must NOT leak it (GET /reading/generated/shared) uses its
+  // own bespoke SELECT instead of STORY_COLUMNS — see that route's comment.
+  is_shared: boolean;
+  user_id: string;
 }
 
-function toStoryDto(row: GeneratedStoryRow): GeneratedStoryDto {
+/** `callerUserId` is the SESSION user — used only to derive `isOwn`
+ *  (`row.user_id` is never put on the wire). For an owner's own fetch these
+ *  are always equal (isOwn: true); for a non-owner's widened read of a
+ *  published story (`is_shared = true`) they differ (isOwn: false). */
+function toStoryDto(row: GeneratedStoryRow, callerUserId: number): GeneratedStoryDto {
   return {
     id: Number(row.id),
     title: row.title,
@@ -1047,11 +1109,14 @@ function toStoryDto(row: GeneratedStoryRow): GeneratedStoryDto {
     prompt: row.prompt,
     turns: row.turns,
     createdAt: row.created_at,
+    isShared: row.is_shared,
+    isOwn: Number(row.user_id) === callerUserId,
   };
 }
 
 const STORY_COLUMNS =
-  'id::text AS id, title, body_ko, level::text AS level, prompt, turns, created_at';
+  'id::text AS id, title, body_ko, level::text AS level, prompt, turns, created_at, ' +
+  'is_shared, user_id::text AS user_id';
 
 /**
  * POST /reading/generate — Claude authors a short Korean story, the route
@@ -1129,7 +1194,7 @@ router.post(
         }
       }
 
-      res.status(201).json({ story: toStoryDto(rows[0]!) });
+      res.status(201).json({ story: toStoryDto(rows[0]!, userId) });
     } catch (err) {
       next(mapClaudeError(err));
     }
@@ -1191,6 +1256,7 @@ router.get('/generated', cheapLimiter(), async (req, res, next) => {
       }
     >(
       `SELECT g.id::text AS id, g.title, g.level::text AS level, g.prompt, g.created_at,
+              g.is_shared,
               audio.status AS audio_status,
               images.status AS image_status
          FROM generated_stories g
@@ -1248,6 +1314,12 @@ router.get('/generated', cheapLimiter(), async (req, res, next) => {
         createdAt: r.created_at,
         audioStatus: r.audio_status,
         imageStatus: r.image_status,
+        // #45 — this list is always the caller's OWN stories (WHERE
+        // g.user_id = $1 above), so isOwn is always true and is
+        // deliberately NOT included here (it would be a constant, dead
+        // field on every row); isShared is real per-row state (a badge for
+        // "published" on the owner's own library).
+        isShared: r.is_shared,
       })),
     });
   } catch (err) {
@@ -1312,14 +1384,124 @@ router.get('/generated/audio', cheapLimiter(), async (req, res, next) => {
   }
 });
 
+/**
+ * Upper bound on the public library listing (uploads.ts's
+ * GET_SHARED_UPLOADS_LIMIT / audio.ts's GET /audio/shared posture): a
+ * generous fixed ceiling, not an offset-pagination scheme — matches the
+ * client shelf's `usePagination` max, same as every other "browse the
+ * shared corpus" listing in this app.
+ */
+const GET_LIBRARY_LIMIT = 200;
+
+/** One row of the public library browse listing (#45) — metadata only (no
+ *  `bodyKo` — same "list is metadata, GET /:id serves the body" split as
+ *  `GET /generated`), PLUS the F-216 asset-status pips so the library grid
+ *  can badge audio/illustrations without a per-story follow-up call. NO
+ *  OWNER-IDENTIFYING FIELD AT ALL — not even a boolean — this DTO is built
+ *  from a BESPOKE SELECT (never STORY_COLUMNS, which carries user_id for
+ *  the single-story routes' isOwn computation) specifically so there is no
+ *  column to forget to drop. */
+interface LibraryStoryDto {
+  id: number;
+  title: string;
+  level: string;
+  prompt: string | null;
+  createdAt: Date;
+  audioStatus: AssetStatus;
+  imageStatus: AssetStatus;
+}
+
+/**
+ * GET /reading/generated/shared — the PUBLIC reuse library (#45): every
+ * account's PUBLISHED stories, newest first. DELIBERATELY NON-user-scoped —
+ * every authenticated account (`router.use(requireAuth)` above) sees the
+ * same published set; `is_shared = true` is the entire filter, so a private
+ * row (any owner's) can never appear here. Mirrors uploads.ts:434's
+ * `GET /uploads/shared` (F-217) / audio.ts's `GET /audio/shared` (F-207)
+ * discipline exactly: the projection is a BESPOKE SELECT with no user_id,
+ * no email, no owner-identifying column of any kind (asserted by the route
+ * tests) — the owner's identity is not the browsing client's business.
+ * READ-only surface; every write (publish/unpublish/clone-target) keeps its
+ * strict owner scope.
+ *
+ * Reuses `GET /generated`'s exact done-authority-beats-latest-job asset
+ * status precedence (the two LEFT JOIN LATERAL probes), so a library row's
+ * pips can never disagree with what opening the story would show.
+ *
+ * REGISTRATION ORDER MATTERS: this literal path must be registered BEFORE
+ * `GET /generated/:id` (the "shared" literal would otherwise be captured as
+ * the `:id` param value and 400 on the numeric coercion) — mirrors
+ * `GET /generated/audio`'s identical ordering note above, and is declared
+ * directly below it for the same reason. The publish/unpublish routes and
+ * the widened `GET /generated/:id` follow after — double-check with a
+ * route-order grep if this file is ever reflowed.
+ */
+router.get('/generated/shared', cheapLimiter(), async (_req, res, next) => {
+  try {
+    const { rows } = await query<{
+      id: string;
+      title: string;
+      level: string;
+      prompt: string | null;
+      created_at: Date;
+      audio_status: AssetStatus;
+      image_status: AssetStatus;
+    }>(
+      `SELECT g.id::text AS id, g.title, g.level::text AS level, g.prompt, g.created_at,
+              audio.status AS audio_status,
+              images.status AS image_status
+         FROM generated_stories g
+         LEFT JOIN LATERAL (
+           SELECT CASE
+                    WHEN EXISTS (
+                      SELECT 1
+                        FROM audio_sources s
+                        JOIN audio_tracks t ON t.source_id = s.id AND t.track_number = 1
+                       WHERE s.generated_story_id = g.id AND s.user_id = g.user_id
+                    ) THEN 'done'
+                    ELSE 'none'
+                  END AS status
+         ) audio ON true
+         LEFT JOIN LATERAL (
+           SELECT CASE
+                    WHEN EXISTS (
+                      SELECT 1 FROM story_images i
+                       WHERE i.generated_story_id = g.id AND i.user_id = g.user_id
+                    ) THEN 'done'
+                    ELSE 'none'
+                  END AS status
+         ) images ON true
+        WHERE g.is_shared = true
+        ORDER BY g.created_at DESC, g.id DESC
+        LIMIT $1`,
+      [GET_LIBRARY_LIMIT],
+    );
+    const stories: LibraryStoryDto[] = rows.map((r) => ({
+      id: Number(r.id),
+      title: r.title,
+      level: r.level,
+      prompt: r.prompt,
+      createdAt: r.created_at,
+      audioStatus: r.audio_status,
+      imageStatus: r.image_status,
+    }));
+    res.status(200).json({ stories });
+  } catch (err) {
+    next(err);
+  }
+});
+
 const StoryParamsSchema = z.object({
   id: z.coerce.number().int().positive().max(MAX_ID),
 });
 
 /**
- * GET /reading/generated/:id — one generated story, full body. User-scoped in
- * a single query: a missing id and another user's id are the same uniform 404
- * (IDOR — never confirm a foreign id).
+ * GET /reading/generated/:id — one generated story, full body. Widened for
+ * #45 (migration 109): a story is readable when the caller OWNS it OR it is
+ * PUBLISHED (`is_shared = true`) — mirrors uploads.ts:483's F-217 shape. A
+ * missing id, another user's PRIVATE story, and any other miss all collapse
+ * to the same uniform 404 (IDOR — never confirm a foreign id, and never
+ * distinguish "doesn't exist" from "exists but private").
  */
 router.get(
   '/generated/:id',
@@ -1334,19 +1516,145 @@ router.get(
       const { rows } = await query<GeneratedStoryRow>(
         `SELECT ${STORY_COLUMNS}
            FROM generated_stories
-          WHERE id = $1 AND user_id = $2
+          WHERE id = $1 AND (user_id = $2 OR is_shared = true)
           LIMIT 1`,
         [id, userId],
       );
       if (rows.length === 0) {
         throw new NotFoundError('story not found');
       }
-      res.status(200).json({ story: toStoryDto(rows[0]!) });
+      res.status(200).json({ story: toStoryDto(rows[0]!, userId) });
     } catch (err) {
       next(err);
     }
   },
 );
+
+/**
+ * #45 body schema for POST /generated/:id/publish and /unpublish — EMPTY,
+ * `.strict()`: these routes take no input beyond the id (the target
+ * is_shared value is fixed per-route, never client-supplied), so any body
+ * key at all — including a probe like `{ shared: true }` or `{ user_id: 2 }`
+ * — fails loud rather than being silently ignored (the repo's `.strict()`
+ * mass-assignment posture, audio.test.ts:1225 / uploads.test.ts:1647's
+ * precedent).
+ */
+const EmptyPublishBodySchema = z.object({}).strict();
+
+/**
+ * Shared UPDATE for POST /generated/:id/publish|unpublish — owner-gated in
+ * ONE query (`WHERE id = $1 AND user_id = $2`), `rowCount === 0` → uniform
+ * 404 (IDOR — a non-owner probing another user's story id learns nothing).
+ *
+ * THIS IS THE FIRST ROUTE IN THE APP THAT LETS A NON-OPERATOR USER WRITE A
+ * `*_shared` FLAG. Every prior shared-corpus flag (079: audio_sources /
+ * book_uploads) is operator-set-only — no route accepts it from a client at
+ * all (see the audio/uploads `.strict()` rejection tests). This one is safe
+ * to expose because it is STRICTLY owner-scoped: the WHERE clause makes it
+ * structurally impossible for a caller to share or unshare anyone's story
+ * but their own — there is no id a caller can pass that reaches another
+ * user's row.
+ */
+async function setStoryShared(
+  id: number,
+  userId: number,
+  shared: boolean,
+): Promise<GeneratedStoryDto> {
+  const { rows } = await query<GeneratedStoryRow>(
+    `UPDATE generated_stories
+        SET is_shared = $3
+      WHERE id = $1 AND user_id = $2
+      RETURNING ${STORY_COLUMNS}`,
+    [id, userId, shared],
+  );
+  if (rows.length === 0) {
+    throw new NotFoundError('story not found');
+  }
+  return toStoryDto(rows[0]!, userId);
+}
+
+/**
+ * POST /reading/generated/:id/publish — the owner opts their OWN story into
+ * the public reuse library (#45). Idempotent: publishing an already-shared
+ * story just re-affirms `is_shared = true` and returns 200 with the current
+ * state (no error, no second row, nothing to conflict). See
+ * `setStoryShared`'s doc comment for the owner-gate rationale.
+ */
+router.post(
+  '/generated/:id/publish',
+  cheapLimiter(),
+  validateParams(StoryParamsSchema),
+  validateBody(EmptyPublishBodySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const { id } = (
+        req as typeof req & { validatedParams: z.infer<typeof StoryParamsSchema> }
+      ).validatedParams;
+      const story = await setStoryShared(id, userId, true);
+      res.status(200).json({ story });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/**
+ * POST /reading/generated/:id/unpublish — the owner withdraws their OWN
+ * story from the public reuse library (#45). Does NOT retract any clone
+ * already made from it — a clone is a full independent copy from the moment
+ * it is created (see the clone route below), never a live reference back to
+ * the source's publish state. Idempotent, same shape as publish.
+ */
+router.post(
+  '/generated/:id/unpublish',
+  cheapLimiter(),
+  validateParams(StoryParamsSchema),
+  validateBody(EmptyPublishBodySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const { id } = (
+        req as typeof req & { validatedParams: z.infer<typeof StoryParamsSchema> }
+      ).validatedParams;
+      const story = await setStoryShared(id, userId, false);
+      res.status(200).json({ story });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/**
+ * Resolve a story readable to `userId` — OWNED or PUBLISHED (#45's read
+ * widening, shared by every sub-resource route below). Returns the story's
+ * TRUE owner id (`ownerId`), which is NOT necessarily `userId`: for a
+ * non-owner reading a published story, every downstream table
+ * (`story_images`, `audio_sources`/`audio_tracks`) denormalizes its owner
+ * column to the STORY's owner, never the viewer — so a sub-resource probe
+ * must be scoped `WHERE ... AND user_id = ownerId`, not `= userId`, or a
+ * non-owner's widened read would find nothing (the rows exist, just under a
+ * different user_id than the caller's). Miss (missing id, or a private
+ * story that isn't the caller's) is a uniform 404 — never confirm a foreign
+ * id exists.
+ */
+async function loadReadableStory(
+  id: number,
+  userId: number,
+): Promise<{ id: number; ownerId: number }> {
+  const { rows } = await query<{ id: string; user_id: string }>(
+    `SELECT id::text AS id, user_id::text AS user_id
+       FROM generated_stories
+      WHERE id = $1 AND (user_id = $2 OR is_shared = true)
+      LIMIT 1`,
+    [id, userId],
+  );
+  const row = rows[0];
+  if (row === undefined) {
+    throw new NotFoundError('story not found');
+  }
+  return { id: Number(row.id), ownerId: Number(row.user_id) };
+}
 
 /* ---------- Story audio (F-210; story_audio_jobs + audio_* tables, 081) ---------- */
 
@@ -1660,6 +1968,21 @@ router.post(
  * 'failed'). When 'done', the envelope carries the streamUrl + the ordered
  * read-along segments. IDOR: story ownership is asserted first — a missing
  * or foreign story id is a uniform 404.
+ *
+ * DELIBERATELY NOT WIDENED FOR #45 — stays STRICT owner-only, unlike
+ * GET /generated/:id and its /images sibling. `track.streamUrl` points at
+ * `/audio/tracks/:id/stream` (routes/audio.ts), which ALSO stays widened
+ * only by `audio_sources.is_shared` (the curated Listen corpus, F-207/079)
+ * — never by a generated_stories.is_shared publish. Even if this status
+ * route reported a published story's segments to a non-owner, the
+ * streamUrl it hands back would still 404 for them, so widening this route
+ * alone would be a half-feature that leaks transcript text with no audio
+ * behind it. The MVP boundary for this slice is LISTEN-VIA-CLONE: a
+ * non-owner previews a published story as text + images only; to actually
+ * hear it they clone it first (`POST /generated/:id/clone`, below — the
+ * clone owns its own audio_sources/audio_tracks rows and streams through
+ * the existing, unmodified owner path). A story-scoped "listen before
+ * clone" widening is an explicit fast-follow, not this slice.
  */
 router.get(
   '/generated/:id/audio',
@@ -1953,8 +2276,14 @@ router.post(
  * GET /reading/generated/:id/images — the story's illustration status (the
  * client's polling surface while a job runs; poll every ~2s until status is
  * 'done' or 'failed'). When 'done', the envelope carries the ordered image
- * list (blobUrl + prompt + dimensions). IDOR: story ownership is asserted
- * first — a missing or foreign story id is a uniform 404.
+ * list (blobUrl + prompt + dimensions). Widened for #45: readable when the
+ * caller OWNS the story OR it is PUBLISHED (`loadReadableStory`) — a missing
+ * id, a foreign PRIVATE story, or any other miss is a uniform 404.
+ * `buildStoryImagesDto` is called with the story's OWNER id, not the
+ * caller's — `story_images.user_id` is denormalized to the story's owner
+ * (083's composite FK), so a non-owner's widened read must probe under the
+ * owner's id or it would find nothing (see `loadReadableStory`'s doc
+ * comment).
  */
 router.get(
   '/generated/:id/images',
@@ -1966,14 +2295,8 @@ router.get(
       const { id } = (
         req as typeof req & { validatedParams: z.infer<typeof StoryParamsSchema> }
       ).validatedParams;
-      const owned = await query<{ id: number }>(
-        `SELECT id FROM generated_stories WHERE id = $1 AND user_id = $2 LIMIT 1`,
-        [id, userId],
-      );
-      if (owned.rows.length === 0) {
-        throw new NotFoundError('story not found');
-      }
-      res.status(200).json({ images: await buildStoryImagesDto(id, userId) });
+      const story = await loadReadableStory(id, userId);
+      res.status(200).json({ images: await buildStoryImagesDto(id, story.ownerId) });
     } catch (err) {
       next(err);
     }
@@ -2003,11 +2326,13 @@ const EXT_TO_MIME: Readonly<Record<string, string>> = {
  * <img src> sends the session cookie), Cache-Control private,
  * X-Content-Type-Options nosniff, Content-Type from the STORED extension
  * (server-written, closed set — never client input). No Range support —
- * these are small static images, not streamed media. IDOR: the row lookup
- * is user-scoped in one query (the 083 composite FK pins user_id to the
- * story's owner), so a missing story, a foreign story, and a missing image
- * number are all the same uniform 404; a row whose FILE is gone
- * (out-of-band cleanup) is also a 404, not a 500.
+ * these are small static images, not streamed media. Widened for #45: the
+ * STORY ownership check goes through `loadReadableStory` (owned OR
+ * published), then the image row is probed under the story's OWNER id (the
+ * 083 composite FK denormalizes `story_images.user_id` to the owner, never
+ * the viewer) — so a missing story, a foreign PRIVATE story, and a missing
+ * image number all collapse to the same uniform 404; a row whose FILE is
+ * gone (out-of-band cleanup) is also a 404, not a 500.
  */
 router.get(
   '/generated/:id/image/:n/blob',
@@ -2020,11 +2345,12 @@ router.get(
         req as typeof req & { validatedParams: z.infer<typeof StoryImageBlobParamsSchema> }
       ).validatedParams;
 
+      const story = await loadReadableStory(id, userId);
       const { rows } = await query<{ blob_ref: string }>(
         `SELECT blob_ref FROM story_images
           WHERE generated_story_id = $1 AND user_id = $2 AND image_number = $3
           LIMIT 1`,
-        [id, userId, n],
+        [id, story.ownerId, n],
       );
       const row = rows[0];
       if (row === undefined) {
@@ -2153,6 +2479,279 @@ router.post(
           images: { ...images, enqueueBlocked: imagesBlocked },
         },
       });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/* ---------- Clone-by-reference (#45; the public library's $0 core) ---------- */
+
+/**
+ * POST /reading/generated/:id/clone — copy a READABLE story (owned by the
+ * caller, or PUBLISHED by another account) into the caller's OWN private
+ * library, at ZERO incremental ElevenLabs/OpenAI spend when the source is
+ * already voiced/illustrated. 201 with the new story (never the source).
+ *
+ * READABILITY GATE: same predicate as `loadReadableStory` —
+ * `(user_id = $me OR is_shared = true)` — re-run INSIDE the transaction on
+ * the full row (not just the id/owner probe) so the copied content is read
+ * under the same guarantee the insert commits with. A private story that
+ * isn't the caller's own is a uniform 404, exactly like every other
+ * IDOR-gated read in this file.
+ *
+ * `SELECT ... FOR SHARE` on the source row closes the narrow TOCTOU window a
+ * plain SELECT would leave open: without a lock, a concurrent owner
+ * `unpublish` could COMMIT in the gap between this SELECT and the clone
+ * transaction's own COMMIT (READ COMMITTED does not re-check the predicate),
+ * letting a clone through for content that is no longer published by the
+ * time either transaction settles. `FOR SHARE` (not `FOR UPDATE` — this
+ * transaction never writes the source row) makes a concurrent unpublish's
+ * `UPDATE ... WHERE id = $1` BLOCK until this transaction commits or rolls
+ * back, so the two orderings are now the only two possible outcomes:
+ * unpublish-then-clone (clone re-reads is_shared=false → 404, never starts)
+ * or clone-then-unpublish (unpublish waits, then applies cleanly after) —
+ * never an interleaving that reads published content the owner is
+ * concurrently revoking.
+ *
+ * WHAT GETS COPIED, AND HOW (the $0 mechanism):
+ *   1. Story content — title/body_ko/level/prompt/turns are duplicated by
+ *      VALUE into a brand-new `generated_stories` row owned by the caller,
+ *      with `source_story_id` set to the source's id (provenance,
+ *      migration 109) and `is_shared = false` (a clone starts private —
+ *      the cloner opts BACK in to publishing if they choose to).
+ *   2. Voiced audio (if the source has any) — a NEW `audio_sources` +
+ *      `audio_tracks` + `audio_transcript_segments` set, owned by the
+ *      CALLER and linked to the CALLER's new story (satisfying 081's
+ *      partial UNIQUE(generated_story_id) and composite owner FK exactly
+ *      as a real voicing run would) — EXCEPT the new `audio_tracks.blob_ref`
+ *      is the EXACT SAME relative-path STRING as the source track's, not a
+ *      freshly synthesized or byte-copied file.
+ *   3. Illustrations (if any) — NEW `story_images` rows, owned by the
+ *      CALLER, one per source image, each carrying the SAME `blob_ref`
+ *      string as its source row.
+ *   4. `story_audio_jobs`/`story_image_jobs` are NEVER touched — no row is
+ *      inserted into either table, and `enqueueStoryAudio`/
+ *      `enqueueStoryImages` (the ONLY functions that call the metered
+ *      ElevenLabs/OpenAI providers) are NEVER invoked anywhere on this
+ *      path. This is what makes the clone $0: spendCeiling.ts sums exactly
+ *      those two tables' settled rows (plus claude_usage and
+ *      generated_items.audio_cost_estimate_usd, neither touched either) —
+ *      a clone that creates zero rows in either table is invisible to the
+ *      spend ledger by construction, not by a cap check that happens to
+ *      pass. Covered by an isolation-suite assertion
+ *      (two-user.reading.test.ts) that queries both tables after a clone
+ *      and asserts zero rows.
+ *
+ * WHY REUSING THE BARE blob_ref STRING IS SAFE (no byte copy, no new
+ * storage cost either) — both `services/audioStore.ts` and
+ * `services/imageStore.ts` are ID-ADDRESSED blob stores
+ * (`{userId}/{uuid}.{ext}` under a configured root); `readBlob` /
+ * `resolveUnderRoot` only ever validate PATH TRAVERSAL, never ownership —
+ * access control for these blobs lives ENTIRELY in the owning DB row
+ * (`audio_tracks.user_id` / `story_images.user_id` and their composite
+ * owner FKs), never in the filesystem path. Every blob is WRITE-ONCE (no
+ * route in this codebase ever rewrites a `blob_ref`'s bytes after
+ * creation) and there is NO delete route for either table today (grepped —
+ * none exists), so a `blob_ref` is effectively immutable and permanent for
+ * the life of this slice. Two DB rows — one under the original owner's
+ * subdirectory naming, one under the cloner's brand-new row, but BOTH
+ * pointing at the SAME on-disk file — is therefore a stable, safe state:
+ * the directory-per-user naming in the path is a key-generation
+ * convenience, not an access-control boundary, so a cloned row living
+ * "under" a path that looks like it belongs to the original uploader's
+ * user id is not a leak (nothing ever derives access from the path; the
+ * DB row's own user_id is what every read route checks). This IS a
+ * deliberate content-addressed-EQUIVALENT reuse, not literal content-hash
+ * addressing — a future reader must not "fix" this into a byte copy: doing
+ * so would only add storage cost for no security benefit.
+ *
+ * BLOB LIFECYCLE / GC — DEFERRED, DOCUMENTED FOLLOW-UP: because multiple DB
+ * rows can now reference one blob file, a naive future
+ * DELETE /reading/generated/:id route must NOT unlink a shared blob out
+ * from under another owner's row. No such route exists today (this
+ * migration's own header note), so the hazard is currently unreachable —
+ * but whoever builds story deletion next must add a refcount (or a
+ * reachability scan) before ever calling `deleteBlob`. Not built here.
+ *
+ * AUDIO-PREVIEW BOUNDARY (why this route exists at all, MVP shape): a
+ * non-owner cannot stream a published story's narration directly — see
+ * `GET /generated/:id/audio`'s doc comment above. This clone route IS the
+ * listen path for this slice: clone first, then stream the CALLER's own
+ * new copy through the existing, completely unmodified owner-only audio
+ * routes. A "listen before cloning" widening is an explicit fast-follow.
+ *
+ * Rate-limited as `expensiveLimiter()` (multi-row write, cost-adjacent
+ * even though $0 metered spend — mirrors `POST /generate`'s bucket).
+ */
+router.post(
+  '/generated/:id/clone',
+  expensiveLimiter(),
+  validateParams(StoryParamsSchema),
+  validateBody(EmptyPublishBodySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const { id } = (
+        req as typeof req & { validatedParams: z.infer<typeof StoryParamsSchema> }
+      ).validatedParams;
+
+      const cloned = await withTransaction(async (client) => {
+        // 1. Readability gate — owned or published — on the FULL row, so
+        //    the content copied below is read under the same guarantee the
+        //    insert commits with.
+        const sourceRes = await client.query<GeneratedStoryRow>(
+          `SELECT ${STORY_COLUMNS}
+             FROM generated_stories
+            WHERE id = $1 AND (user_id = $2 OR is_shared = true)
+            LIMIT 1
+              FOR SHARE`,
+          [id, userId],
+        );
+        const source = sourceRes.rows[0];
+        if (source === undefined) {
+          throw new NotFoundError('story not found');
+        }
+        const sourceId = Number(source.id);
+
+        // 2. Story content — copy by VALUE, never by reference: a clone
+        //    must survive the source being unpublished or (eventually)
+        //    deleted. is_shared always starts false on a clone.
+        const insertRes = await client.query<GeneratedStoryRow>(
+          `INSERT INTO generated_stories
+             (user_id, title, body_ko, level, prompt, turns, source_story_id, is_shared)
+           VALUES ($1, $2, $3, $4::proficiency_level, $5, $6::jsonb, $7, false)
+           RETURNING ${STORY_COLUMNS}`,
+          [
+            userId,
+            source.title,
+            source.body_ko,
+            source.level,
+            source.prompt,
+            source.turns !== null ? JSON.stringify(source.turns) : null,
+            sourceId,
+          ],
+        );
+        const newStory = insertRes.rows[0]!;
+        const newStoryId = Number(newStory.id);
+
+        // 3. Voiced audio — reference the SAME blob, never re-synthesize.
+        //    No user_id filter needed on the source lookup: readability was
+        //    already established above, and a story has at most ONE audio
+        //    set (081's partial UNIQUE(generated_story_id)).
+        const srcSourceRes = await client.query<{ id: string }>(
+          `SELECT id::text AS id FROM audio_sources
+            WHERE generated_story_id = $1 LIMIT 1`,
+          [sourceId],
+        );
+        const srcSource = srcSourceRes.rows[0];
+        if (srcSource !== undefined) {
+          const srcTrackRes = await client.query<{
+            title: string | null;
+            blob_ref: string;
+            byte_size: string;
+            duration_ms: number | null;
+          }>(
+            `SELECT title, blob_ref, byte_size::text AS byte_size, duration_ms
+               FROM audio_tracks
+              WHERE source_id = $1 AND track_number = 1
+              LIMIT 1`,
+            [Number(srcSource.id)],
+          );
+          const srcTrack = srcTrackRes.rows[0];
+          if (srcTrack !== undefined) {
+            const newSourceRes = await client.query<{ id: string }>(
+              `INSERT INTO audio_sources
+                 (user_id, slug, title, kind, source_upload_id, generated_story_id, status)
+               VALUES ($1, $2, $3, 'generated_story', NULL, $4, 'ready')
+               RETURNING id::text AS id`,
+              [userId, `generated-story-${String(newStoryId)}`, newStory.title, newStoryId],
+            );
+            const newSourceId = Number(newSourceRes.rows[0]!.id);
+            const newTrackRes = await client.query<{ id: string }>(
+              `INSERT INTO audio_tracks
+                 (source_id, user_id, track_number, title, blob_ref, byte_size,
+                  duration_ms, transcript_status)
+               VALUES ($1, $2, 1, $3, $4, $5, $6, 'done')
+               RETURNING id::text AS id`,
+              [
+                newSourceId,
+                userId,
+                srcTrack.title,
+                // SAME relative path — no byte copy (see the route's doc
+                // comment above for why this is safe).
+                srcTrack.blob_ref,
+                srcTrack.byte_size,
+                srcTrack.duration_ms,
+              ],
+            );
+            const newTrackId = Number(newTrackRes.rows[0]!.id);
+
+            const srcSegRes = await client.query<{
+              segment_number: number;
+              start_ms: number;
+              end_ms: number;
+              body: string;
+            }>(
+              `SELECT segment_number, start_ms, end_ms, body
+                 FROM audio_transcript_segments
+                WHERE track_id = (
+                        SELECT id FROM audio_tracks
+                         WHERE source_id = $1 AND track_number = 1
+                       )
+                ORDER BY segment_number`,
+              [Number(srcSource.id)],
+            );
+            for (const seg of srcSegRes.rows) {
+              await client.query(
+                `INSERT INTO audio_transcript_segments
+                   (track_id, segment_number, start_ms, end_ms, body)
+                 VALUES ($1, $2, $3, $4, $5)`,
+                [newTrackId, seg.segment_number, seg.start_ms, seg.end_ms, seg.body],
+              );
+            }
+          }
+        }
+
+        // 4. Illustrations — reference the SAME blobs, never regenerate.
+        const srcImagesRes = await client.query<{
+          image_number: number;
+          blob_ref: string;
+          prompt: string;
+          width: number;
+          height: number;
+        }>(
+          `SELECT image_number, blob_ref, prompt, width, height
+             FROM story_images
+            WHERE generated_story_id = $1
+            ORDER BY image_number`,
+          [sourceId],
+        );
+        for (const img of srcImagesRes.rows) {
+          await client.query(
+            `INSERT INTO story_images
+               (generated_story_id, user_id, image_number, blob_ref, prompt, width, height)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [
+              newStoryId,
+              userId,
+              img.image_number,
+              // SAME relative path — no byte copy.
+              img.blob_ref,
+              img.prompt,
+              img.width,
+              img.height,
+            ],
+          );
+        }
+
+        // NOTE: story_audio_jobs / story_image_jobs are never written here,
+        // and enqueueStoryAudio/enqueueStoryImages are never called — see
+        // the route's doc comment's $0 explanation.
+        return newStory;
+      });
+
+      res.status(201).json({ story: toStoryDto(cloned, userId) });
     } catch (err) {
       next(err);
     }

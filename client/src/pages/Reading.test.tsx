@@ -45,6 +45,7 @@ import { ApiError } from '../services/api';
 import type {
   GeneratedStory,
   GeneratedStorySummary,
+  LibraryStorySummary,
   ReadingPosition,
   ReadingQuestion,
   StoryAudio,
@@ -69,6 +70,10 @@ const readingSvc = vi.hoisted(() => ({
   requestStoryExperience: vi.fn(),
   getChapterQuestions: vi.fn(),
   generateChapterQuestions: vi.fn(),
+  listLibrary: vi.fn(),
+  publishStory: vi.fn(),
+  unpublishStory: vi.fn(),
+  cloneStory: vi.fn(),
   // Module CONSTANT (not a spy): Reading.tsx maps over it to build the
   // level radiogroup, so the mock must export the real display order.
   GENERATED_STORY_LEVELS: ['L1', 'L2', 'L3', 'L4', 'L5+'] as const,
@@ -415,6 +420,10 @@ beforeEach(() => {
   readingSvc.requestStoryExperience.mockReset();
   readingSvc.getChapterQuestions.mockReset();
   readingSvc.generateChapterQuestions.mockReset();
+  readingSvc.listLibrary.mockReset();
+  readingSvc.publishStory.mockReset();
+  readingSvc.unpublishStory.mockReset();
+  readingSvc.cloneStory.mockReset();
   uploadsSvc.listUploads.mockReset();
   uploadsSvc.listSharedUploads.mockReset();
   uploadsSvc.getUpload.mockReset();
@@ -448,6 +457,10 @@ beforeEach(() => {
   // test sees the same reader body it always did (plus an inert "Generate
   // comprehension check" button).
   readingSvc.getChapterQuestions.mockResolvedValue([]);
+  // #45: default to an empty public library so every pre-#45 test sees the
+  // exact reader/tabs it always did (the Library tab renders its own empty
+  // state, nothing else observes this call).
+  readingSvc.listLibrary.mockResolvedValue([]);
 });
 
 function renderReading(): ReturnType<typeof render> {
@@ -3117,6 +3130,28 @@ describe('Reading — unified story experience (F-216)', () => {
     expect(within(rowA).getByLabelText('image: failed')).toBeInTheDocument();
   });
 
+  // #45 fix-pass (client review SF-3): the owner's own list had no way to
+  // tell a published story apart from a private one.
+  it("a published story's row shows a 'Published' badge; a private row shows none", async () => {
+    const publishedRow: GeneratedStorySummary = { ...ROW_A, isShared: true };
+    const privateRow: GeneratedStorySummary = { ...ROW_B, isShared: false };
+    readingSvc.listGeneratedStories.mockResolvedValue({
+      stories: [publishedRow, privateRow],
+    });
+
+    const user = userEvent.setup();
+    renderReading();
+    await openStoriesTab(user);
+
+    const publishedRowEl = await screen.findByRole('button', {
+      name: /Open 바닷가 마을/,
+    });
+    const privateRowEl = screen.getByRole('button', { name: /Open 겨울 산책/ });
+
+    expect(within(publishedRowEl).getByText('Published')).toBeInTheDocument();
+    expect(within(privateRowEl).queryByText('Published')).not.toBeInTheDocument();
+  });
+
   it('one tap → POST /experience → BOTH halves seed their polls → both settle → player + gallery, polls stop', async () => {
     vi.useFakeTimers();
     readingSvc.getStoryAudio
@@ -3339,5 +3374,334 @@ describe('Reading — unified story experience (F-216)', () => {
     expect(
       screen.getByRole('button', { name: /Generate full experience/ }),
     ).not.toHaveAttribute('aria-disabled');
+  });
+});
+
+describe('Reading — public library (F-45)', () => {
+  const LIBRARY_ROW: LibraryStorySummary = {
+    id: 20,
+    title: '공개된 이야기',
+    level: 'L3',
+    prompt: null,
+    createdAt: '2026-08-10T00:00:00Z',
+    audioStatus: 'done',
+    imageStatus: 'none',
+  };
+
+  /** Switch to the Library tab from the root. */
+  async function openLibraryTab(
+    user: ReturnType<typeof userEvent.setup>,
+  ): Promise<void> {
+    await user.click(await screen.findByRole('tab', { name: /Library/ }));
+  }
+
+  function renderStoryDirect(story: GeneratedStory): ReturnType<typeof render> {
+    readingSvc.getGeneratedStory.mockResolvedValue(story);
+    return render(
+      <MemoryRouter initialEntries={[`/learn/reading?story=${story.id}`]}>
+        <ToastProvider>
+          <Reading />
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('lists published stories on the Library tab (no owner-identifying text — the DTO carries none)', async () => {
+    readingSvc.listLibrary.mockResolvedValue([LIBRARY_ROW]);
+
+    const user = userEvent.setup();
+    renderReading();
+    await openLibraryTab(user);
+
+    await waitFor(() => {
+      expect(readingSvc.listLibrary).toHaveBeenCalled();
+    });
+    expect(
+      await screen.findByRole('button', { name: /Open 공개된 이야기/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /Save to my library/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows the empty-library copy when nothing has been published yet', async () => {
+    readingSvc.listLibrary.mockResolvedValue([]);
+
+    const user = userEvent.setup();
+    renderReading();
+    await openLibraryTab(user);
+
+    expect(
+      await screen.findByText(/no stories have been published yet/i),
+    ).toBeInTheDocument();
+  });
+
+  it('shows an error card with a working retry when the library fetch fails', async () => {
+    readingSvc.listLibrary
+      .mockRejectedValueOnce(new ApiError('boom', { status: 500, code: 'server_error' }))
+      .mockResolvedValueOnce([LIBRARY_ROW]);
+
+    const user = userEvent.setup();
+    renderReading();
+    await openLibraryTab(user);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/could not load the public library/i);
+    expect(alert).not.toHaveTextContent(/boom/);
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+
+    expect(
+      await screen.findByRole('button', { name: /Open 공개된 이야기/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('opening a library row reads the widened GET /generated/:id (same as any story)', async () => {
+    readingSvc.listLibrary.mockResolvedValue([LIBRARY_ROW]);
+    readingSvc.getGeneratedStory.mockResolvedValue({
+      ...STORY_FULL,
+      id: LIBRARY_ROW.id,
+      title: LIBRARY_ROW.title,
+      isOwn: false,
+      isShared: true,
+    });
+
+    const user = userEvent.setup();
+    renderReading();
+    await openLibraryTab(user);
+
+    await user.click(
+      await screen.findByRole('button', { name: /Open 공개된 이야기/ }),
+    );
+
+    await waitFor(() => {
+      expect(readingSvc.getGeneratedStory).toHaveBeenCalledWith(
+        LIBRARY_ROW.id,
+        expect.anything(),
+      );
+    });
+    expect(await screen.findByText('공개된 이야기')).toBeInTheDocument();
+  });
+
+  it('"Save to my library" clones the story and navigates straight into the new copy', async () => {
+    readingSvc.listLibrary.mockResolvedValue([LIBRARY_ROW]);
+    const clone: GeneratedStory = {
+      ...STORY_FULL,
+      id: 99,
+      title: '내 서재의 사본',
+      isOwn: true,
+      isShared: false,
+    };
+    readingSvc.cloneStory.mockResolvedValue(clone);
+    readingSvc.getGeneratedStory.mockResolvedValue(clone);
+
+    const user = userEvent.setup();
+    renderReading();
+    await openLibraryTab(user);
+
+    await user.click(
+      screen.getByRole('button', { name: /Save to my library/ }),
+    );
+
+    await waitFor(() => {
+      expect(readingSvc.cloneStory).toHaveBeenCalledWith(
+        LIBRARY_ROW.id,
+        expect.anything(),
+      );
+    });
+    // Landed on the CLONE's reader, not the source's.
+    await waitFor(() => {
+      expect(readingSvc.getGeneratedStory).toHaveBeenCalledWith(
+        clone.id,
+        expect.anything(),
+      );
+    });
+    expect(await screen.findByText('내 서재의 사본')).toBeInTheDocument();
+  });
+
+  it("a surfaced clone failure shows fixed alert copy — no server prose leak", async () => {
+    readingSvc.listLibrary.mockResolvedValue([LIBRARY_ROW]);
+    readingSvc.cloneStory.mockRejectedValue(
+      new ApiError('upstream boom', { status: 502, code: 'upstream_error' }),
+    );
+
+    const user = userEvent.setup();
+    renderReading();
+    await openLibraryTab(user);
+
+    await user.click(
+      screen.getByRole('button', { name: /Save to my library/ }),
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/could not save this story/i);
+    expect(alert).not.toHaveTextContent(/upstream boom/);
+  });
+
+  it("the OWNER of a private story sees a 'Publish to library' control, not a clone action", async () => {
+    renderStoryDirect({ ...STORY_FULL, isOwn: true, isShared: false });
+
+    expect(
+      await screen.findByRole('button', { name: /Publish to library/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /Save to my library/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('publishing flips the control to Unpublish and persists the server response', async () => {
+    const published: GeneratedStory = { ...STORY_FULL, isOwn: true, isShared: true };
+    readingSvc.publishStory.mockResolvedValue(published);
+    renderStoryDirect({ ...STORY_FULL, isOwn: true, isShared: false });
+
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole('button', { name: /Publish to library/ }),
+    );
+
+    await waitFor(() => {
+      expect(readingSvc.publishStory).toHaveBeenCalledWith(
+        STORY_FULL.id,
+        expect.anything(),
+      );
+    });
+    expect(
+      await screen.findByRole('button', { name: /Unpublish/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('unpublishing flips the control back to Publish', async () => {
+    const unpublished: GeneratedStory = { ...STORY_FULL, isOwn: true, isShared: false };
+    readingSvc.unpublishStory.mockResolvedValue(unpublished);
+    renderStoryDirect({ ...STORY_FULL, isOwn: true, isShared: true });
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: /Unpublish/ }));
+
+    await waitFor(() => {
+      expect(readingSvc.unpublishStory).toHaveBeenCalledWith(
+        STORY_FULL.id,
+        expect.anything(),
+      );
+    });
+    expect(
+      await screen.findByRole('button', { name: /Publish to library/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("a NON-OWNER viewing a published story sees 'Save to my library', never the Publish control", async () => {
+    renderStoryDirect({ ...STORY_FULL, isOwn: false, isShared: true });
+
+    expect(
+      await screen.findByRole('button', { name: /Save to my library/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /Publish to library/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /Unpublish/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("a non-owner's 'Save to my library' click on the reader clones and re-navigates into the copy", async () => {
+    const clone: GeneratedStory = { ...STORY_FULL, id: 55, isOwn: true, isShared: false };
+    readingSvc.cloneStory.mockResolvedValue(clone);
+    renderStoryDirect({ ...STORY_FULL, isOwn: false, isShared: true });
+
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole('button', { name: /Save to my library/ }),
+    );
+
+    await waitFor(() => {
+      expect(readingSvc.cloneStory).toHaveBeenCalledWith(
+        STORY_FULL.id,
+        expect.anything(),
+      );
+    });
+    await waitFor(() => {
+      expect(readingSvc.getGeneratedStory).toHaveBeenCalledWith(
+        clone.id,
+        expect.anything(),
+      );
+    });
+  });
+
+  it('a publish failure shows fixed alert copy — no server prose leak', async () => {
+    readingSvc.publishStory.mockRejectedValue(
+      new ApiError('db exploded', { status: 500, code: 'server_error' }),
+    );
+    renderStoryDirect({ ...STORY_FULL, isOwn: true, isShared: false });
+
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole('button', { name: /Publish to library/ }),
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/couldn't save/i);
+    expect(alert).not.toHaveTextContent(/db exploded/);
+  });
+
+  it('an OWNER with isOwn omitted (older-shaped fixture) still gets the Publish control (backward-compat default)', async () => {
+    const withoutIsOwn: Partial<GeneratedStory> = { ...STORY_FULL };
+    delete withoutIsOwn.isOwn;
+    renderStoryDirect(withoutIsOwn as GeneratedStory);
+
+    expect(
+      await screen.findByRole('button', { name: /Publish to library/ }),
+    ).toBeInTheDocument();
+  });
+
+  // #45 fix-pass (client review SF-1/SF-2): a non-owner previewing a
+  // published (not-yet-cloned) story must see ONLY the read + Save-to-my-
+  // library affordances — every owner-only mutation control (audio
+  // generation, the combined experience button, mark-finished) POSTs to a
+  // route that's owner-gated server-side and would silently 404. Before this
+  // fix-pass NOTHING asserted their absence, so a future regression here
+  // would have shipped unnoticed.
+  describe('non-owner affordance gating (listen-via-clone boundary)', () => {
+    it("a NON-OWNER viewing a published story does NOT see 'Generate audio', 'Generate full experience', or 'Mark story as finished'", async () => {
+      renderStoryDirect({ ...STORY_FULL, isOwn: false, isShared: true });
+
+      // The read surface + clone action ARE present (the story loaded).
+      expect(
+        await screen.findByRole('button', { name: /Save to my library/ }),
+      ).toBeInTheDocument();
+
+      // None of the owner-only mutation affordances render.
+      expect(
+        screen.queryByRole('button', { name: /Generate audio/ }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('button', { name: /Generate full experience/ }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('button', { name: /Mark story as finished/i }),
+      ).not.toBeInTheDocument();
+
+      // The audio hydrate still runs (read-only GET, unchanged), but its
+      // masked-to-'none' result must never resurface as a request button.
+      expect(readingSvc.getStoryAudio).toHaveBeenCalled();
+    });
+
+    it("the SAME story viewed by its OWNER (isOwn omitted → default true) DOES show all three affordances", async () => {
+      const ownedStory: Partial<GeneratedStory> = {
+        ...STORY_FULL,
+        isShared: true,
+      };
+      delete ownedStory.isOwn;
+      renderStoryDirect(ownedStory as GeneratedStory);
+
+      expect(
+        await screen.findByRole('button', { name: /Generate audio/ }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: /Generate full experience/ }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: /Mark story as finished/i }),
+      ).toBeInTheDocument();
+    });
   });
 });
